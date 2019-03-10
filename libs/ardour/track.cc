@@ -169,7 +169,7 @@ Track::set_state (const XMLNode& node, int version)
 	if (version >= 3000 && version < 6000) {
 		if (XMLNode* ds_node = find_named_node (node, "Diskstream")) {
 			std::string name;
-			if (ds_node->get_property ("name", name)) {
+			if (ds_node->get_property ("playlist", name)) {
 
 				ds_node->set_property ("active", true);
 
@@ -492,9 +492,9 @@ Track::do_flush (RunContext c, bool force)
 }
 
 void
-Track::set_pending_overwrite (bool o)
+Track::set_pending_overwrite ()
 {
-	_disk_reader->set_pending_overwrite (o);
+	_disk_reader->set_pending_overwrite ();
 }
 
 int
@@ -506,13 +506,13 @@ Track::seek (samplepos_t p, bool complete_refill)
 	return _disk_writer->seek (p, complete_refill);
 }
 
-int
+bool
 Track::can_internal_playback_seek (samplecnt_t p)
 {
 	return _disk_reader->can_internal_playback_seek (p);
 }
 
-int
+void
 Track::internal_playback_seek (samplecnt_t p)
 {
 	return _disk_reader->internal_playback_seek (p);
@@ -524,7 +524,7 @@ Track::non_realtime_locate (samplepos_t p)
 	Route::non_realtime_locate (p);
 }
 
-int
+bool
 Track::overwrite_existing_buffers ()
 {
 	return _disk_reader->overwrite_existing_buffers ();

@@ -148,6 +148,7 @@ public:
 
 	int silent_roll (pframes_t nframes, samplepos_t start_sample, samplepos_t end_sample, bool& need_butler);
 
+	virtual bool declick_in_progress () const { return false; }
 	virtual bool can_record() { return false; }
 
 	void non_realtime_transport_stop (samplepos_t now, bool flush);
@@ -412,6 +413,7 @@ public:
 	PBD::Signal1<void,void*> SelectedChanged;
 
 	int add_aux_send (boost::shared_ptr<Route>, boost::shared_ptr<Processor>);
+	int add_foldback_send (boost::shared_ptr<Route>);
 	void remove_aux_or_listen (boost::shared_ptr<Route>);
 
 	/**
@@ -599,7 +601,6 @@ protected:
 	void catch_up_on_solo_mute_override ();
 	void set_listen (bool);
 
-	void curve_reallocate ();
 	virtual void set_block_size (pframes_t nframes);
 
 	virtual int no_roll_unlocked (pframes_t nframes, samplepos_t start_sample, samplepos_t end_sample, bool session_state_changing);

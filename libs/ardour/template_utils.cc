@@ -104,7 +104,7 @@ find_session_templates (vector<TemplateInfo>& template_names, bool read_xml)
 
 			XMLTree tree;
 			if (!tree.read (file.c_str())) {
-				cerr << "Failed to parse Route-template XML file: " << file;
+				cerr << "Failed to parse Route-template XML file: " << file << endl;
 				continue;
 			}
 
@@ -134,6 +134,12 @@ find_session_templates (vector<TemplateInfo>& template_names, bool read_xml)
 	std::sort(template_names.begin(), template_names.end());
 }
 
+struct TemplateInfoSorter {
+	bool operator () (TemplateInfo const& a, TemplateInfo const& b) {
+		return a.name < b.name;
+	}
+};
+
 void
 find_route_templates (vector<TemplateInfo>& template_names)
 {
@@ -151,7 +157,7 @@ find_route_templates (vector<TemplateInfo>& template_names)
 		XMLTree tree;
 
 		if (!tree.read (fullpath.c_str())) {
-			cerr << "Failed to parse Route-template XML file: " << fullpath;
+			cerr << "Failed to parse Route-template XML file: " << fullpath << endl;
 			continue;
 		}
 
@@ -182,6 +188,8 @@ find_route_templates (vector<TemplateInfo>& template_names)
 
 		template_names.push_back (rti);
 	}
+
+	std::sort (template_names.begin(), template_names.end (), TemplateInfoSorter ());
 }
 
 }

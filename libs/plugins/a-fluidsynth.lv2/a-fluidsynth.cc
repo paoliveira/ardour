@@ -184,23 +184,23 @@ load_sf2 (AFluidSynth* self, const char* fn)
 	}
 
 	int chn;
-	fluid_preset_t preset;
-	sfont->iteration_start (sfont);
+	fluid_preset_t *preset;
+	fluid_sfont_iteration_start (sfont);
 	pthread_mutex_lock (&self->bp_lock);
-	for (chn = 0; sfont->iteration_next (sfont, &preset); ++chn) {
+	for (chn = 0; (preset = fluid_sfont_iteration_next (sfont)); ++chn) {
 		if (chn < 16) {
 			fluid_synth_program_select (self->synth, chn, synth_id,
-					preset.get_banknum (&preset), preset.get_num (&preset));
+					fluid_preset_get_banknum (preset), fluid_preset_get_num (preset));
 		}
 #ifndef LV2_EXTENDED
 		else { break ; }
 #else
-		self->presets[preset.get_banknum (&preset)].push_back (
+		self->presets[fluid_preset_get_banknum (preset)].push_back (
 				BankProgram (
-					preset.get_name (&preset),
-					preset.get_banknum (&preset),
-					preset.get_num (&preset)));
-#endif
+					fluid_preset_get_name (preset),
+					fluid_preset_get_banknum (preset),
+					fluid_preset_get_num (preset)));
+#endif // LV2_EXTENDED
 	}
 	pthread_mutex_unlock (&self->bp_lock);
 
@@ -320,7 +320,6 @@ instantiate (const LV2_Descriptor*     descriptor,
 	}
 
 	fluid_settings_setnum (self->settings, "synth.sample-rate", rate);
-	fluid_settings_setint (self->settings, "synth.parallel-render", 1);
 	fluid_settings_setint (self->settings, "synth.threadsafe-api", 0);
 	fluid_settings_setstr (self->settings, "synth.midi-bank-select", "mma");
 
@@ -681,9 +680,9 @@ work_response (LV2_Handle  instance,
 		}
 
 		for (int chn = 0; chn < 16; ++chn) {
-			unsigned int sfid = 0;
-			unsigned int bank = 0;
-			unsigned int program = -1;
+			int sfid = 0;
+			int bank = 0;
+			int program = -1;
 			if (FLUID_OK == fluid_synth_get_program (self->synth, chn, &sfid, &bank, &program)) {
 				self->program_state[chn].bank = bank;
 				self->program_state[chn].program = program;
@@ -731,6 +730,10 @@ save (LV2_Handle                instance,
 			apath, strlen (apath) + 1,
 			self->atom_Path, LV2_STATE_IS_POD);
 
+#ifndef _WIN32 // TODO need lilv_free() -- https://github.com/drobilla/lilv/issues/14
+	free (apath);
+#endif
+
 	return LV2_STATE_SUCCESS;
 }
 
@@ -747,15 +750,32 @@ restore (LV2_Handle                  instance,
 		return LV2_STATE_ERR_UNKNOWN;
 	}
 
+	LV2_State_Map_Path* map_path = NULL;
+
+	for (int i = 0; features[i]; ++i) {
+		if (!strcmp (features[i]->URI, LV2_STATE__mapPath)) {
+			map_path = (LV2_State_Map_Path*) features[i]->data;
+		}
+	}
+
+	if (!map_path) {
+		return LV2_STATE_ERR_NO_FEATURE;
+	}
+
   size_t   size;
   uint32_t type;
   uint32_t valflags;
 
   const void* value = retrieve (handle, self->afs_sf2file, &size, &type, &valflags);
 	if (value) {
-		strncpy (self->queue_sf2_file_path, (const char*) value, 1023);
+		char* apath = map_path->absolute_path (map_path->handle, (const char*) value);
+		strncpy (self->queue_sf2_file_path, apath, 1023);
+		printf ("XXX %s -> %s\n", (const char*) value, apath);
 		self->queue_sf2_file_path[1023] = '\0';
 		self->queue_reinit = true;
+#ifndef _WIN32 // TODO need lilv_free() -- https://github.com/drobilla/lilv/issues/14
+		free (apath);
+#endif
 	}
 	return LV2_STATE_SUCCESS;
 }

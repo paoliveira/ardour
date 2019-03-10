@@ -661,6 +661,23 @@ ExportProfileManager::remove_format_profile (ExportFormatSpecPtr format)
 	FormatListChanged ();
 }
 
+void
+ExportProfileManager::revert_format_profile (ExportFormatSpecPtr format)
+{
+	FileMap::iterator it;
+	if ((it = format_file_map.find (format->id())) == format_file_map.end()) {
+		return;
+	}
+
+	XMLTree tree;
+	if (!tree.read (it->second.c_str())) {
+		return;
+	}
+
+	format->set_state (*tree.root());
+	FormatListChanged ();
+}
+
 ExportFormatSpecPtr
 ExportProfileManager::get_new_format (ExportFormatSpecPtr original)
 {
@@ -763,6 +780,13 @@ ExportProfileManager::load_format_from_disk (std::string const & path)
 
 	ExportFormatSpecPtr format = handler->add_format (*root);
 
+	if (format->format_id() == ExportFormatBase::F_FFMPEG) {
+		std::string unused;
+		if (!ArdourVideoToolPaths::transcoder_exe (unused, unused)) {
+			error << string_compose (_("Ignored format '%1': encoder is not avilable"), path) << endmsg;
+			return;
+		}
+	}
 	/* Handle id to filename mapping and don't add duplicates to list */
 
 	FilePair pair (format->id(), path);
@@ -954,6 +978,8 @@ ExportProfileManager::check_format (ExportFormatSpecPtr format, uint32_t channel
 	switch (format->type()) {
 	  case ExportFormatBase::T_Sndfile:
 		return check_sndfile_format (format, channels);
+	  case ExportFormatBase::T_FFMPEG:
+		return true;
 
 	  default:
 		throw ExportFailed (X_("Invalid format given for ExportFileFactory::check!"));

@@ -33,6 +33,7 @@
 
 #include "widgets/slider_controller.h"
 
+#include "actions.h"
 #include "ardour_window.h"
 #include "audio_clock.h"
 #include "ardour/types.h"
@@ -185,6 +186,32 @@ public:
 protected:
 	std::string _id;
 	std::string _name;
+};
+
+/** Just a Gtk Checkbutton, masquerading as an option component */
+class CheckOption : public OptionEditorComponent , public Gtkmm2ext::Activatable, public sigc::trackable
+{
+public:
+	CheckOption (std::string const &, std::string const &, Glib::RefPtr<Gtk::Action> act );
+	void set_state_from_config () {}
+	void parameter_changed (std::string const &) {}
+	void add_to_page (OptionEditorPage*);
+
+	void set_sensitive (bool yn) {
+		_button->set_sensitive (yn);
+	}
+
+	Gtk::Widget& tip_widget() { return *_button; }
+
+protected:
+	void action_toggled ();
+	void action_sensitivity_changed () {}
+	void action_visibility_changed () {}
+
+	virtual void toggled ();
+
+	Gtk::CheckButton*      _button; ///< UI button
+	Gtk::Label*            _label; ///< label for button, so we can use markup
 };
 
 /** Component which provides the UI to handle a boolean option using a GTK CheckButton */

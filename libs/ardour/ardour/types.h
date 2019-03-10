@@ -420,6 +420,12 @@ enum RegionSelectionAfterSplit {
 	ExistingNewlyCreatedBoth = 7
 };
 
+enum RangeSelectionAfterSplit {
+	ClearSel = 0,
+	PreserveSel = 1,  // bit 0
+	ForceSel = 2      // bit 1
+};
+
 enum RegionPoint {
 	Start,
 	End,
@@ -543,6 +549,7 @@ enum HeaderFormat {
 	RF64,
 	RF64_WAV,
 	MBWF,
+	FLAC,
 };
 
 struct PeakData {

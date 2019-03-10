@@ -40,6 +40,7 @@
 #include "ardour/buffer_set.h"
 #include "ardour/beats_samples_converter.h"
 #include "ardour/chan_mapping.h"
+#include "ardour/convolver.h"
 #include "ardour/dB.h"
 #include "ardour/delayline.h"
 #include "ardour/disk_reader.h"
@@ -171,7 +172,8 @@ CLASSINFO(TrackSelection);
 CLASSINFO(TrackViewList);
 
 
-CLASSKEYS(std::bitset<48ul>); // LuaSignal::LAST_SIGNAL
+/* this needs to match gtk2_ardour/luasignal.h */
+CLASSKEYS(std::bitset<49ul>); // LuaSignal::LAST_SIGNAL
 
 CLASSKEYS(void);
 CLASSKEYS(float);
@@ -1019,31 +1021,33 @@ LuaBindings::common (lua_State* L)
 		.addFunction ("pan_width_control", &Stripable::pan_width_control)
 		.addFunction ("pan_frontback_control", &Stripable::pan_frontback_control)
 		.addFunction ("pan_lfe_control", &Stripable::pan_lfe_control)
-		.addFunction ("send_level_control", &Stripable::send_level_controllable)
-		.addFunction ("send_enable_control", &Stripable::send_level_controllable)
+		.addFunction ("send_level_controllable", &Stripable::send_level_controllable)
+		.addFunction ("send_enable_controllable", &Stripable::send_enable_controllable)
 		.addFunction ("send_name", &Stripable::send_name)
 		.addFunction ("monitor_control", &Stripable::monitor_control)
-		.addFunction ("master_send_enable_control ", &Stripable::master_send_enable_controllable )
-		.addFunction ("comp_enable_control ", &Stripable::comp_enable_controllable )
-		.addFunction ("comp_threshold_control ", &Stripable::comp_threshold_controllable )
-		.addFunction ("comp_speed_control ", &Stripable::comp_speed_controllable )
-		.addFunction ("comp_mode_control ", &Stripable::comp_mode_controllable )
-		.addFunction ("comp_makeup_control ", &Stripable::comp_makeup_controllable )
-		.addFunction ("comp_redux_control ", &Stripable::comp_redux_controllable )
+		.addFunction ("master_send_enable_controllable", &Stripable::master_send_enable_controllable)
+		.addFunction ("comp_enable_controllabl", &Stripable::comp_enable_controllable)
+		.addFunction ("comp_threshold_controllable", &Stripable::comp_threshold_controllable)
+		.addFunction ("comp_speed_controllable", &Stripable::comp_speed_controllable)
+		.addFunction ("comp_mode_controllable", &Stripable::comp_mode_controllable)
+		.addFunction ("comp_makeup_controllable", &Stripable::comp_makeup_controllable)
+		.addFunction ("comp_redux_controllable", &Stripable::comp_redux_controllable)
 		.addFunction ("comp_mode_name", &Stripable::comp_mode_name)
 		.addFunction ("comp_speed_name", &Stripable::comp_speed_name)
-		.addFunction ("eq_band_cnt ", &Stripable::eq_band_cnt)
-		.addFunction ("eq_enable_control ", &Stripable::eq_enable_controllable )
+		.addFunction ("eq_band_cnt", &Stripable::eq_band_cnt)
+		.addFunction ("eq_enable_controllable", &Stripable::eq_enable_controllable)
 		.addFunction ("eq_band_name", &Stripable::eq_band_name)
-		.addFunction ("eq_gain_control", &Stripable::eq_gain_controllable)
-		.addFunction ("eq_freq_control ", &Stripable::eq_freq_controllable )
-		.addFunction ("eq_q_control ", &Stripable::eq_q_controllable )
-		.addFunction ("eq_shape_control ", &Stripable::eq_shape_controllable )
-		.addFunction ("filter_freq_controllable ", &Stripable::filter_freq_controllable )
-		.addFunction ("filter_slope_controllable ", &Stripable::filter_slope_controllable )
-		.addFunction ("filter_enable_controllable ", &Stripable::filter_enable_controllable )
+		.addFunction ("eq_gain_controllable", &Stripable::eq_gain_controllable)
+		.addFunction ("eq_freq_controllable", &Stripable::eq_freq_controllable)
+		.addFunction ("eq_q_controllable", &Stripable::eq_q_controllable)
+		.addFunction ("eq_shape_controllable", &Stripable::eq_shape_controllable)
+		.addFunction ("filter_freq_controllable", &Stripable::filter_freq_controllable)
+		.addFunction ("filter_slope_controllable", &Stripable::filter_slope_controllable)
+		.addFunction ("filter_enable_controllable", &Stripable::filter_enable_controllable)
 		.addFunction ("set_presentation_order", &Stripable::set_presentation_order)
 		.addFunction ("presentation_info_ptr", &Stripable::presentation_info_ptr)
+		.addFunction ("slaved_to", &Stripable::slaved_to)
+		.addFunction ("slaved", &Stripable::slaved)
 
 		.endClass ()
 
@@ -1053,8 +1057,6 @@ LuaBindings::common (lua_State* L)
 		.addFunction ("gain_control", &VCA::gain_control)
 		.addFunction ("solo_control", &VCA::solo_control)
 		.addFunction ("mute_control", &VCA::mute_control)
-		.addFunction ("slaved_to", &VCA::slaved_to)
-		.addFunction ("slaved", &VCA::slaved)
 		.endClass ()
 
 		.deriveWSPtrClass <Route, Stripable> ("Route")
@@ -1125,7 +1127,7 @@ LuaBindings::common (lua_State* L)
 		.addFunction ("combine", &Playlist::combine)
 		.addFunction ("uncombine", &Playlist::uncombine)
 		.addFunction ("split_region", &Playlist::split_region)
-		.addFunction ("split", (void (Playlist::*)(samplepos_t))&Playlist::split)
+		//.addFunction ("split", &Playlist::split) // XXX needs MusicSample
 		.addFunction ("cut", (boost::shared_ptr<Playlist> (Playlist::*)(std::list<AudioRange>&, bool))&Playlist::cut)
 #if 0
 		.addFunction ("copy", &Playlist::copy)
@@ -1946,6 +1948,7 @@ LuaBindings::common (lua_State* L)
 		.addConst ("RF64", ARDOUR::HeaderFormat(RF64))
 		.addConst ("RF64_WAV", ARDOUR::HeaderFormat(RF64_WAV))
 		.addConst ("MBWF", ARDOUR::HeaderFormat(MBWF))
+		.addConst ("FLAC", ARDOUR::HeaderFormat(FLAC))
 		.endNamespace ()
 
 		.beginNamespace ("InsertMergePolicy")
@@ -2034,6 +2037,12 @@ LuaBindings::common (lua_State* L)
 		.addConst ("ExistingNewlyCreatedLeft", ARDOUR::RegionSelectionAfterSplit(ExistingNewlyCreatedLeft))
 		.addConst ("ExistingNewlyCreatedRight", ARDOUR::RegionSelectionAfterSplit(ExistingNewlyCreatedRight))
 		.addConst ("ExistingNewlyCreatedBoth", ARDOUR::RegionSelectionAfterSplit(ExistingNewlyCreatedBoth))
+		.endNamespace ()
+
+		.beginNamespace ("RangeSelectionAfterSplit")
+		.addConst ("ClearSel", ARDOUR::RangeSelectionAfterSplit(ClearSel))
+		.addConst ("PreserveSel", ARDOUR::RangeSelectionAfterSplit(PreserveSel))
+		.addConst ("ForceSel", ARDOUR::RangeSelectionAfterSplit(ForceSel))
 		.endNamespace ()
 
 		.beginNamespace ("ShuttleBehaviour")
@@ -2231,8 +2240,6 @@ LuaBindings::common (lua_State* L)
 		.addFunction ("new_midi_route", &Session::new_midi_route)
 
 		.addFunction ("add_master_bus", &Session::add_master_bus)
-		.addFunction ("add_monitor_section", &Session::add_monitor_section)
-		.addFunction ("remove_monitor_section", &Session::remove_monitor_section)
 
 		.addFunction ("get_routes", &Session::get_routes)
 		.addFunction ("get_tracks", &Session::get_tracks)
@@ -2281,8 +2288,8 @@ LuaBindings::common (lua_State* L)
 		.addFunction ("cfg", &Session::cfg)
 		.addFunction ("route_groups", &Session::route_groups)
 		.addFunction ("new_route_group", &Session::new_route_group)
-		.addFunction ("end_is_free", &Session::end_is_free)
-		.addFunction ("set_end_is_free", &Session::set_end_is_free)
+		.addFunction ("session_range_is_free", &Session::session_range_is_free)
+		.addFunction ("set_session_range_is_free", &Session::set_session_range_is_free)
 		.addFunction ("remove_route_group", (void (Session::*)(RouteGroup*))&Session::remove_route_group)
 		.addFunction ("vca_manager", &Session::vca_manager_ptr)
 		.addExtCFunction ("timecode_to_sample_lua", ARDOUR::LuaAPI::timecode_to_sample_lua)
@@ -2409,6 +2416,26 @@ LuaBindings::common (lua_State* L)
 		.addRefFunction ("read", &ARDOUR::LTCReader::read)
 		.endClass ()
 
+		.beginClass <DSP::Convolver::IRSettings> ("IRSettings")
+		.addVoidConstructor ()
+		.addData ("gain", &DSP::Convolver::IRSettings::gain)
+		.addData ("pre_delay", &DSP::Convolver::IRSettings::pre_delay)
+		.addFunction ("get_channel_gain", &ARDOUR::DSP::Convolver::IRSettings::get_channel_gain)
+		.addFunction ("set_channel_gain", &ARDOUR::DSP::Convolver::IRSettings::set_channel_gain)
+		.addFunction ("get_channel_delay", &ARDOUR::DSP::Convolver::IRSettings::get_channel_delay)
+		.addFunction ("set_channel_delay", &ARDOUR::DSP::Convolver::IRSettings::set_channel_delay)
+		.endClass ()
+
+		.beginClass <DSP::Convolver> ("Convolver")
+		.addConstructor <void (*) (Session&, std::string const&, DSP::Convolver::IRChannelConfig, DSP::Convolver::IRSettings)> ()
+		.addFunction ("run", &ARDOUR::DSP::Convolver::run)
+		.addFunction ("run_stereo", &ARDOUR::DSP::Convolver::run_stereo)
+		.addFunction ("latency", &ARDOUR::DSP::Convolver::latency)
+		.addFunction ("n_inputs", &ARDOUR::DSP::Convolver::n_inputs)
+		.addFunction ("n_outputs", &ARDOUR::DSP::Convolver::n_outputs)
+		.addFunction ("ready", &ARDOUR::DSP::Convolver::ready)
+		.endClass ()
+
 		/* DSP enums */
 		.beginNamespace ("BiquadType")
 		.addConst ("LowPass", ARDOUR::DSP::Biquad::LowPass)
@@ -2433,6 +2460,12 @@ LuaBindings::common (lua_State* L)
 		.addConst ("LTC_TV_625_50", LTC_TV_625_50)
 		.addConst ("LTC_TV_1125_60", LTC_TV_1125_60)
 		.addConst ("LTC_TV_FILM_24", LTC_TV_FILM_24)
+		.endNamespace ()
+
+		.beginNamespace ("IRChannelConfig")
+		.addConst ("Mono", DSP::Convolver::Mono)
+		.addConst ("MonoToStereo", DSP::Convolver::MonoToStereo)
+		.addConst ("Stereo", DSP::Convolver::Stereo)
 		.endNamespace ()
 
 		.beginClass <DSP::DspShm> ("DspShm")
@@ -2461,7 +2494,7 @@ LuaBindings::dsp (lua_State* L)
 		.addFunction ("silence", &AudioBuffer::silence)
 		.addFunction ("apply_gain", &AudioBuffer::apply_gain)
 		.addFunction ("check_silence", &AudioBuffer::check_silence)
-		.addFunction ("read_from", (void (AudioBuffer::*)(const Sample*, samplecnt_t, samplecnt_t, samplecnt_t))&AudioBuffer::check_silence)
+		.addFunction ("read_from", (void (AudioBuffer::*)(const Sample*, samplecnt_t, samplecnt_t, samplecnt_t))&AudioBuffer::read_from)
 		.endClass()
 
 		.beginClass <MidiBuffer> ("MidiBuffer")

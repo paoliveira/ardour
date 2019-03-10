@@ -61,6 +61,8 @@
 #include "selection_memento.h"
 #include "tempo_curve.h"
 
+#include "ptformat/ptfformat.h"
+
 namespace Gtkmm2ext {
 	class Bindings;
 }
@@ -366,10 +368,6 @@ public:
 
 	void toggle_region_fades (int dir);
 	void update_region_fade_visibility ();
-
-	/* redirect shared ops menu. caller must free returned menu */
-
-	Gtk::Menu* redirect_menu ();
 
 	/* floating windows/transient */
 
@@ -712,7 +710,7 @@ private:
 	void mouse_add_new_range (samplepos_t);
 	void mouse_add_new_loop (samplepos_t);
 	void mouse_add_new_punch (samplepos_t);
-	bool choose_new_marker_name(std::string &name);
+	bool choose_new_marker_name(std::string &name, bool is_range=false);
 	void update_cd_marker_display ();
 	void ensure_cd_marker_updated (LocationMarkers * lam, ARDOUR::Location * location);
 
@@ -765,12 +763,6 @@ private:
 	Gtk::Menu track_context_menu;
 	Gtk::Menu track_region_context_menu;
 	Gtk::Menu track_selection_context_menu;
-
-	Gtk::MenuItem* region_edit_menu_split_item;
-	Gtk::MenuItem* region_edit_menu_split_multichannel_item;
-	Gtk::Menu * track_region_edit_playlist_menu;
-	Gtk::Menu * track_edit_playlist_submenu;
-	Gtk::Menu * track_selection_edit_playlist_submenu;
 
 	GdkEvent context_click_event;
 
@@ -871,21 +863,6 @@ private:
 	ArdourCanvas::Rectangle* _canvas_drop_zone;
 	bool canvas_drop_zone_event (GdkEvent* event);
 
-	enum RulerType {
-		ruler_metric_timecode = 0,
-		ruler_metric_bbt = 1,
-		ruler_metric_samples = 2,
-		ruler_metric_minsec = 3,
-
-		ruler_time_tempo = 4,
-		ruler_time_meter = 5,
-		ruler_time_marker = 6,
-		ruler_time_range_marker = 7,
-		ruler_time_transport_marker = 8,
-		ruler_time_cd_marker = 9,
-		ruler_video_timeline = 10,
-	};
-
 	Glib::RefPtr<Gtk::ToggleAction> ruler_timecode_action;
 	Glib::RefPtr<Gtk::ToggleAction> ruler_bbt_action;
 	Glib::RefPtr<Gtk::ToggleAction> ruler_samples_action;
@@ -909,8 +886,7 @@ private:
 	void update_tempo_based_rulers ();
 	void popup_ruler_menu (samplepos_t where = 0, ItemType type = RegionItem);
 	void update_ruler_visibility ();
-	void set_ruler_visible (RulerType, bool);
-	void toggle_ruler_visibility (RulerType rt);
+	void toggle_ruler_visibility ();
 	void ruler_toggled (int);
 	bool ruler_label_button_release (GdkEventButton*);
 	void store_ruler_visibility ();
@@ -977,7 +953,7 @@ private:
 
 	static double timebar_height;
 	guint32 visible_timebars;
-	Gtk::Menu          *editor_ruler_menu;
+	Gtk::Menu* editor_ruler_menu;
 
 	ArdourCanvas::Rectangle* tempo_bar;
 	ArdourCanvas::Rectangle* meter_bar;
@@ -1004,7 +980,7 @@ private:
 	Glib::RefPtr<Gtk::ToggleAction> xjadeo_proc_action;
 	Glib::RefPtr<Gtk::ToggleAction> xjadeo_ontop_action;
 	Glib::RefPtr<Gtk::ToggleAction> xjadeo_timecode_action;
-	Glib::RefPtr<Gtk::ToggleAction> xjadeo_sample_action;
+	Glib::RefPtr<Gtk::ToggleAction> xjadeo_frame_action;
 	Glib::RefPtr<Gtk::ToggleAction> xjadeo_osdbg_action;
 	Glib::RefPtr<Gtk::ToggleAction> xjadeo_fullscreen_action;
 	Glib::RefPtr<Gtk::ToggleAction> xjadeo_letterbox_action;
@@ -1346,18 +1322,6 @@ private:
 
 	void insert_region_list_selection (float times);
 
-	/* PT import */
-	void external_pt_dialog ();
-	typedef struct ptflookup {
-		uint16_t index1;
-		uint16_t index2;
-		PBD::ID  id;
-
-		bool operator ==(const struct ptflookup& other) {
-			return (this->index1 == other.index1);
-		}
-	} ptflookup_t;
-
 	/* import & embed */
 
 	void add_external_audio_action (Editing::ImportMode);
@@ -1426,6 +1390,13 @@ private:
 	/* import & embed */
 	void external_audio_dialog ();
 	void session_import_dialog ();
+
+	/* PT import specific */
+	void external_pt_dialog ();
+	ARDOUR::ImportStatus import_pt_status;
+	static void *_import_pt_thread (void *);
+	void* import_pt_thread ();
+	PTFFormat import_ptf;
 
 	/* import specific info */
 
@@ -1728,15 +1699,14 @@ private:
 	void build_tempo_marker_menu (TempoMarker *, bool);
 	void build_meter_marker_menu (MeterMarker *, bool);
 	void build_new_transport_marker_menu ();
+
 	void dynamic_cast_marker_object (void*, MeterMarker**, TempoMarker**) const;
 
 	Gtk::Menu* tempo_marker_menu;
 	Gtk::Menu* meter_marker_menu;
 	Gtk::Menu* marker_menu;
 	Gtk::Menu* range_marker_menu;
-	Gtk::Menu* transport_marker_menu;
 	Gtk::Menu* new_transport_marker_menu;
-	Gtk::Menu* cd_marker_menu;
 	ArdourCanvas::Item* marker_menu_item;
 
 	typedef std::list<ArdourMarker*> Marks;
@@ -1800,6 +1770,8 @@ private:
 	bool                     ignore_mouse_mode_toggle;
 
 	bool                     mouse_select_button_release (GdkEventButton*);
+
+	Glib::RefPtr<Gtk::Action> get_mouse_mode_action (Editing::MouseMode m) const;
 
 	Gtk::VBox                automation_box;
 	Gtk::Button              automation_mode_button;
@@ -2320,8 +2292,6 @@ private:
 	Glib::RefPtr<Gtk::Action> reg_sens (Glib::RefPtr<Gtk::ActionGroup> group, char const * name, char const * label, sigc::slot<void> slot);
 	void toggle_reg_sens (Glib::RefPtr<Gtk::ActionGroup> group, char const * name, char const * label, sigc::slot<void> slot);
 	void radio_reg_sens (Glib::RefPtr<Gtk::ActionGroup> action_group, Gtk::RadioAction::Group& radio_group, char const * name, char const * label, sigc::slot<void> slot);
-
-	Gtkmm2ext::ActionMap myactions;
 
 	friend class Drag;
 	friend class RegionCutDrag;

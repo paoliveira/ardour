@@ -100,6 +100,9 @@ public:
 	XMLNode& get_action_state (void);
 	XMLNode& get_hook_state (void);
 
+	int load_state ();
+	int save_state ();
+
 	bool interactive_add (ARDOUR::LuaScriptInfo::ScriptType, int);
 
 	/* actions */
@@ -123,6 +126,7 @@ public:
 	bool lua_slot (const PBD::ID&, std::string&, std::string&, ActionHook&, ARDOUR::LuaScriptParamList&);
 	sigc::signal<void,PBD::ID,std::string,ActionHook> SlotChanged;
 
+	static PBD::Signal0<void> LuaTimerS; // deci-seconds (Timer every 1s)
 	static PBD::Signal0<void> LuaTimerDS; // deci-seconds (Timer every .1s)
 	static PBD::Signal0<void> SetSession; // emitted when a session is loaded
 
@@ -131,6 +135,7 @@ private:
 	static LuaInstance* _instance;
 
 	void init ();
+	void set_dirty ();
 	void session_going_away ();
 
 	LuaState lua;
@@ -147,6 +152,9 @@ private:
 
 	LuaCallbackMap _callbacks;
 	PBD::ScopedConnectionList _slotcon;
+
+	void every_second ();
+	sigc::connection second_connection;
 
 	void every_point_one_seconds ();
 	sigc::connection point_one_second_connection;

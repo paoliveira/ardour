@@ -460,7 +460,7 @@ MackieControlProtocolGUI::build_available_action_menu ()
 	NodeMap nodes;
 	NodeMap::iterator r;
 
-	Gtkmm2ext::ActionMap::get_all_actions (paths, labels, tooltips, keys, actions);
+	ActionManager::get_all_actions (paths, labels, tooltips, keys, actions);
 
 	vector<string>::iterator k;
 	vector<string>::iterator p;
@@ -508,13 +508,11 @@ MackieControlProtocolGUI::build_available_action_menu ()
 		}
 
 		//kinda kludgy way to avoid displaying menu items as mappable
-		if ( parts[1] == _("Main_menu") )
+		if ( parts[1] == _("Main Menu") )
 			continue;
 		if ( parts[1] == _("JACK") )
 			continue;
 		if ( parts[1] == _("redirectmenu") )
-			continue;
-		if ( parts[1] == _("Editor_menus") )
 			continue;
 		if ( parts[1] == _("RegionList") )
 			continue;
@@ -639,7 +637,7 @@ MackieControlProtocolGUI::refresh_function_key_editor ()
 					row[function_key_columns.plain] = action;
 				} else {
 
-					act = ActionManager::get_action (action.c_str());
+					act = ActionManager::get_action (action, false);
 					if (act) {
 						row[function_key_columns.plain] = act->get_label();
 					} else {
@@ -663,7 +661,7 @@ MackieControlProtocolGUI::refresh_function_key_editor ()
 					/* Probably a key alias */
 					row[function_key_columns.shift] = action;
 				} else {
-					act = ActionManager::get_action (action.c_str());
+					act = ActionManager::get_action (action, false);
 					if (act) {
 						row[function_key_columns.shift] = act->get_label();
 					} else {
@@ -681,7 +679,7 @@ MackieControlProtocolGUI::refresh_function_key_editor ()
 				/* Probably a key alias */
 				row[function_key_columns.control] = action;
 			} else {
-				act = ActionManager::get_action (action.c_str());
+				act = ActionManager::get_action (action, false);
 				if (act) {
 					row[function_key_columns.control] = act->get_label();
 				} else {
@@ -698,7 +696,7 @@ MackieControlProtocolGUI::refresh_function_key_editor ()
 				/* Probably a key alias */
 				row[function_key_columns.option] = action;
 			} else {
-				act = ActionManager::get_action (action.c_str());
+				act = ActionManager::get_action (action, false);
 				if (act) {
 					row[function_key_columns.option] = act->get_label();
 				} else {
@@ -715,7 +713,7 @@ MackieControlProtocolGUI::refresh_function_key_editor ()
 				/* Probably a key alias */
 				row[function_key_columns.cmdalt] = action;
 			} else {
-				act = ActionManager::get_action (action.c_str());
+				act = ActionManager::get_action (action, false);
 				if (act) {
 					row[function_key_columns.cmdalt] = act->get_label();
 				} else {
@@ -728,7 +726,7 @@ MackieControlProtocolGUI::refresh_function_key_editor ()
 		if (action.empty()) {
 			row[function_key_columns.shiftcontrol] = defstring;
 		} else {
-			act = ActionManager::get_action (action.c_str());
+			act = ActionManager::get_action (action, false);
 			if (act) {
 				row[function_key_columns.shiftcontrol] = act->get_label();
 			} else {
@@ -760,7 +758,7 @@ MackieControlProtocolGUI::action_changed (const Glib::ustring &sPath, const Glib
 				return;
 			}
 		}
-		Glib::RefPtr<Gtk::Action> act = ActionManager::get_action (i->second.c_str());
+		Glib::RefPtr<Gtk::Action> act = ActionManager::get_action (i->second, false);
 
 		if (act || remove) {
 			/* update visible text, using string supplied by

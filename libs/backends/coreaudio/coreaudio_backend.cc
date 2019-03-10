@@ -914,12 +914,6 @@ CoreAudioBackend::my_name () const
 	return _instance_name;
 }
 
-bool
-CoreAudioBackend::available () const
-{
-	return _run && _active_fw && _active_ca;
-}
-
 uint32_t
 CoreAudioBackend::port_name_size () const
 {
@@ -955,6 +949,16 @@ CoreAudioBackend::get_port_name (PortEngine::PortHandle port) const
 		return std::string ();
 	}
 	return static_cast<CoreBackendPort*>(port)->name ();
+}
+
+PortFlags
+CoreAudioBackend::get_port_flags (PortEngine::PortHandle port) const
+{
+	if (!valid_port (port)) {
+		PBD::warning << _("CoreAudioBackend::get_port_flags: Invalid Port(s)") << endmsg;
+		return PortFlags (0);
+	}
+	return static_cast<CoreBackendPort*>(port)->flags ();
 }
 
 int

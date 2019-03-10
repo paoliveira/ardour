@@ -43,6 +43,7 @@
 #include "pbd/file_utils.h"
 #include "pbd/stacktrace.h"
 
+#include "ardour/audioengine.h"
 #include "ardour/filesystem_paths.h"
 #include "ardour/search_paths.h"
 
@@ -51,6 +52,8 @@
 
 #include "canvas/item.h"
 
+#include "actions.h"
+#include "context_menu_helper.h"
 #include "debug.h"
 #include "public_editor.h"
 #include "keyboard.h"
@@ -98,6 +101,38 @@ ARDOUR_UI_UTILS::just_hide_it (GdkEventAny */*ev*/, Gtk::Window *win)
 	win->hide ();
 	return 0;
 }
+
+static bool
+idle_notify_engine_stopped ()
+{
+	Glib::RefPtr<ToggleAction> tact = ActionManager::get_toggle_action ("Window", "toggle-audio-midi-setup");
+
+	MessageDialog msg (
+			_("The current operation is not possible because of an error communicating with the audio hardware."),
+			false, Gtk::MESSAGE_WARNING, Gtk::BUTTONS_NONE, true);
+
+	msg.add_button (_("Cancel"), Gtk::RESPONSE_CANCEL);
+
+	if (tact && !tact->get_active()) {
+		msg.add_button (_("Configure Hardware"), Gtk::RESPONSE_OK);
+	}
+
+	if (msg.run () == Gtk::RESPONSE_OK) {
+		tact->set_active ();
+	}
+	return false; /* do not call again */
+}
+
+bool
+ARDOUR_UI_UTILS::engine_is_running ()
+{
+	if (ARDOUR::AudioEngine::instance()->running ()) {
+		return true;
+	}
+	Glib::signal_idle().connect (sigc::ptr_fun (&idle_notify_engine_stopped));
+	return false;
+}
+
 
 /* xpm2rgb copied from nixieclock, which bore the legend:
 
@@ -781,4 +816,10 @@ ARDOUR_UI_UTILS::running_from_source_tree ()
 {
 	gchar const *x = g_getenv ("ARDOUR_THEMES_PATH");
 	return x && (string (x).find ("gtk2_ardour") != string::npos);
+}
+
+Gtk::Menu*
+ARDOUR_UI_UTILS::shared_popup_menu ()
+{
+	return ARDOUR_UI::instance()->shared_popup_menu ();
 }

@@ -430,7 +430,7 @@ EngineControl::on_show ()
 void
 EngineControl::on_map ()
 {
-	if (!ARDOUR_UI::instance()->session_loaded && !PublicEditor::_instance) {
+	if (!ARDOUR_UI::instance()->the_session () && !PublicEditor::_instance) {
 		set_type_hint (Gdk::WINDOW_TYPE_HINT_NORMAL);
 	} else if (UIConfiguration::instance().get_all_floating_windows_are_dialogs()) {
 		set_type_hint (Gdk::WINDOW_TYPE_HINT_DIALOG);
@@ -816,7 +816,7 @@ EngineControl::update_sensitivity ()
 	if (get_popdown_string_count (sample_rate_combo) > 0) {
 		bool allow_to_set_rate = false;
 		if (!engine_running) {
-			if (!ARDOUR_UI::instance()->session_loaded) {
+			if (!ARDOUR_UI::instance()->the_session ()) {
 				// engine is not running, no session loaded -> anything goes.
 				allow_to_set_rate = true;
 			} else if (_desired_sample_rate > 0 && get_rate () != _desired_sample_rate) {
@@ -902,6 +902,18 @@ EngineControl::midi_latency_adjustment_changed (Gtk::Adjustment *a, MidiDeviceSe
 	} else {
 		device->output_latency = a->get_value();
 	}
+
+	if (ARDOUR::AudioEngine::instance()->running() && !_measure_midi) {
+		boost::shared_ptr<ARDOUR::AudioBackend> backend = ARDOUR::AudioEngine::instance()->current_backend();
+		assert (backend);
+		if (backend->can_change_systemic_latency_when_running () && device->enabled) {
+			if (for_input) {
+				backend->set_systemic_midi_input_latency (device->name, device->input_latency);
+			} else {
+				backend->set_systemic_midi_output_latency (device->name, device->output_latency);
+			}
+		}
+	}
 }
 
 void
@@ -909,6 +921,16 @@ EngineControl::midi_device_enabled_toggled (ArdourButton *b, MidiDeviceSettings 
 	b->set_active (!b->get_active());
 	device->enabled = b->get_active();
 	refresh_midi_display(device->name);
+
+	if (ARDOUR::AudioEngine::instance()->running()) {
+		boost::shared_ptr<ARDOUR::AudioBackend> backend = ARDOUR::AudioEngine::instance()->current_backend();
+		assert (backend);
+		backend->set_midi_device_enabled (device->name, device->enabled);
+		if (backend->can_change_systemic_latency_when_running () && device->enabled) {
+			backend->set_systemic_midi_input_latency (device->name, device->input_latency);
+			backend->set_systemic_midi_output_latency (device->name, device->output_latency);
+		}
+	}
 }
 
 void
@@ -1364,8 +1386,15 @@ EngineControl::set_samplerate_popdown_strings ()
 	if (!s.empty()) {
 		if (ARDOUR::AudioEngine::instance()->running()) {
 			sample_rate_combo.set_active_text (rate_as_string (backend->sample_rate()));
-		}
-		else if (desired.empty ()) {
+		} else if (ARDOUR_UI::instance()->the_session ()) {
+			float active_sr = ARDOUR_UI::instance()->the_session()->nominal_sample_rate ();
+
+			if (std::find (sr.begin (), sr.end (), active_sr) == sr.end ()) {
+				active_sr = sr.front ();
+			}
+
+			sample_rate_combo.set_active_text (rate_as_string (active_sr));
+		} else if (desired.empty ()) {
 			float new_active_sr = backend->default_sample_rate ();
 
 			if (std::find (sr.begin (), sr.end (), new_active_sr) == sr.end ()) {
@@ -1376,7 +1405,6 @@ EngineControl::set_samplerate_popdown_strings ()
 		} else {
 			sample_rate_combo.set_active_text (desired);
 		}
-
 	}
 	update_sensitivity ();
 }
@@ -1874,7 +1902,7 @@ EngineControl::maybe_display_saved_state ()
 		DEBUG_ECONTROL ("Restoring saved state");
 		PBD::Unwinder<uint32_t> protect_ignore_changes (ignore_changes, ignore_changes + 1);
 
-		if (!_desired_sample_rate) {
+		if (0 == _desired_sample_rate && sample_rate_combo.get_sensitive ()) {
 			sample_rate_combo.set_active_text (rate_as_string (state->sample_rate));
 		}
 		set_active_text_if_present (buffer_size_combo, bufsize_as_string (state->buffer_size));
@@ -2199,7 +2227,7 @@ EngineControl::set_current_state (const State& state)
 	device_combo.set_active_text (state->device);
 	input_device_combo.set_active_text (state->input_device);
 	output_device_combo.set_active_text (state->output_device);
-	if (!_desired_sample_rate) {
+	if (0 == _desired_sample_rate && sample_rate_combo.get_sensitive ()) {
 		sample_rate_combo.set_active_text (rate_as_string (state->sample_rate));
 	}
 	set_active_text_if_present (buffer_size_combo, bufsize_as_string (state->buffer_size));
@@ -2678,13 +2706,13 @@ EngineControl::start_stop_button_clicked ()
 	if (ARDOUR::AudioEngine::instance()->running()) {
 		ARDOUR::AudioEngine::instance()->stop ();
 	} else {
-		if (!ARDOUR_UI::instance()->session_loaded) {
+		if (!ARDOUR_UI::instance()->the_session ()) {
 			pop_splash ();
 			hide ();
 			ARDOUR::GUIIdle ();
 		}
 		start_engine ();
-		if (!ARDOUR_UI::instance()->session_loaded) {
+		if (!ARDOUR_UI::instance()->the_session ()) {
 			ArdourDialog::on_response (RESPONSE_OK);
 		}
 	}
@@ -3092,8 +3120,19 @@ EngineControl::device_list_changed ()
 		return;
 	}
 	PBD::Unwinder<uint32_t> protect_ignore_changes (ignore_changes, ignore_changes + 1); // ??
-	list_devices ();
+	if (!ARDOUR::AudioEngine::instance()->running()) {
+		list_devices ();
+	}
+
 	midi_option_changed();
+
+	if (notebook.get_current_page() == midi_tab) {
+		if (_midi_devices.empty ()) {
+			notebook.set_current_page (0);
+		} else {
+			refresh_midi_display ();
+		}
+	}
 }
 
 void
@@ -3102,13 +3141,13 @@ EngineControl::connect_disconnect_click()
 	if (ARDOUR::AudioEngine::instance()->running()) {
 		stop_engine ();
 	} else {
-		if (!ARDOUR_UI::instance()->session_loaded) {
+		if (!ARDOUR_UI::instance()->the_session ()) {
 			pop_splash ();
 			hide ();
 			ARDOUR::GUIIdle ();
 		}
 		start_engine ();
-		if (!ARDOUR_UI::instance()->session_loaded) {
+		if (!ARDOUR_UI::instance()->the_session ()) {
 			ArdourDialog::on_response (RESPONSE_OK);
 		}
 	}

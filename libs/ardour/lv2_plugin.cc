@@ -37,6 +37,7 @@
 #include "pbd/compose.h"
 #include "pbd/error.h"
 #include "pbd/locale_guard.h"
+#include "pbd/pthread_utils.h"
 #include "pbd/replace_all.h"
 #include "pbd/xml++.h"
 
@@ -370,6 +371,7 @@ LV2Plugin::LV2Plugin (AudioEngine& engine,
 	, _no_sample_accurate_ctrl (false)
 {
 	init(c_plugin, rate);
+	latency_compute_run();
 }
 
 LV2Plugin::LV2Plugin (const LV2Plugin& other)
@@ -387,10 +389,16 @@ LV2Plugin::LV2Plugin (const LV2Plugin& other)
 {
 	init(other._impl->plugin, other._sample_rate);
 
+	XMLNode root (other.state_node_name ());
+	other.add_state (&root);
+	set_state (root, Stateful::loading_state_version);
+
 	for (uint32_t i = 0; i < parameter_count(); ++i) {
 		_control_data[i] = other._shadow_data[i];
 		_shadow_data[i]  = other._shadow_data[i];
 	}
+
+	latency_compute_run();
 }
 
 void
@@ -495,6 +503,8 @@ LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 	LV2_URID atom_Int = _uri_map.uri_to_id(LV2_ATOM__Int);
 	static const int32_t _min_block_length = 1;   // may happen during split-cycles
 	static const int32_t _max_block_length = 8192; // max possible (with all engines and during export)
+	static const int32_t rt_policy = PBD_SCHED_FIFO;
+	static const int32_t rt_priority = pbd_absolute_rt_priority (PBD_SCHED_FIFO, AudioEngine::instance()->client_real_time_priority () - 2);
 	/* Consider updating max-block-size whenever the buffersize changes.
 	 * It requires re-instantiating the plugin (which is a non-realtime operation),
 	 * so it should be done lightly and only for plugins that require it.
@@ -511,6 +521,10 @@ LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 		  sizeof(int32_t), atom_Int, &_seq_size },
 		{ LV2_OPTIONS_INSTANCE, 0, _uri_map.uri_to_id("http://lv2plug.in/ns/ext/buf-size#nominalBlockLength"),
 		  sizeof(int32_t), atom_Int, &_impl->block_length },
+		{ LV2_OPTIONS_INSTANCE, 0, _uri_map.uri_to_id("http://ardour.org/lv2/threads/#schedPolicy"),
+		  sizeof(int32_t), atom_Int, &rt_policy },
+		{ LV2_OPTIONS_INSTANCE, 0, _uri_map.uri_to_id("http://ardour.org/lv2/threads/#schedPriority"),
+		  sizeof(int32_t), atom_Int, &rt_priority },
 		{ LV2_OPTIONS_INSTANCE, 0, 0, 0, 0, NULL }
 	};
 
@@ -646,7 +660,6 @@ LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 	lilv_nodes_free(optional_features);
 #endif
 
-#ifdef HAVE_LILV_0_16_0
 	// Load default state
 	if (_worker) {
 		/* immediately schedule any work,
@@ -661,7 +674,6 @@ LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 		lilv_state_restore(state, _impl->instance, NULL, NULL, 0, NULL);
 	}
 	lilv_state_free(state);
-#endif
 
 	_sample_rate = rate;
 
@@ -812,6 +824,8 @@ LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 				if (params[i]) {
 					*params[i] = (void*)&_shadow_data[i];
 				}
+			} else {
+				_shadow_data[i] = 0;
 			}
 		} else {
 			_defaults[i] = 0.0f;
@@ -868,7 +882,6 @@ LV2Plugin::init(const void* c_plugin, samplecnt_t rate)
 
 	load_supported_properties(_property_descriptors);
 	allocate_atom_event_buffers();
-	latency_compute_run();
 }
 
 int
@@ -1439,38 +1452,39 @@ LV2Plugin::add_state(XMLNode* root) const
 	}
 }
 
-// TODO: Once we can rely on lilv 0.16.0, lilv_world_get can replace this
 static LilvNode*
 get_value(LilvWorld* world, const LilvNode* subject, const LilvNode* predicate)
 {
-	LilvNodes* vs = lilv_world_find_nodes(world, subject, predicate, NULL);
-	if (vs) {
-		LilvNode* node = lilv_node_duplicate(lilv_nodes_get_first(vs));
-		lilv_nodes_free(vs);
-		return node;
-	}
-	return NULL;
+	return lilv_world_get(world, subject, predicate, NULL);
 }
 
 void
 LV2Plugin::find_presets()
 {
+	/* see also LV2PluginInfo::get_presets */
 	LilvNode* lv2_appliesTo = lilv_new_uri(_world.world, LV2_CORE__appliesTo);
 	LilvNode* pset_Preset   = lilv_new_uri(_world.world, LV2_PRESETS__Preset);
 	LilvNode* rdfs_label    = lilv_new_uri(_world.world, LILV_NS_RDFS "label");
+	LilvNode* rdfs_comment  = lilv_new_uri(_world.world, LILV_NS_RDFS "comment");
 
 	LilvNodes* presets = lilv_plugin_get_related(_impl->plugin, pset_Preset);
 	LILV_FOREACH(nodes, i, presets) {
 		const LilvNode* preset = lilv_nodes_get(presets, i);
 		lilv_world_load_resource(_world.world, preset);
 		LilvNode* name = get_value(_world.world, preset, rdfs_label);
-		bool userpreset = true; // TODO
+		LilvNode* comment = get_value(_world.world, preset, rdfs_comment);
+		/* TODO properly identify user vs factory presets.
+		 * here's an indirect condition: only factory presets can have comments
+		 */
+		bool userpreset = comment ? false : true;
 		if (name) {
 			_presets.insert(std::make_pair(lilv_node_as_string(preset),
 			                               Plugin::PresetRecord(
 				                               lilv_node_as_string(preset),
 				                               lilv_node_as_string(name),
-				                               userpreset)));
+				                               userpreset,
+				                               comment ? lilv_node_as_string (comment) : ""
+			                               )));
 			lilv_node_free(name);
 		} else {
 			warning << string_compose(
@@ -1478,9 +1492,13 @@ LV2Plugin::find_presets()
 			    lilv_node_as_string(lilv_plugin_get_uri(_impl->plugin)),
 			    lilv_node_as_string(preset)) << endmsg;
 		}
+		if (comment) {
+			lilv_node_free(comment);
+		}
 	}
 	lilv_nodes_free(presets);
 
+	lilv_node_free(rdfs_comment);
 	lilv_node_free(rdfs_label);
 	lilv_node_free(pset_Preset);
 	lilv_node_free(lv2_appliesTo);
@@ -1584,7 +1602,6 @@ LV2Plugin::do_save_preset(string name)
 		Glib::build_filename(".lv2", prefix + "_" + base_name + ".lv2"));
 #endif
 
-#ifdef HAVE_LILV_0_21_3
 	/* delete reference to old preset (if any) */
 	const PresetRecord* r = preset_by_label(name);
 	if (r) {
@@ -1594,7 +1611,6 @@ LV2Plugin::do_save_preset(string name)
 			lilv_node_free(pset);
 		}
 	}
-#endif
 
 	LilvState* state = lilv_state_new_from_instance(
 		_impl->plugin,
@@ -1626,10 +1642,8 @@ LV2Plugin::do_save_preset(string name)
 	std::string uri = Glib::filename_to_uri(Glib::build_filename(bundle, file_name));
 	LilvNode *node_bundle = lilv_new_uri(_world.world, Glib::filename_to_uri(Glib::build_filename(bundle, "/")).c_str());
 	LilvNode *node_preset = lilv_new_uri(_world.world, uri.c_str());
-#ifdef HAVE_LILV_0_21_3
 	lilv_world_unload_resource(_world.world, node_preset);
 	lilv_world_unload_bundle(_world.world, node_bundle);
-#endif
 	lilv_world_load_bundle(_world.world, node_bundle);
 	lilv_world_load_resource(_world.world, node_preset);
 	lilv_node_free(node_bundle);
@@ -1641,7 +1655,6 @@ LV2Plugin::do_save_preset(string name)
 void
 LV2Plugin::do_remove_preset(string name)
 {
-#ifdef HAVE_LILV_0_21_3
 	/* Look up preset record by label (FIXME: ick, label as ID) */
 	const PresetRecord* r = preset_by_label(name);
 	if (!r) {
@@ -1667,11 +1680,6 @@ LV2Plugin::do_remove_preset(string name)
 
 	lilv_state_free(state);
 	lilv_node_free(pset);
-#endif
-	/* Without lilv_state_delete(), we could delete the preset file, but this
-	   would leave a broken bundle/manifest around, so the preset would still
-	   be visible, but broken.  Naively deleting a bundle is too dangerous, so
-	   we simply do not support preset deletion with older Lilv */
 }
 
 bool
@@ -1990,6 +1998,16 @@ LV2Plugin::load_supported_properties(PropertyDescriptors& descs)
 		lilv_node_free(range);
 	}
 	lilv_nodes_free(properties);
+}
+
+Variant
+LV2Plugin::get_property_value (uint32_t prop_id) const
+{
+	std::map<uint32_t, Variant>::const_iterator it;
+	if ((it = _property_values.find (prop_id)) == _property_values.end()) {
+		return Variant();
+	}
+	return it->second;
 }
 
 void
@@ -2370,7 +2388,7 @@ LV2Plugin::max_latency () const
 }
 
 samplecnt_t
-LV2Plugin::signal_latency() const
+LV2Plugin::plugin_latency() const
 {
 	if (_latency_control_port) {
 		return (samplecnt_t)floor(*_latency_control_port);
@@ -2568,7 +2586,7 @@ write_position(LV2_Atom_Forge*     forge,
 int
 LV2Plugin::connect_and_run(BufferSet& bufs,
 		samplepos_t start, samplepos_t end, double speed,
-		ChanMapping in_map, ChanMapping out_map,
+		ChanMapping const& in_map, ChanMapping const& out_map,
 		pframes_t nframes, samplecnt_t offset)
 {
 	DEBUG_TRACE(DEBUG::LV2, string_compose("%1 run %2 offset %3\n", name(), nframes, offset));
@@ -2944,6 +2962,7 @@ LV2Plugin::connect_and_run(BufferSet& bufs,
 								// Emit PropertyChanged signal for UI
 								// TODO: This should emit the control's Changed signal
 								PropertyChanged(prop_id, Variant(Variant::PATH, path));
+								_property_values[prop_id] = Variant(Variant::PATH, path);
 							} else {
 								std::cerr << "warning: patch:Set for unknown property" << std::endl;
 							}
@@ -3406,19 +3425,28 @@ LV2PluginInfo::get_presets (bool /*user_only*/) const
 	LilvNode* lv2_appliesTo = lilv_new_uri(_world.world, LV2_CORE__appliesTo);
 	LilvNode* pset_Preset   = lilv_new_uri(_world.world, LV2_PRESETS__Preset);
 	LilvNode* rdfs_label    = lilv_new_uri(_world.world, LILV_NS_RDFS "label");
+	LilvNode* rdfs_comment  = lilv_new_uri(_world.world, LILV_NS_RDFS "comment");
 
 	LilvNodes* presets = lilv_plugin_get_related(lp, pset_Preset);
 	LILV_FOREACH(nodes, i, presets) {
 		const LilvNode* preset = lilv_nodes_get(presets, i);
 		lilv_world_load_resource(_world.world, preset);
 		LilvNode* name = get_value(_world.world, preset, rdfs_label);
-		bool userpreset = true; // TODO
+		LilvNode* comment = get_value(_world.world, preset, rdfs_comment);
+		/* TODO properly identify user vs factory presets.
+		 * here's an indirect condition: only factory presets can have comments
+		 */
+		bool userpreset = comment ? false : true;
 		if (name) {
-			p.push_back (Plugin::PresetRecord (lilv_node_as_string(preset), lilv_node_as_string(name), userpreset));
+			p.push_back (Plugin::PresetRecord (lilv_node_as_string(preset), lilv_node_as_string(name), userpreset, comment ? lilv_node_as_string (comment) : ""));
 			lilv_node_free(name);
+		}
+		if (comment) {
+			lilv_node_free(comment);
 		}
 	}
 	lilv_nodes_free(presets);
+	lilv_node_free(rdfs_comment);
 	lilv_node_free(rdfs_label);
 	lilv_node_free(pset_Preset);
 	lilv_node_free(lv2_appliesTo);

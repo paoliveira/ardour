@@ -270,11 +270,11 @@ class AlsaAudioBackend : public AudioBackend {
 
 		void* private_handle () const;
 		const std::string& my_name () const;
-		bool available () const;
 		uint32_t port_name_size () const;
 
 		int         set_port_name (PortHandle, const std::string&);
 		std::string get_port_name (PortHandle) const;
+		PortFlags get_port_flags (PortHandle) const;
 		PortHandle  get_port_by_name (const std::string&) const;
 
 		int get_port_property (PortHandle, const std::string& key, std::string& value, std::string& type) const;
@@ -374,8 +374,8 @@ class AlsaAudioBackend : public AudioBackend {
 			bool     enabled;
 			uint32_t systemic_input_latency;
 			uint32_t systemic_output_latency;
-			AlsaMidiDeviceInfo()
-				: enabled (true)
+			AlsaMidiDeviceInfo (bool en = true)
+				: enabled (en)
 				, systemic_input_latency (0)
 				, systemic_output_latency (0)
 			{}
@@ -383,6 +383,17 @@ class AlsaAudioBackend : public AudioBackend {
 
 		mutable std::map<std::string, struct AlsaMidiDeviceInfo *> _midi_devices;
 		struct AlsaMidiDeviceInfo * midi_device_info(std::string const) const;
+
+		/* midi device changes */
+		void auto_update_midi_devices();
+		bool listen_for_midi_device_changes ();
+		void stop_listen_for_midi_device_changes ();
+		void midi_device_thread ();
+		static void* _midi_device_thread (void *arg);
+		pthread_t _midi_device_thread_id;
+		bool _midi_device_thread_active;
+
+		pthread_mutex_t _device_port_mutex;
 
 		/* processing */
 		float  _dsp_load;
@@ -433,9 +444,6 @@ class AlsaAudioBackend : public AudioBackend {
 
 		std::vector<AlsaMidiOut *> _rmidi_out;
 		std::vector<AlsaMidiIn  *> _rmidi_in;
-
-		unsigned _midi_ins;
-		unsigned _midi_outs;
 
 		struct PortConnectData {
 			std::string a;

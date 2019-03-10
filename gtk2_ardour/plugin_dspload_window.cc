@@ -121,6 +121,11 @@ PluginDSPLoadWindow::refill_processors ()
 		/* may be called from session d'tor, removing monitor-section w/plugin */
 		return;
 	}
+
+	_session->RouteAdded.connect (
+			_route_connections, invalidator (*this), boost::bind (&PluginDSPLoadWindow::refill_processors, this), gui_context()
+			);
+
 	RouteList routes = _session->get_routelist ();
 	for (RouteList::const_iterator i = routes.begin(); i != routes.end(); ++i) {
 
@@ -131,7 +136,7 @@ PluginDSPLoadWindow::refill_processors ()
 				);
 
 		(*i)->DropReferences.connect (
-				_route_connections, invalidator (*this), boost::bind (&PluginDSPLoadWindow::drop_references, this), gui_context()
+				_route_connections, invalidator (*this), boost::bind (&PluginDSPLoadWindow::refill_processors, this), gui_context()
 				);
 	}
 
@@ -149,10 +154,10 @@ PluginDSPLoadWindow::add_processor_to_display (boost::weak_ptr<Processor> w, std
 {
 	boost::shared_ptr<Processor> p = w.lock ();
 	boost::shared_ptr<PluginInsert> pi = boost::dynamic_pointer_cast<PluginInsert> (p);
-	if (!pi) {
+	if (!pi || !pi->provides_stats ()) {
 		return;
 	}
-	p->DropReferences.connect (_processor_connections, MISSING_INVALIDATOR, boost::bind (&PluginDSPLoadWindow::drop_references, this), gui_context());
+	p->DropReferences.connect (_processor_connections, MISSING_INVALIDATOR, boost::bind (&PluginDSPLoadWindow::refill_processors, this), gui_context());
 	PluginLoadStatsGui* plsg = new PluginLoadStatsGui (pi);
 	
 	std::string name = route_name + " - " + pi->name();

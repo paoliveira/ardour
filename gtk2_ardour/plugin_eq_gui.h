@@ -15,7 +15,6 @@
     You should have received a copy of the GNU General Public License
     along with this program; if not, write to the Free Software
     Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
 */
 
 #ifndef __ardour_plugin_eq_gui_h
@@ -79,10 +78,9 @@ private:
 
 	void plot_signal_amplitude_difference (Gtk::Widget *,cairo_t *);
 
-	void update_pointer_info(float, float);
+	void update_pointer_info(float);
 	bool analysis_area_mouseover(GdkEventMotion *);
 	bool analysis_area_mouseexit(GdkEventCrossing *);
-	bool analysis_area_mousedown(GdkEventButton *);
 
 	// Helpers
 	bool timeout_callback ();
@@ -100,13 +98,13 @@ private:
 	float _log_coeff;
 	float _log_max;
 
+	ARDOUR::samplecnt_t _block_size;
 	ARDOUR::samplecnt_t _buffer_size;
 	ARDOUR::samplecnt_t _signal_buffer_size;
 
 	// buffers
 	ARDOUR::BufferSet _bufferset;
 	ARDOUR::BufferSet _collect_bufferset;
-
 
 	// dimensions
 	float _analysis_width;
@@ -123,6 +121,8 @@ private:
 	Gtk::DrawingArea *_analysis_area;
 	cairo_surface_t *_analysis_scale_surface;
 	Gtk::Label *_pointer_info;
+	int _pointer_in_area_xpos;
+	int _pointer_in_area_freq;
 
 	// dB scale selection:
 	class dBSelectionColumns : public Gtk::TreeModel::ColumnRecord
@@ -154,4 +154,3 @@ private:
 };
 
 #endif
-

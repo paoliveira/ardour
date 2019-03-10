@@ -1208,7 +1208,8 @@ Session::state (bool save_template, snapshot_t snapshot_type, bool only_used_ass
 			child = node->add_child ("Path");
 			child->add_content (p);
 		}
-		node->set_property ("end-is-free", _session_range_end_is_free);
+		node->set_property ("end-is-free", _session_range_is_free);  //deprecated, but keep storing this value for compatibility with prior v5.
+		node->set_property ("session-range-is-free", _session_range_is_free);
 	}
 
 	/* save the ID counter */
@@ -1559,7 +1560,9 @@ Session::set_state (const XMLNode& node, int version)
 
 	setup_raid_path(_session_dir->root_path());
 
-	node.get_property (X_("end-is-free"), _session_range_end_is_free);
+	node.get_property (X_("end-is-free"), _session_range_is_free);  //deprectated, but use old values if they are in the config
+
+	node.get_property (X_("session-range-is-free"), _session_range_is_free);
 
 	uint64_t counter;
 	if (node.get_property (X_("id-counter"), counter)) {
@@ -4028,11 +4031,6 @@ Session::config_changed (std::string p, bool ours)
 			request_play_loop (true);
 		}
 
-	} else if (p == "rf-speed") {
-
-		cumulative_rf_motion = 0;
-		reset_rf_scale (0);
-
 	} else if (p == "click-sound") {
 
 		setup_click_sounds (1);
@@ -4098,7 +4096,8 @@ Session::config_changed (std::string p, bool ours)
 		first_file_data_format_reset = false;
 
 	} else if (p == "external-sync") {
-		request_sync_source (TransportMasterManager::instance().master_by_type (Config->get_sync_source()));
+		std::cerr << "param change, rss to " << TransportMasterManager::instance().current() << std::endl;
+		request_sync_source (TransportMasterManager::instance().current());
 	}  else if (p == "denormal-model") {
 		setup_fpu ();
 	} else if (p == "history-depth") {
@@ -4135,6 +4134,35 @@ Session::config_changed (std::string p, bool ours)
 		ltc_tx_parse_offset();
 	} else if (p == "auto-return-target-list") {
 		follow_playhead_priority ();
+	} else if (p == "use-monitor-bus") {
+		/* NB. This is always called when constructing a session,
+		 * after restoring session state (if any),
+		 * via post_engine_init() -> Config->map_parameters()
+		 */
+		bool want_ms = Config->get_use_monitor_bus();
+		bool have_ms = _monitor_out ? true : false;
+		if (loading ()) {
+			/* When loading an existing session, the config "use-monitor-bus"
+			 * is ignored. Instead the sesion-state (xml) will have added the
+			 * "monitor-route" and restored its state (and connections)
+			 * if the session has a monitor-section.
+			 * Update the config to reflect this.
+			 */
+			if (want_ms != have_ms) {
+				Config->set_use_monitor_bus (have_ms);
+			}
+			MonitorBusAddedOrRemoved (); /* EMIT SIGNAL */
+		} else  {
+			/* Otherwise, Config::set_use_monitor_bus() does
+			 * control the the presence of the monitor-section
+			 * (new sessions, user initiated change)
+			 */
+			if (want_ms && !have_ms) {
+				add_monitor_section ();
+			} else if (!want_ms && have_ms) {
+				remove_monitor_section ();
+			}
+		}
 	}
 
 	set_dirty ();
@@ -4210,9 +4238,9 @@ Session::save_snapshot_name (const std::string & n)
 	 */
 	instant_xml ("LastUsedSnapshot");
 
-	XMLNode* last_used_snapshot = new XMLNode ("LastUsedSnapshot");
-	last_used_snapshot->set_property ("name", n);
-	add_instant_xml (*last_used_snapshot, false);
+	XMLNode last_used_snapshot ("LastUsedSnapshot");
+	last_used_snapshot.set_property ("name", n);
+	add_instant_xml (last_used_snapshot, false);
 }
 
 void
@@ -5259,6 +5287,9 @@ Session::archive_session (const std::string& dest,
 		/* build a list of used names */
 		std::set<std::string> audio_file_names;
 		for (SourceMap::const_iterator i = sources.begin(); i != sources.end(); ++i) {
+			if (boost::dynamic_pointer_cast<SilentFileSource> (i->second)) {
+				continue;
+			}
 			boost::shared_ptr<AudioFileSource> afs = boost::dynamic_pointer_cast<AudioFileSource> (i->second);
 			if (!afs || afs->readable_length () == 0) {
 				continue;
@@ -5275,6 +5306,9 @@ Session::archive_session (const std::string& dest,
 		}
 
 		for (SourceMap::const_iterator i = sources.begin(); i != sources.end(); ++i) {
+			if (boost::dynamic_pointer_cast<SilentFileSource> (i->second)) {
+				continue;
+			}
 			boost::shared_ptr<AudioFileSource> afs = boost::dynamic_pointer_cast<AudioFileSource> (i->second);
 			if (!afs || afs->readable_length () == 0) {
 				continue;
@@ -5336,6 +5370,9 @@ Session::archive_session (const std::string& dest,
 
 		Glib::Threads::Mutex::Lock lm (source_lock);
 		for (SourceMap::const_iterator i = sources.begin(); i != sources.end(); ++i) {
+			if (boost::dynamic_pointer_cast<SilentFileSource> (i->second)) {
+				continue;
+			}
 			boost::shared_ptr<AudioFileSource> afs = boost::dynamic_pointer_cast<AudioFileSource> (i->second);
 			if (!afs || afs->readable_length () == 0) {
 				continue;

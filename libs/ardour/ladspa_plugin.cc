@@ -526,12 +526,8 @@ LadspaPlugin::describe_parameter (Evoral::Parameter which)
 }
 
 ARDOUR::samplecnt_t
-LadspaPlugin::signal_latency () const
+LadspaPlugin::plugin_latency () const
 {
-	if (_user_latency) {
-		return _user_latency;
-	}
-
 	if (_latency_control_port) {
 		return (samplecnt_t) floor (*_latency_control_port);
 	} else {
@@ -558,7 +554,7 @@ LadspaPlugin::automatable () const
 int
 LadspaPlugin::connect_and_run (BufferSet& bufs,
 		samplepos_t start, samplepos_t end, double speed,
-		ChanMapping in_map, ChanMapping out_map,
+		ChanMapping const& in_map, ChanMapping const& out_map,
 		pframes_t nframes, samplecnt_t offset)
 {
 	Plugin::connect_and_run (bufs, start, end, speed, in_map, out_map, nframes, offset);

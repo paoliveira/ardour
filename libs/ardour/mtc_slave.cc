@@ -234,9 +234,9 @@ MTC_TransportMaster::reset (bool with_position)
 	DEBUG_TRACE (DEBUG::MTC, string_compose ("MTC_TransportMaster reset %1\n", with_position?"with position":"without position"));
 
 	if (with_position) {
-		current.update (0, 0, 0);
-	} else {
 		current.update (current.position, 0, 0);
+	} else {
+		current.reset ();
 	}
 	first_mtc_timestamp = 0;
 	window_begin = 0;
@@ -586,4 +586,11 @@ MTC_TransportMaster::delta_string () const
 				LEADINGZERO(abs(_current_delta)), PLUSMINUS(-_current_delta), abs(_current_delta));
 	}
 	return std::string(delta);
+}
+
+void
+MTC_TransportMaster::unregister_port ()
+{
+	_midi_port.reset ();
+	TransportMaster::unregister_port ();
 }

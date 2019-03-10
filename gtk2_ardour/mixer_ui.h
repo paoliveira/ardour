@@ -52,6 +52,7 @@
 
 #include "axis_provider.h"
 #include "enums.h"
+#include "monitor_section.h"
 #include "route_processor_selection.h"
 
 namespace ARDOUR {
@@ -101,16 +102,13 @@ public:
 
 	void save_plugin_order_file ();
 
-	void show_mixer_list (bool yn);
-	void show_monitor_section (bool);
-
 	void show_strip (MixerStrip *);
 	void hide_strip (MixerStrip *);
 
 	void maximise_mixer_space();
 	void restore_mixer_space();
 
-	MonitorSection* monitor_section() const { return _monitor_section; }
+	MonitorSection& monitor_section() { return _monitor_section; }
 
 	void deselect_all_strip_processors();
 	void delete_processors();
@@ -135,13 +133,18 @@ public:
 	void load_bindings ();
 	Gtkmm2ext::Bindings*  bindings;
 
-	void showhide_vcas (bool on) {
-		if (on) { vca_vpacker.show(); } else { vca_vpacker.hide(); }
-	}
+	void toggle_mixer_list ();
+	void showhide_mixer_list (bool yn);
+
+	void toggle_monitor_section ();
+	void showhide_monitor_section (bool);
+
+	void toggle_vcas ();
+	void showhide_vcas (bool on);
+	
 #ifdef MIXBUS
-	void showhide_mixbusses (bool on) {
-		if (on) { mb_vpacker.show(); } else { mb_vpacker.hide(); }
-	}
+	void toggle_mixbuses ();
+	void showhide_mixbusses (bool on);
 #endif
 
 protected:
@@ -206,6 +209,7 @@ private:
 
 	void add_masters (ARDOUR::VCAList&);
 	void remove_master (VCAMasterStrip*);
+	void new_masters_created ();
 
 	MixerStrip* strip_by_route (boost::shared_ptr<ARDOUR::Route>) const;
 	MixerStrip* strip_by_stripable (boost::shared_ptr<ARDOUR::Stripable>) const;
@@ -285,8 +289,8 @@ private:
 	void track_column_click (gint);
 	void build_track_menu ();
 
-	MonitorSection* _monitor_section;
-	PluginSelector    *_plugin_selector;
+	MonitorSection   _monitor_section;
+	PluginSelector *_plugin_selector;
 
 	void stripable_property_changed (const PBD::PropertyChange& what_changed, boost::weak_ptr<ARDOUR::Stripable> ws);
 	void route_group_property_changed (ARDOUR::RouteGroup *, const PBD::PropertyChange &);
@@ -377,7 +381,6 @@ private:
 	friend class MixerGroupTabs;
 
 	void monitor_section_going_away ();
-
 	void monitor_section_attached ();
 	void monitor_section_detached ();
 
@@ -398,16 +401,12 @@ private:
 	/// true if we are in fullscreen mode
 	bool _maximised;
 
-	// true if mixer list is visible
-	bool _show_mixer_list;
-
 	bool _strip_selection_change_without_scroll;
 
 	mutable boost::weak_ptr<ARDOUR::Stripable> spilled_strip;
 
 	void escape ();
 
-	Gtkmm2ext::ActionMap myactions;
 	RouteProcessorSelection _selection;
 	AxisViewSelection _axis_targets;
 

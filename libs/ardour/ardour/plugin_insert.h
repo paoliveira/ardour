@@ -79,7 +79,7 @@ public:
 
 	bool write_immediate_event (size_t size, const uint8_t* buf);
 
-	void automation_run (samplepos_t, pframes_t);
+	void automation_run (samplepos_t, pframes_t, bool only_active = false);
 	bool find_next_event (double, double, Evoral::ControlEvent&, bool only_active = true) const;
 
 	int set_block_size (pframes_t nframes);
@@ -113,13 +113,9 @@ public:
 	bool has_midi_thru () const;
 	bool inplace () const { return ! _no_inplace; }
 
-#ifdef MIXBUS
 	bool is_channelstrip () const;
 	bool is_nonbypassable () const;
-#else
-	bool is_channelstrip () const { return false; }
-	bool is_nonbypassable () const { return false; }
-#endif
+	bool show_on_ctrl_surface () const;
 
 	void set_input_map (uint32_t, ChanMapping);
 	void set_output_map (uint32_t, ChanMapping);
@@ -170,6 +166,7 @@ public:
 	bool set_preset_out (const ChanCount&);
 	bool add_sidechain  (uint32_t n_audio = 1, uint32_t n_midi = 0);
 	bool del_sidechain ();
+	void update_sidechain_name ();
 	boost::shared_ptr<SideChain> sidechain () const { return _sidechain; }
 	// end C++ class slavery!
 
@@ -196,6 +193,7 @@ public:
 
 	bool load_preset (Plugin::PresetRecord);
 
+	bool provides_stats () const;
 	bool get_stats (uint64_t& min, uint64_t& max, double& avg, double& dev) const;
 	void clear_stats ();
 
@@ -335,8 +333,8 @@ private:
 
 	boost::weak_ptr<Plugin> _impulseAnalysisPlugin;
 
-	samplecnt_t _signal_analysis_collected_nframes;
-	samplecnt_t _signal_analysis_collect_nframes_max;
+	samplecnt_t _signal_analysis_collect_nsamples;
+	samplecnt_t _signal_analysis_collect_nsamples_max;
 
 	BufferSet _signal_analysis_inputs;
 	BufferSet _signal_analysis_outputs;
@@ -366,7 +364,24 @@ private:
 	/** details of the match currently being used */
 	Match _match;
 
-	typedef std::map <uint32_t, ARDOUR::ChanMapping> PinMappings;
+	/* ordered map [plugin instance ID] => ARDOUR::ChanMapping
+	 * TODO: consider replacing with boost::flat_map<> or std::vector<>.
+	 */
+	class PinMappings : public std::map <uint32_t, ARDOUR::ChanMapping> {
+		public:
+			/* this emulates C++11's  std::map::at()
+			 * return mapping for given plugin instance */
+			inline ARDOUR::ChanMapping const& p (const uint32_t i) const {
+#ifndef NDEBUG
+				const_iterator x = find (i);
+				assert (x != end ());
+				return x->second;
+#else
+				return find(i)->second;
+#endif
+			}
+	};
+
 	PinMappings _in_map;
 	PinMappings _out_map;
 	ChanMapping _thru_map; // out-idx <=  in-idx
@@ -386,6 +401,8 @@ private:
 
 	boost::shared_ptr<Plugin> plugin_factory (boost::shared_ptr<Plugin>);
 	void add_plugin (boost::shared_ptr<Plugin>);
+
+	void add_sidechain_from_xml (const XMLNode& node, int version);
 
 	void start_touch (uint32_t param_id);
 	void end_touch (uint32_t param_id);

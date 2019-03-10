@@ -74,8 +74,8 @@ PluginInsert::PluginInsert (Session& s, boost::shared_ptr<Plugin> plug)
 	, _sc_playback_latency (0)
 	, _sc_capture_latency (0)
 	, _plugin_signal_latency (0)
-	, _signal_analysis_collected_nframes(0)
-	, _signal_analysis_collect_nframes_max(0)
+	, _signal_analysis_collect_nsamples (0)
+	, _signal_analysis_collect_nsamples_max (0)
 	, _configured (false)
 	, _no_inplace (false)
 	, _strict_io (false)
@@ -206,10 +206,12 @@ PluginInsert::add_sidechain (uint32_t n_audio, uint32_t n_midi)
 		return false;
 	}
 	std::ostringstream n;
-	if (n_audio > 0 || n_midi > 0) {
-		n << "Sidechain " << Session::next_name_id ();
-	} else {
+	if (n_audio == 0 && n_midi == 0) {
 		n << "TO BE RESET FROM XML";
+	} else if (owner()) {
+		n << "SC " << owner()->name() << "/" << name() << " " << Session::next_name_id ();
+	} else {
+		n << "tobeRenamed";
 	}
 	SideChain *sc = new SideChain (_session, n.str ());
 	_sidechain = boost::shared_ptr<SideChain> (sc);
@@ -235,6 +237,25 @@ PluginInsert::del_sidechain ()
 	_sc_capture_latency = 0;
 	PluginConfigChanged (); /* EMIT SIGNAL */
 	return true;
+}
+
+void
+PluginInsert::update_sidechain_name ()
+{
+	if (!_sidechain) {
+		return;
+	}
+
+	std::ostringstream n;
+
+	n << "SC ";
+	if (owner()) {
+		n << owner()->name() << "/";
+	}
+
+	n << name() << " " << Session::next_name_id ();
+
+	_sidechain->set_name (n.str());
 }
 
 void
@@ -434,6 +455,8 @@ PluginInsert::create_automatable_parameters ()
 	boost::shared_ptr<Plugin> plugin = _plugins.front();
 	set<Evoral::Parameter> a = _plugins.front()->automatable ();
 
+	const uint32_t limit_automatables = Config->get_limit_n_automatables ();
+
 	for (uint32_t i = 0; i < plugin->parameter_count(); ++i) {
 		if (!plugin->parameter_is_control (i)) {
 			continue;
@@ -450,12 +473,9 @@ PluginInsert::create_automatable_parameters ()
 
 		const bool automatable = a.find(param) != a.end();
 
-		if (automatable) {
-			can_automate (param);
-		}
 		boost::shared_ptr<AutomationList> list(new AutomationList(param, desc));
 		boost::shared_ptr<AutomationControl> c (new PluginControl(this, param, desc, list));
-		if (!automatable) {
+		if (!automatable || (limit_automatables > 0 && i > limit_automatables)) {
 			c->set_flags (Controllable::Flag ((int)c->flags() | Controllable::NotAutomatable));
 		}
 		add_control (c);
@@ -554,6 +574,10 @@ PluginInsert::parameter_changed_externally (uint32_t which, float val)
 			(*i)->set_parameter (which, val);
 		}
 	}
+	boost::shared_ptr<Plugin> iasp = _impulseAnalysisPlugin.lock();
+	if (iasp) {
+		iasp->set_parameter (which, val);
+	}
 }
 
 int
@@ -569,7 +593,7 @@ PluginInsert::set_block_size (pframes_t nframes)
 }
 
 void
-PluginInsert::automation_run (samplepos_t start, pframes_t nframes)
+PluginInsert::automation_run (samplepos_t start, pframes_t nframes, bool only_active)
 {
 	// XXX does not work when rolling backwards
 	if (_loop_location && nframes > 0) {
@@ -587,13 +611,13 @@ PluginInsert::automation_run (samplepos_t start, pframes_t nframes)
 			}
 			samplecnt_t move = std::min ((samplecnt_t)nframes, loop_end - start_pos);
 
-			Automatable::automation_run (start_pos, move);
+			Automatable::automation_run (start_pos, move, only_active);
 			remain -= move;
 			start_pos += move;
 		}
 		return;
 	}
-	Automatable::automation_run (start, nframes);
+	Automatable::automation_run (start, nframes, only_active);
 }
 
 bool
@@ -631,8 +655,10 @@ PluginInsert::activate ()
 	if (!owner ()) {
 		return;
 	}
-	if (_plugin_signal_latency != signal_latency ()) {
-		_plugin_signal_latency = signal_latency ();
+
+	const samplecnt_t l = effective_latency ();
+	if (_plugin_signal_latency != l) {
+		_plugin_signal_latency = l;
 		latency_changed ();
 	}
 }
@@ -651,8 +677,10 @@ PluginInsert::deactivate ()
 	for (Plugins::iterator i = _plugins.begin(); i != _plugins.end(); ++i) {
 		(*i)->deactivate ();
 	}
-	if (_plugin_signal_latency != signal_latency ()) {
-		_plugin_signal_latency = signal_latency ();
+
+	const samplecnt_t l = effective_latency ();
+	if (_plugin_signal_latency != l) {
+		_plugin_signal_latency = l;
 		latency_changed ();
 	}
 }
@@ -804,14 +832,14 @@ PluginInsert::inplace_silence_unconnected (BufferSet& bufs, const PinMappings& o
 void
 PluginInsert::connect_and_run (BufferSet& bufs, samplepos_t start, samplepos_t end, double speed, pframes_t nframes, samplecnt_t offset, bool with_auto)
 {
-	// TODO: atomically copy maps & _no_inplace
-	PinMappings in_map (_in_map);
-	PinMappings out_map (_out_map);
-	ChanMapping thru_map (_thru_map);
-	if (_mapping_changed) { // ToDo use a counters, increment until match.
+	if (_mapping_changed) { // ToDo use a counter, increment until match
 		_no_inplace = check_inplace ();
 		_mapping_changed = false;
 	}
+	// TODO: atomically copy maps & _no_inplace
+	PinMappings in_map (_in_map); // TODO Split case below overrides, use const& in_map
+	PinMappings const& out_map (_out_map);
+	ChanMapping const& thru_map (_thru_map);
 
 	if (_latency_changed) {
 		/* delaylines are configured with the max possible latency (as reported by the plugin)
@@ -840,11 +868,11 @@ PluginInsert::connect_and_run (BufferSet& bufs, samplepos_t start, samplepos_t e
 				continue;
 			}
 			bool valid;
-			uint32_t first_idx = in_map[0].get (*t, 0, &valid);
+			uint32_t first_idx = in_map.p(0).get (*t, 0, &valid);
 			assert (valid && first_idx == 0); // check_inplace ensures this
 			/* copy the first stream's buffer contents to the others */
 			for (uint32_t i = 1; i < natural_input_streams ().get (*t); ++i) {
-				uint32_t idx = in_map[0].get (*t, i, &valid);
+				uint32_t idx = in_map.p(0).get (*t, i, &valid);
 				if (valid) {
 					assert (idx == 0);
 					bufs.get (*t, i).read_from (bufs.get (*t, first_idx), nframes, offset, offset);
@@ -859,59 +887,36 @@ PluginInsert::connect_and_run (BufferSet& bufs, samplepos_t start, samplepos_t e
 	bufs.set_count(ChanCount::max(bufs.count(), _configured_out));
 
 	if (with_auto) {
-
-		uint32_t n = 0;
-
-		for (Controls::iterator li = controls().begin(); li != controls().end(); ++li, ++n) {
-
-			boost::shared_ptr<AutomationControl> c
-				= boost::dynamic_pointer_cast<AutomationControl>(li->second);
-
-			if (c->list() && c->automation_playback()) {
+		boost::shared_ptr<ControlList> cl = _automated_controls.reader ();
+		for (ControlList::const_iterator ci = cl->begin(); ci != cl->end(); ++ci) {
+			AutomationControl& c = *(ci->get());
+			boost::shared_ptr<const Evoral::ControlList> clist (c.list());
+			/* we still need to check for Touch and Latch */
+			if (clist && (static_cast<AutomationList const&> (*clist)).automation_playback ()) {
 				bool valid;
-
-				const float val = c->list()->rt_safe_eval (start, valid);
-
+				const float val = c.list()->rt_safe_eval (start, valid);
 				if (valid) {
-					/* This is the ONLY place where we are
-					 *  allowed to call
-					 *  AutomationControl::set_value_unchecked(). We
-					 *  know that the control is in
-					 *  automation playback mode, so no
-					 *  check on writable() is required
-					 *  (which must be done in AutomationControl::set_value()
-					 *
-					 */
-					c->set_value_unchecked(val);
+					c.set_value_unchecked(val);
 				}
-
 			}
 		}
 	}
 
-	/* Calculate if, and how many samples we need to collect for analysis */
-	samplecnt_t collect_signal_nframes = (_signal_analysis_collect_nframes_max -
-					     _signal_analysis_collected_nframes);
-	if (nframes < collect_signal_nframes) { // we might not get all samples now
-		collect_signal_nframes = nframes;
-	}
+	if (_signal_analysis_collect_nsamples_max > 0) {
+		if (_signal_analysis_collect_nsamples < _signal_analysis_collect_nsamples_max) {
+			samplecnt_t ns = std::min ((samplecnt_t) nframes, _signal_analysis_collect_nsamples_max - _signal_analysis_collect_nsamples);
+			_signal_analysis_inputs.set_count (ChanCount (DataType::AUDIO, input_streams().n_audio()));
 
-	if (collect_signal_nframes > 0) {
-		// collect input
-		//std::cerr << "collect input, bufs " << bufs.count().n_audio() << " count,  " << bufs.available().n_audio() << " available" << std::endl;
-		//std::cerr << "               streams " << internal_input_streams().n_audio() << std::endl;
-		//std::cerr << "filling buffer with " << collect_signal_nframes << " samples at " << _signal_analysis_collected_nframes << std::endl;
-
-		_signal_analysis_inputs.set_count(input_streams());
-
-		for (uint32_t i = 0; i < input_streams().n_audio(); ++i) {
-			_signal_analysis_inputs.get_audio(i).read_from (
-				bufs.get_audio(i),
-				collect_signal_nframes,
-				_signal_analysis_collected_nframes); // offset is for target buffer
+			for (uint32_t i = 0; i < input_streams().n_audio(); ++i) {
+				_signal_analysis_inputs.get_audio(i).read_from (
+						bufs.get_audio(i),
+						ns,
+						_signal_analysis_collect_nsamples);
+			}
 		}
-
+		_signal_analysis_collect_nsamples += nframes;
 	}
+
 #ifdef MIXBUS
 	if (is_channelstrip ()) {
 		if (_configured_in.n_audio() > 0) {
@@ -939,7 +944,7 @@ PluginInsert::connect_and_run (BufferSet& bufs, samplepos_t start, samplepos_t e
 			for (DataType::iterator t = DataType::begin(); t != DataType::end(); ++t) {
 				for (uint32_t out = 0; out < natural_output_streams().get (*t); ++out) {
 					bool valid;
-					uint32_t out_idx = out_map[pc].get (*t, out, &valid);
+					uint32_t out_idx = out_map.p(pc).get (*t, out, &valid);
 					if (valid) {
 						used_outputs.set (*t, out_idx, 1); // mark as used
 					}
@@ -971,14 +976,14 @@ PluginInsert::connect_and_run (BufferSet& bufs, samplepos_t start, samplepos_t e
 		for (Plugins::iterator i = _plugins.begin(); i != _plugins.end(); ++i, ++pc) {
 
 			ARDOUR::ChanMapping i_in_map (natural_input_streams());
-			ARDOUR::ChanMapping i_out_map (out_map[pc]);
+			ARDOUR::ChanMapping i_out_map (out_map.p(pc));
 			ARDOUR::ChanCount mapped;
 
 			/* map inputs sequentially */
 			for (DataType::iterator t = DataType::begin(); t != DataType::end(); ++t) {
 				for (uint32_t in = 0; in < natural_input_streams().get (*t); ++in) {
 					bool valid;
-					uint32_t in_idx = in_map[pc].get (*t, in, &valid);
+					uint32_t in_idx = in_map.p(pc).get (*t, in, &valid);
 					uint32_t m = mapped.get (*t);
 					if (valid) {
 						inplace_bufs.get (*t, m).read_from (bufs.get (*t, in_idx), nframes, offset, offset);
@@ -1024,7 +1029,7 @@ PluginInsert::connect_and_run (BufferSet& bufs, samplepos_t start, samplepos_t e
 		/* in-place processing */
 		uint32_t pc = 0;
 		for (Plugins::iterator i = _plugins.begin(); i != _plugins.end(); ++i, ++pc) {
-			if ((*i)->connect_and_run(bufs, start, end, speed, in_map[pc], out_map[pc], nframes, offset)) {
+			if ((*i)->connect_and_run(bufs, start, end, speed, in_map.p(pc), out_map.p(pc), nframes, offset)) {
 				deactivate ();
 			}
 		}
@@ -1032,35 +1037,36 @@ PluginInsert::connect_and_run (BufferSet& bufs, samplepos_t start, samplepos_t e
 		inplace_silence_unconnected (bufs, _out_map, nframes, offset);
 	}
 
-	if (collect_signal_nframes > 0) {
-		// collect output
-		//std::cerr << "       output, bufs " << bufs.count().n_audio() << " count,  " << bufs.available().n_audio() << " available" << std::endl;
-		//std::cerr << "               streams " << internal_output_streams().n_audio() << std::endl;
+	const samplecnt_t l = effective_latency ();
+	if (_plugin_signal_latency != l) {
+		_plugin_signal_latency = l;
+		_signal_analysis_collect_nsamples = 0;
+		latency_changed ();
+	}
 
-		_signal_analysis_outputs.set_count(output_streams());
+	if (_signal_analysis_collect_nsamples > l) {
+		assert (_signal_analysis_collect_nsamples_max > 0);
+		assert (_signal_analysis_collect_nsamples >= nframes);
+		samplecnt_t sample_pos = _signal_analysis_collect_nsamples - nframes;
+
+		samplecnt_t dst_off = sample_pos >= l ? sample_pos - l : 0;
+		samplecnt_t src_off = sample_pos >= l ? 0 : l - sample_pos;
+		samplecnt_t n_copy = std::min ((samplecnt_t)nframes, _signal_analysis_collect_nsamples - l);
+		n_copy = std::min (n_copy, _signal_analysis_collect_nsamples_max - dst_off);
+
+		_signal_analysis_outputs.set_count (ChanCount (DataType::AUDIO, output_streams().n_audio()));
 
 		for (uint32_t i = 0; i < output_streams().n_audio(); ++i) {
 			_signal_analysis_outputs.get_audio(i).read_from(
-				bufs.get_audio(i),
-				collect_signal_nframes,
-				_signal_analysis_collected_nframes); // offset is for target buffer
+				bufs.get_audio(i), n_copy, dst_off, src_off);
 		}
 
-		_signal_analysis_collected_nframes += collect_signal_nframes;
-		assert(_signal_analysis_collected_nframes <= _signal_analysis_collect_nframes_max);
+		if (dst_off + n_copy == _signal_analysis_collect_nsamples_max) {
+			_signal_analysis_collect_nsamples_max = 0;
+			_signal_analysis_collect_nsamples     = 0;
 
-		if (_signal_analysis_collected_nframes == _signal_analysis_collect_nframes_max) {
-			_signal_analysis_collect_nframes_max = 0;
-			_signal_analysis_collected_nframes   = 0;
-
-			AnalysisDataGathered(&_signal_analysis_inputs,
-					     &_signal_analysis_outputs);
+			AnalysisDataGathered (&_signal_analysis_inputs, &_signal_analysis_outputs);
 		}
-	}
-
-	if (_plugin_signal_latency != signal_latency ()) {
-		_plugin_signal_latency = signal_latency ();
-		latency_changed ();
 	}
 }
 
@@ -1070,14 +1076,13 @@ PluginInsert::bypass (BufferSet& bufs, pframes_t nframes)
 	/* bypass the plugin(s) not the whole processor.
 	 * -> use mappings just like connect_and_run
 	 */
-
-	// TODO: atomically copy maps & _no_inplace
-	const ChanMapping in_map (no_sc_input_map ());
-	const ChanMapping out_map (output_map ());
 	if (_mapping_changed) {
 		_no_inplace = check_inplace ();
 		_mapping_changed = false;
 	}
+	// TODO: atomically copy maps & _no_inplace
+	ChanMapping const& in_map (no_sc_input_map ());
+	ChanMapping const& out_map (output_map ());
 
 	bufs.set_count(ChanCount::max(bufs.count(), _configured_internal));
 	bufs.set_count(ChanCount::max(bufs.count(), _configured_out));
@@ -1178,7 +1183,7 @@ PluginInsert::bypass (BufferSet& bufs, pframes_t nframes)
 void
 PluginInsert::silence (samplecnt_t nframes, samplepos_t start_sample)
 {
-	automation_run (start_sample, nframes); // evaluate automation only
+	automation_run (start_sample, nframes, true); // evaluate automation only
 
 	if (!active ()) {
 		// XXX delaybuffers need to be offset by nframes
@@ -1187,8 +1192,8 @@ PluginInsert::silence (samplecnt_t nframes, samplepos_t start_sample)
 
 	_delaybuffers.flush ();
 
-	ChanMapping in_map (natural_input_streams ());
-	ChanMapping out_map (natural_output_streams ());
+	const ChanMapping in_map (natural_input_streams ());
+	const ChanMapping out_map (natural_output_streams ());
 	ChanCount maxbuf = ChanCount::max (natural_input_streams (), natural_output_streams());
 #ifdef MIXBUS
 	if (is_channelstrip ()) {
@@ -1216,7 +1221,13 @@ PluginInsert::run (BufferSet& bufs, samplepos_t start_sample, samplepos_t end_sa
 	}
 
 	if (_pending_active) {
+#if defined MIXBUS && defined NDEBUG
+		if (!is_channelstrip ()) {
+			_timing_stats.start ();
+		}
+#else
 		_timing_stats.start ();
+#endif
 		/* run as normal if we are active or moving from inactive to active */
 
 		if (_session.transport_rolling() || _session.bounce_processing()) {
@@ -1225,14 +1236,20 @@ PluginInsert::run (BufferSet& bufs, samplepos_t start_sample, samplepos_t end_sa
 			Glib::Threads::Mutex::Lock lm (control_lock(), Glib::Threads::TRY_LOCK);
 			connect_and_run (bufs, start_sample, end_sample, speed, nframes, 0, lm.locked());
 		}
+#if defined MIXBUS && defined NDEBUG
+		if (!is_channelstrip ()) {
+			_timing_stats.update ();
+		}
+#else
 		_timing_stats.update ();
+#endif
 
 	} else {
 		_timing_stats.reset ();
 		// XXX should call ::silence() to run plugin(s) for consistent load.
 		// We'll need to change this anyway when bypass can be automated
 		bypass (bufs, nframes);
-		automation_run (start_sample, nframes); // evaluate automation only
+		automation_run (start_sample, nframes, true); // evaluate automation only
 		_delaybuffers.flush ();
 	}
 
@@ -1512,6 +1529,9 @@ PluginInsert::no_sc_input_map () const
 			}
 		}
 	}
+	if (has_midi_thru ()) {
+		rv.set (DataType::MIDI, 0, 0);
+	}
 	return rv;
 }
 
@@ -1556,16 +1576,34 @@ PluginInsert::has_midi_thru () const
 	return false;
 }
 
+bool
+PluginInsert::is_channelstrip () const
+{
 #ifdef MIXBUS
-bool
-PluginInsert::is_channelstrip () const {
 	return _plugins.front()->is_channelstrip();
-}
-bool
-PluginInsert::is_nonbypassable () const {
-	return _plugins.front()->is_nonbypassable ();
-}
+#else
+	return false;
 #endif
+}
+
+bool
+PluginInsert::is_nonbypassable () const
+{
+#ifdef MIXBUS
+	return _plugins.front()->is_nonbypassable ();
+#else
+	return false;
+#endif
+}
+
+bool
+PluginInsert::show_on_ctrl_surface () const
+{
+	if (is_channelstrip () || !is_nonbypassable ()) {
+		return false;
+	}
+	return true;
+}
 
 bool
 PluginInsert::check_inplace ()
@@ -1635,7 +1673,7 @@ PluginInsert::check_inplace ()
 		 *
 		 * but allows     in-port 1 -> sink-pin 2  ||  source-pin 2 -> out port 1
 		 */
-		ChanMapping in_map (input_map ());
+		ChanMapping const& in_map (input_map ());
 		const ChanMapping::Mappings out_m (output_map ().mappings ());
 		for (ChanMapping::Mappings::const_iterator t = out_m.begin (); t != out_m.end () && inplace_ok; ++t) {
 			for (ChanMapping::TypeMapping::const_iterator c = (*t).second.begin (); c != (*t).second.end () ; ++c) {
@@ -2053,15 +2091,20 @@ PluginInsert::configure_io (ChanCount in, ChanCount out)
 	_delaybuffers.configure (_configured_out, _plugins.front ()->max_latency ());
 	_latency_changed = true;
 
-	// we don't know the analysis window size, so we must work with the
-	// current buffer size here. each request for data fills in these
-	// buffers and the analyser makes sure it gets enough data for the
-	// analysis window
-	session().ensure_buffer_set (_signal_analysis_inputs, in);
-	_signal_analysis_inputs.set_count (in);
+	/* we don't know the analysis window size, so we must work with the
+	 * current buffer size here. each request for data fills in these
+	 * buffers and the analyser makes sure it gets enough data for the
+	 * analysis window. We also only analyze audio, so we can ignore
+	 * MIDI buffers.
+	 */
+	ChanCount cc_analysis_in (DataType::AUDIO, in.n_audio());
+	ChanCount cc_analysis_out (DataType::AUDIO, out.n_audio());
 
-	session().ensure_buffer_set (_signal_analysis_outputs, out);
-	_signal_analysis_outputs.set_count (out);
+	session().ensure_buffer_set (_signal_analysis_inputs, cc_analysis_in);
+	_signal_analysis_inputs.set_count (cc_analysis_in);
+
+	session().ensure_buffer_set (_signal_analysis_outputs, cc_analysis_out);
+	_signal_analysis_outputs.set_count (cc_analysis_out);
 
 	// std::cerr << "set counts to i" << in.n_audio() << "/o" << out.n_audio() << std::endl;
 
@@ -2743,10 +2786,16 @@ PluginInsert::set_state(const XMLNode& node, int version)
 		// sidechain is a Processor (IO)
 		if ((*i)->name () ==  Processor::state_node_name) {
 			if (!_sidechain) {
-				add_sidechain (0);
+				if (regenerate_xml_or_string_ids ()) {
+					add_sidechain_from_xml (**i, version);
+				} else {
+					add_sidechain (0);
+				}
 			}
 			if (!regenerate_xml_or_string_ids ()) {
 				_sidechain->set_state (**i, version);
+			} else {
+				update_sidechain_name ();
 			}
 		}
 	}
@@ -2876,11 +2925,7 @@ PluginInsert::signal_latency() const
 	if (!_pending_active) {
 		return 0;
 	}
-	if (_user_latency) {
-		return _user_latency;
-	}
-
-	return _plugins[0]->signal_latency ();
+	return plugin_latency ();
 }
 
 ARDOUR::PluginType
@@ -3011,6 +3056,7 @@ PluginInsert::get_impulse_analysis_plugin()
 		// during init() -- most notably block_size..
 		// not great.
 		ret = plugin_factory(_plugins[0]);
+		ret->use_for_impulse_analysis ();
 		ChanCount out (internal_output_streams ());
 		if (ret->get_info ()->reconfigurable_io ()) {
 			// populate get_info ()->n_inputs and ->n_outputs
@@ -3031,13 +3077,21 @@ PluginInsert::get_impulse_analysis_plugin()
 void
 PluginInsert::collect_signal_for_analysis (samplecnt_t nframes)
 {
+	if (_signal_analysis_collect_nsamples_max != 0
+			|| _signal_analysis_collect_nsamples  != 0) {
+		return;
+	}
+
 	// called from outside the audio thread, so this should be safe
 	// only do audio as analysis is (currently) only for audio plugins
 	_signal_analysis_inputs.ensure_buffers (DataType::AUDIO, input_streams().n_audio(),  nframes);
 	_signal_analysis_outputs.ensure_buffers (DataType::AUDIO, output_streams().n_audio(), nframes);
 
-	_signal_analysis_collected_nframes   = 0;
-	_signal_analysis_collect_nframes_max = nframes;
+	/* these however should not be set while processing,
+	 * however in the given order, this should be fine.
+	 */
+	_signal_analysis_collect_nsamples     = 0;
+	_signal_analysis_collect_nsamples_max = nframes;
 }
 
 /** Add a plugin to our list */
@@ -3076,6 +3130,42 @@ PluginInsert::add_plugin (boost::shared_ptr<Plugin> plugin)
 	_plugins.push_back (plugin);
 }
 
+void
+PluginInsert::add_sidechain_from_xml (const XMLNode& node, int version)
+{
+	if (version < 3000) {
+		return;
+	}
+
+	XMLNodeList nlist = node.children();
+
+	if (nlist.size() == 0) {
+		return;
+	}
+
+	uint32_t audio = 0;
+	uint32_t midi = 0;
+
+	XMLNodeConstIterator it = nlist.front()->children().begin();
+	for ( ; it != nlist.front()->children().end(); ++ it) {
+		if ((*it)->name() == "Port") {
+			DataType type(DataType::NIL);
+			(*it)->get_property ("type", type);
+			if (type == DataType::AUDIO) {
+				++audio;
+			} else if (type == DataType::MIDI) {
+				++midi;
+			}
+		}
+	}
+
+	ChanCount in_cc = ChanCount();
+	in_cc.set (DataType::AUDIO, audio);
+	in_cc.set (DataType::MIDI, midi);
+
+	add_sidechain (audio, midi);
+}
+
 bool
 PluginInsert::load_preset (ARDOUR::Plugin::PresetRecord pr)
 {
@@ -3085,6 +3175,12 @@ PluginInsert::load_preset (ARDOUR::Plugin::PresetRecord pr)
 			ok = false;
 		}
 	}
+
+	boost::shared_ptr<Plugin> iasp = _impulseAnalysisPlugin.lock();
+	if (iasp) {
+		iasp->load_preset (pr);
+	}
+
 	return ok;
 }
 
@@ -3117,7 +3213,10 @@ PluginInsert::latency_changed ()
 {
 	// this is called in RT context, LatencyChanged is emitted after run()
 	_latency_changed = true;
-	// XXX This also needs a proper API not an owner() hack.
+	LatencyChanged (); /* EMIT SIGNAL */
+	// XXX This needs a proper API not an owner() hack:
+	// TODO Route should subscribe to LatencyChanged() and forward it
+	// to the session as processor_latency_changed.
 	assert (owner ());
 	static_cast<Route*>(owner ())->processor_latency_changed (); /* EMIT SIGNAL */
 }
@@ -3140,6 +3239,17 @@ PluginInsert::end_touch (uint32_t param_id)
 		// ToDo subtract _plugin_signal_latency  from audible_sample() when rolling, assert > 0
 		ac->stop_touch (session().audible_sample());
 	}
+}
+
+bool
+PluginInsert::provides_stats () const
+{
+#if defined MIXBUS && defined NDEBUG
+	if (is_channelstrip () || !display_to_user ()) {
+		return false;
+	}
+#endif
+	return true;
 }
 
 bool

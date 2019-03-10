@@ -92,6 +92,11 @@ Session::should_ignore_transport_request (TransportRequestSource src, TransportR
 	return false;
 }
 
+bool
+Session::synced_to_engine() const {
+	return config.get_external_sync() && TransportMasterManager::instance().current()->type() == Engine;
+}
+
 void
 Session::request_sync_source (boost::shared_ptr<TransportMaster> tm)
 {
@@ -487,6 +492,9 @@ Session::butler_transport_work ()
 	}
 
 	if (ptw & PostTransportAdjustCaptureBuffering) {
+		/* need to prevent concurrency with ARDOUR::DiskWriter::run(),
+		 * DiskWriter::adjust_buffering() re-allocates the ringbuffer */
+		Glib::Threads::Mutex::Lock lx (AudioEngine::instance()->process_lock ());
 		for (RouteList::iterator i = r->begin(); i != r->end(); ++i) {
 			boost::shared_ptr<Track> tr = boost::dynamic_pointer_cast<Track> (*i);
 			if (tr) {
@@ -495,17 +503,9 @@ Session::butler_transport_work ()
 		}
 	}
 
-	if (ptw & PostTransportCurveRealloc) {
-		for (RouteList::iterator i = r->begin(); i != r->end(); ++i) {
-			(*i)->curve_reallocate();
-		}
-	}
-
 	if (ptw & PostTransportReverse) {
 
 		clear_clicks();
-		cumulative_rf_motion = 0;
-		reset_rf_scale (0);
 
 		/* don't seek if locate will take care of that in non_realtime_stop() */
 
@@ -572,6 +572,17 @@ Session::non_realtime_overwrite (int on_entry, bool& finished)
 	}
 }
 
+bool
+Session::declick_in_progress () const
+{
+	boost::shared_ptr<RouteList> rl = routes.reader();
+	for (RouteList::iterator i = rl->begin(); i != rl->end(); ++i) {
+		if ((*i)->declick_in_progress ()) {
+			return true;
+		}
+	}
+	return false;
+}
 
 void
 Session::non_realtime_locate ()
@@ -727,7 +738,7 @@ Session::select_playhead_priority_target (samplepos_t& jump_to)
 bool
 Session::select_playhead_priority_target (samplepos_t& jump_to)
 {
-	if (config.get_external_sync() || !config.get_auto_return()) {
+	if (!transport_master_no_external_or_using_engine() || !config.get_auto_return()) {
 		return false;
 	}
 
@@ -776,9 +787,6 @@ Session::non_realtime_stop (bool abort, int on_entry, bool& finished)
 	if (auditioner) {
 		auditioner->cancel_audition ();
 	}
-
-	cumulative_rf_motion = 0;
-	reset_rf_scale (0);
 
 	if (did_record) {
 		begin_reversible_command (Operations::capture);
@@ -829,53 +837,75 @@ Session::non_realtime_stop (bool abort, int on_entry, bool& finished)
 		update_latency_compensation ();
 	}
 
-	bool const auto_return_enabled = (!config.get_external_sync() && (Config->get_auto_return_target_list() || abort));
+	/* If we are not synced to a "true" external master, and we're not
+	 * handling an explicit locate, we should consider whether or not to
+	 * "auto-return". This could mean going to a specifically requested
+	 * location, or just back to the start of the last roll.
+	 */
 
-	if (auto_return_enabled ||
-	    (ptw & PostTransportLocate) ||
-	    (_requested_return_sample >= 0) ||
-	    synced_to_engine()) {
+	if (transport_master_no_external_or_using_engine() && !(ptw & PostTransportLocate)) {
 
-		// rg: what is the logic behind this case?
-		// _requested_return_sample should be ignored when synced_to_engine/slaved.
-		// currently worked around in MTC_Slave by forcing _requested_return_sample to -1
-		// 2016-01-10
-		if ((auto_return_enabled || synced_to_engine() || _requested_return_sample >= 0) &&
-		    !(ptw & PostTransportLocate)) {
+		bool do_locate = false;
 
-			/* no explicit locate queued */
+		if (_requested_return_sample >= 0) {
 
-			bool do_locate = false;
+			/* explicit return request pre-queued in event list. overrides everything else */
 
-			if (_requested_return_sample >= 0) {
+			_transport_sample = _requested_return_sample;
 
-				/* explicit return request pre-queued in event list. overrides everything else */
+			/* cancel this request */
+			_requested_return_sample = -1;
+			do_locate = true;
 
-				_transport_sample = _requested_return_sample;
+		} else if (Config->get_auto_return_target_list()) {
+
+			samplepos_t jump_to;
+
+			if (select_playhead_priority_target (jump_to)) {
+
+				/* there's a valid target (we don't care how it
+				 * was derived here)
+				 */
+
+				_transport_sample = jump_to;
 				do_locate = true;
 
-			} else {
-				samplepos_t jump_to;
+			} else if (abort) {
 
-				if (select_playhead_priority_target (jump_to)) {
+				/* roll aborted (typically capture) with
+				 * auto-return enabled
+				 */
 
-					_transport_sample = jump_to;
-					do_locate = true;
+				_transport_sample = _last_roll_location;
+				do_locate = true;
 
-				} else if (abort) {
-
-					_transport_sample = _last_roll_location;
-					do_locate = true;
-				}
-			}
-
-			_requested_return_sample = -1;
-
-			if (do_locate) {
-				_engine.transport_locate (_transport_sample);
 			}
 		}
 
+
+		if (do_locate && synced_to_engine()) {
+
+			/* We will unconditionally locate to _transport_sample
+			 * below, which will refill playback buffers based on
+			 * _transport_sample, and maximises the buffering they
+			 * represent.
+			 *
+			 * But if we are synced to engine (JACK), we should
+			 * locate the engine (JACK) as well. We would follow
+			 * the engine (JACK) on the next process cycle, but
+			 * since we're going to do a locate below anyway,
+			 * it seems pointless to not use just do it ourselves
+			 * right now, rather than wait for the engine (JACK) to
+			 * provide the new position on the next cycle.
+			 *
+			 * Despite the generic name of the called method
+			 * (::transport_locate()) this method only does
+			 * anything if the audio/MIDI backend is JACK.
+			 */
+
+			_engine.transport_locate (_transport_sample);
+
+		}
 	}
 
 	clear_clicks();
@@ -920,7 +950,7 @@ Session::non_realtime_stop (bool abort, int on_entry, bool& finished)
 	   because there will be no process callbacks to deliver stuff from
 	*/
 
-	if (_engine.connected() && !_engine.freewheeling()) {
+	if (_engine.running() && !_engine.freewheeling()) {
 		// need to queue this in the next RT cycle
 		_send_timecode_update = true;
 
@@ -995,6 +1025,7 @@ Session::unset_play_loop ()
 			add_post_transport_work (PostTransportLocate);
 			_butler->schedule_transport_work ();
 		}
+		TransportStateChange (); /* EMIT SIGNAL */
 	}
 }
 
@@ -1213,7 +1244,7 @@ Session::locate (samplepos_t target_sample, bool with_roll, bool with_flush, boo
 		return;
 	}
 
-	cerr << "... now doing the actual locate\n";
+	cerr << "... now doing the actual locate to " << target_sample << " from " << _transport_sample << endl;
 
 	// Update Timecode time
 	_transport_sample = target_sample;
@@ -1616,7 +1647,8 @@ Session::start_transport ()
 			send_immediate_mmc (MIDI::MachineControlCommand (MIDI::MachineControl::cmdDeferredPlay));
 		}
 
-		if (actively_recording() && click_data && (config.get_count_in () || _count_in_once)) {
+		if ((actively_recording () || (config.get_punch_in () && get_record_enabled ()))
+		    && click_data && (config.get_count_in () || _count_in_once)) {
 			_count_in_once = false;
 			/* calculate count-in duration (in audio samples)
 			 * - use [fixed] tempo/meter at _transport_sample
@@ -1700,26 +1732,6 @@ Session::post_transport ()
 	   know were handled ?
 	*/
 	set_post_transport_work (PostTransportWork (0));
-}
-
-void
-Session::reset_rf_scale (samplecnt_t motion)
-{
-	cumulative_rf_motion += motion;
-
-	if (cumulative_rf_motion < 4 * _current_sample_rate) {
-		rf_scale = 1;
-	} else if (cumulative_rf_motion < 8 * _current_sample_rate) {
-		rf_scale = 4;
-	} else if (cumulative_rf_motion < 16 * _current_sample_rate) {
-		rf_scale = 10;
-	} else {
-		rf_scale = 100;
-	}
-
-	if (motion != 0) {
-		set_dirty();
-	}
 }
 
 void
@@ -1965,7 +1977,13 @@ Session::transport_master() const
 bool
 Session::transport_master_is_external () const
 {
-	return config.get_external_sync();
+	return TransportMasterManager::instance().current() && config.get_external_sync();
+}
+
+bool
+Session::transport_master_no_external_or_using_engine () const
+{
+	return !TransportMasterManager::instance().current() || !config.get_external_sync() || (TransportMasterManager::instance().current()->type() == Engine);
 }
 
 void

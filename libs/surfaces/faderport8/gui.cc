@@ -26,6 +26,7 @@
 #include "pbd/strsplit.h"
 #include "pbd/file_utils.h"
 
+#include "gtkmm2ext/actions.h"
 #include "gtkmm2ext/bindings.h"
 #include "gtkmm2ext/gtk_ui.h"
 #include "gtkmm2ext/gui_thread.h"
@@ -354,7 +355,7 @@ FP8GUI::build_available_action_menu ()
 	vector<string> keys;
 	vector<Glib::RefPtr<Gtk::Action> > actions;
 
-	Gtkmm2ext::ActionMap::get_all_actions (paths, labels, tooltips, keys, actions);
+	ActionManager::get_all_actions (paths, labels, tooltips, keys, actions);
 
 	typedef std::map<string,TreeIter> NodeMap;
 	NodeMap nodes;
@@ -391,13 +392,11 @@ FP8GUI::build_available_action_menu ()
 		}
 
 		//kinda kludgy way to avoid displaying menu items as mappable
-		if ( parts[1] == _("Main_menu") )
+		if ( parts[1] == _("Main Menu") )
 			continue;
 		if ( parts[1] == _("JACK") )
 			continue;
 		if ( parts[1] == _("redirectmenu") )
-			continue;
-		if ( parts[1] == _("Editor_menus") )
 			continue;
 		if ( parts[1] == _("RegionList") )
 			continue;

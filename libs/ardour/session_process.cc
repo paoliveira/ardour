@@ -66,7 +66,6 @@ Session::process (pframes_t nframes)
 
 	if (processing_blocked()) {
 		_silent = true;
-		cerr << "%%%%%%%%%%%%%% session process blocked\n";
 		return;
 	}
 
@@ -448,6 +447,7 @@ Session::process_with_events (pframes_t nframes)
 	assert (_transport_speed == 0 || _transport_speed == 1.0 || _transport_speed == -1.0);
 
 	samples_moved = (samplecnt_t) nframes * _transport_speed;
+	DEBUG_TRACE (DEBUG::Transport, string_compose ("plan to move transport by %1 (%2 @ %3)\n", samples_moved, nframes, _transport_speed));
 
 	end_sample = _transport_sample + samples_moved;
 
@@ -497,11 +497,13 @@ Session::process_with_events (pframes_t nframes)
 
 			this_nframes = nframes; /* real (jack) time relative */
 			samples_moved = (samplecnt_t) floor (_transport_speed * nframes); /* transport relative */
+			DEBUG_TRACE (DEBUG::Transport, string_compose ("sub-loop plan to move transport by %1 (%2 @ %3)\n", samples_moved, nframes, _transport_speed));
 
 			/* running an event, position transport precisely to its time */
 			if (this_event && this_event->action_sample <= end_sample && this_event->action_sample >= _transport_sample) {
 				/* this isn't quite right for reverse play */
 				samples_moved = (samplecnt_t) (this_event->action_sample - _transport_sample);
+				DEBUG_TRACE (DEBUG::Transport, string_compose ("sub-loop2 plan to move transport by %1 (%2 @ %3)\n", samples_moved, nframes, _transport_speed));
 				this_nframes = abs (floor(samples_moved / _transport_speed));
 			}
 
@@ -522,8 +524,12 @@ Session::process_with_events (pframes_t nframes)
 
 				if (samples_moved < 0) {
 					decrement_transport_position (-samples_moved);
+					DEBUG_TRACE (DEBUG::Transport, string_compose ("DEcrement transport by %1 to %2\n", samples_moved, _transport_sample));
 				} else if (samples_moved) {
 					increment_transport_position (samples_moved);
+					DEBUG_TRACE (DEBUG::Transport, string_compose ("INcrement transport by %1 to %2\n", samples_moved, _transport_sample));
+				} else {
+					DEBUG_TRACE (DEBUG::Transport, "no transport motion\n");
 				}
 
 				maybe_stop (stop_limit);
@@ -601,7 +607,8 @@ Session::process_without_events (pframes_t nframes)
 		no_roll (nframes);
 		return;
 	} else {
-		samples_moved = (samplecnt_t) nframes;
+		samples_moved = (samplecnt_t) nframes * _transport_speed;
+		DEBUG_TRACE (DEBUG::Transport, string_compose ("no-events, plan to move transport by %1 (%2 @ %3)\n", samples_moved, nframes, _transport_speed));
 	}
 
 	if (!_exporting && !timecode_transmission_suspended()) {
@@ -632,8 +639,12 @@ Session::process_without_events (pframes_t nframes)
 
 	if (samples_moved < 0) {
 		decrement_transport_position (-samples_moved);
+		DEBUG_TRACE (DEBUG::Transport, string_compose ("DEcrement transport by %1 to %2\n", samples_moved, _transport_sample));
 	} else if (samples_moved) {
 		increment_transport_position (samples_moved);
+		DEBUG_TRACE (DEBUG::Transport, string_compose ("INcrement transport by %1 to %2\n", samples_moved, _transport_sample));
+	} else {
+		DEBUG_TRACE (DEBUG::Transport, "no transport motion\n");
 	}
 
 	maybe_stop (stop_limit);
@@ -730,6 +741,7 @@ Session::maybe_sync_start (pframes_t & nframes)
 		_silent = true;
 
 		if (Config->get_locate_while_waiting_for_sync()) {
+			DEBUG_TRACE (DEBUG::Transport, "micro-locate while waiting for sync\n");
 			if (micro_locate (nframes)) {
 				/* XXX ERROR !!! XXX */
 			}
@@ -1076,16 +1088,19 @@ Session::follow_transport_master (pframes_t nframes)
 
 	slave_speed = tmm.get_current_speed_in_process_context();
 	slave_transport_sample = tmm.get_current_position_in_process_context ();
+
+	track_transport_master (slave_speed, slave_transport_sample);
+
+	/* transport sample may have been moved during ::track_transport_master() */
+
 	delta = _transport_sample - slave_transport_sample;
 
 	DEBUG_TRACE (DEBUG::Slave, string_compose ("session at %1, master at %2, delta: %3 res: %4\n", _transport_sample, slave_transport_sample, delta, tmm.current()->resolution()));
 
-	track_transport_master (slave_speed, slave_transport_sample);
-
 	if (transport_master_tracking_state == Running) {
 
 		if (!actively_recording() && abs (delta) > tmm.current()->resolution()) {
-			DEBUG_TRACE (DEBUG::Slave, string_compose ("average slave delta %1 greater than slave resolution %2\n", delta, tmm.current()->resolution()));
+			DEBUG_TRACE (DEBUG::Slave, string_compose ("current slave delta %1 greater than slave resolution %2\n", delta, tmm.current()->resolution()));
 			if (micro_locate (-delta) != 0) {
 				DEBUG_TRACE (DEBUG::Slave, "micro-locate didn't work, set no disk output true\n");
 
@@ -1124,28 +1139,13 @@ Session::track_transport_master (float slave_speed, samplepos_t slave_transport_
 
 		switch (transport_master_tracking_state) {
 		case Stopped:
-			if (master->requires_seekahead()) {
-				master_wait_end = slave_transport_sample + master->seekahead_distance ();
-				DEBUG_TRACE (DEBUG::Slave, string_compose ("slave stopped, but running, requires seekahead to %1\n", master_wait_end));
-				/* we can call locate() here because we are in process context */
-				if (micro_locate (master_wait_end - _transport_sample) != 0) {
-					locate (master_wait_end, false, false);
-				}
-				transport_master_tracking_state = Waiting;
-
-			} else {
-
-				DEBUG_TRACE (DEBUG::Slave, string_compose ("slave stopped -> running at %1\n", slave_transport_sample));
-
-				if (slave_transport_sample != _transport_sample) {
-					DEBUG_TRACE (DEBUG::Slave, string_compose ("require locate to run. eng: %1 -> sl: %2\n", _transport_sample, slave_transport_sample));
-					if (micro_locate (slave_transport_sample - _transport_sample) != 0) {
-						locate (slave_transport_sample, false, false);
-					}
-				}
-				transport_master_tracking_state = Running;
+			master_wait_end = slave_transport_sample + worst_latency_preroll() + master->seekahead_distance ();
+			DEBUG_TRACE (DEBUG::Slave, string_compose ("slave stopped, but running, requires seekahead to %1, now WAITING\n", master_wait_end));
+			/* we can call locate() here because we are in process context */
+			if (micro_locate (master_wait_end - _transport_sample) != 0) {
+				locate (master_wait_end, false, false);
 			}
-			break;
+			transport_master_tracking_state = Waiting;
 
 		case Waiting:
 		default:
@@ -1154,7 +1154,7 @@ Session::track_transport_master (float slave_speed, samplepos_t slave_transport_
 
 		if (transport_master_tracking_state == Waiting) {
 
-			DEBUG_TRACE (DEBUG::Slave, string_compose ("slave waiting at %1\n", slave_transport_sample));
+			DEBUG_TRACE (DEBUG::Slave, string_compose ("master currently at %1, waiting to pass %2\n", slave_transport_sample, master_wait_end));
 
 			if (slave_transport_sample >= master_wait_end) {
 

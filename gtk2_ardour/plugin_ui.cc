@@ -72,6 +72,7 @@
 #include "latency_gui.h"
 #include "plugin_dspload_ui.h"
 #include "plugin_eq_gui.h"
+#include "plugin_presets_ui.h"
 #include "timers.h"
 #include "new_plugin_preset_dialog.h"
 
@@ -468,6 +469,7 @@ PlugUIBase::PlugUIBase (boost::shared_ptr<PluginInsert> pi)
 	, latency_dialog (0)
 	, eqgui (0)
 	, stats_gui (0)
+	, preset_gui (0)
 {
 	_preset_modified.set_size_request (16, -1);
 	_preset_combo.set_text("(default)");
@@ -537,6 +539,8 @@ PlugUIBase::PlugUIBase (boost::shared_ptr<PluginInsert> pi)
 
 	insert->AutomationStateChanged.connect (*this, invalidator (*this), boost::bind (&PlugUIBase::automation_state_changed, this), gui_context());
 
+	insert->LatencyChanged.connect (*this, invalidator (*this), boost::bind (&PlugUIBase::set_latency_label, this), gui_context());
+
 	automation_state_changed();
 }
 
@@ -544,7 +548,9 @@ PlugUIBase::~PlugUIBase()
 {
 	delete eqgui;
 	delete stats_gui;
+	delete preset_gui;
 	delete latency_gui;
+	delete latency_dialog;
 }
 
 void
@@ -587,9 +593,9 @@ PlugUIBase::latency_button_clicked ()
 			latency_dialog->set_transient_for (*win);
 		}
 		latency_dialog->add (*latency_gui);
-		latency_dialog->signal_hide().connect (sigc::mem_fun (*this, &PlugUIBase::set_latency_label));
 	}
 
+	latency_gui->refresh ();
 	latency_dialog->show_all ();
 }
 
@@ -888,17 +894,17 @@ PlugUIBase::update_preset ()
 	}
 	--_no_load_preset;
 
-	save_button.set_sensitive (!p.uri.empty() && p.user);
 	delete_button.set_sensitive (!p.uri.empty() && p.user);
-
 	update_preset_modified ();
 }
 
 void
 PlugUIBase::update_preset_modified ()
 {
+	Plugin::PresetRecord p = plugin->last_preset();
 
-	if (plugin->last_preset().uri.empty()) {
+	if (p.uri.empty()) {
+		save_button.set_sensitive (false);
 		_preset_modified.set_text ("");
 		return;
 	}
@@ -907,6 +913,7 @@ PlugUIBase::update_preset_modified ()
 	if (_preset_modified.get_text().empty() == c) {
 		_preset_modified.set_text (c ? "*" : "");
 	}
+	save_button.set_sensitive (c && p.user);
 }
 
 void

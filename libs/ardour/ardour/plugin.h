@@ -67,7 +67,7 @@ typedef std::set<uint32_t> PluginOutputConfiguration;
  *
  * Plugins are not used directly in Ardour but always wrapped by a PluginInsert.
  */
-class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public Latent
+class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public HasLatency
 {
   public:
 	Plugin (ARDOUR::AudioEngine&, ARDOUR::Session&);
@@ -115,7 +115,7 @@ class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public Latent
 
 	virtual int connect_and_run (BufferSet& bufs,
 			samplepos_t start, samplepos_t end, double speed,
-			ChanMapping in, ChanMapping out,
+			ChanMapping const& in, ChanMapping const& out,
 			pframes_t nframes, samplecnt_t offset);
 
 	virtual std::set<Evoral::Parameter> automatable() const = 0;
@@ -190,7 +190,8 @@ class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public Latent
 
 	struct PresetRecord {
 	    PresetRecord () : valid (false) {}
-	    PresetRecord (const std::string& u, const std::string& l, bool s = true) : uri (u), label (l), user (s), valid (true)  {}
+	    PresetRecord (const std::string& u, const std::string& l, bool s = true, const std::string& d = "")
+				: uri (u), label (l), description (d), user (s), valid (true)  {}
 
 	    bool operator!= (PresetRecord const & a) const {
 		    return uri != a.uri || label != a.label;
@@ -198,6 +199,7 @@ class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public Latent
 
 	    std::string uri;
 	    std::string label;
+	    std::string description;
 	    bool user;
 	    bool valid;
 	};
@@ -291,6 +293,8 @@ class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public Latent
 	virtual void set_owner (SessionObject* o) { _owner = o; }
 	SessionObject* owner() const { return _owner; }
 
+	void use_for_impulse_analysis () { _for_impulse_analysis = true; }
+
 	ARDOUR::AudioEngine& engine() const { return _engine; }
 	ARDOUR::Session& session() const { return _session; }
 
@@ -335,6 +339,10 @@ class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public Latent
 	PBD::Signal1<void,uint32_t> StartTouch;
 	PBD::Signal1<void,uint32_t> EndTouch;
 
+	samplecnt_t signal_latency () const {
+		return plugin_latency ();
+	}
+
 protected:
 
 	friend class PluginInsert;
@@ -358,15 +366,18 @@ protected:
 	/** Do the actual removal of a preset of the provided name */
 	virtual void do_remove_preset (std::string) = 0;
 
-	ARDOUR::AudioEngine&     _engine;
-	ARDOUR::Session&         _session;
-	PluginInfoPtr            _info;
-	uint32_t                 _cycles;
+	ARDOUR::AudioEngine& _engine;
+	ARDOUR::Session&     _session;
+	PluginInfoPtr        _info;
+	uint32_t             _cycles;
+	SessionObject*       _owner;
+	bool                 _for_impulse_analysis;
+
 	std::map<std::string, PresetRecord> _presets;
 
-	SessionObject*           _owner;
-
 private:
+
+	virtual samplecnt_t plugin_latency () const = 0;
 
 	/** Fill _presets with our presets */
 	virtual void find_presets () = 0;
@@ -396,10 +407,11 @@ struct PluginPreset {
 		: _pip (pip)
 	{
 		if (preset) {
-			_preset.uri    = preset->uri;
-			_preset.label  = preset->label;
-			_preset.user   = preset->user;
-			_preset.valid  = preset->valid;
+			_preset.uri         = preset->uri;
+			_preset.label       = preset->label;
+			_preset.user        = preset->user;
+			_preset.description = preset->description;
+			_preset.valid       = preset->valid;
 		}
 	}
 };

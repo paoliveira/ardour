@@ -19,7 +19,9 @@
 
 #include <vector>
 
+#include "pbd/boost_debug.h"
 #include "pbd/debug.h"
+#include "pbd/i18n.h"
 
 #include "ardour/audioengine.h"
 #include "ardour/debug.h"
@@ -30,7 +32,6 @@
 #include "ardour/types_convert.h"
 #include "ardour/utils.h"
 
-#include "pbd/i18n.h"
 
 namespace ARDOUR {
 	namespace Properties {
@@ -68,8 +69,8 @@ TransportMaster::TransportMaster (SyncSource t, std::string const & name)
 	, _session (0)
 	, _current_delta (0)
 	, _pending_collect (true)
+	, _removeable (false)
 	, _request_mask (Properties::allowed_transport_requests, TransportRequestType (0))
-	, _locked (Properties::locked, false)
 	, _sclock_synced (Properties::sclock_synced, false)
 	, _collect (Properties::collect, true)
 	, _connected (Properties::connected, false)
@@ -82,13 +83,20 @@ TransportMaster::TransportMaster (SyncSource t, std::string const & name)
 
 TransportMaster::~TransportMaster()
 {
-	delete _session;
+	DEBUG_TRACE (DEBUG::Destruction, string_compose ("destroying transport master \"%1\" along with port %2\n", name(), (_port ? _port->name() : std::string ("no port"))));
+
+	unregister_port ();
 }
 
 bool
 TransportMaster::speed_and_position (double& speed, samplepos_t& pos, samplepos_t& lp, samplepos_t& when, samplepos_t now)
 {
 	if (!_collect) {
+		return false;
+	}
+
+	if (!locked()) {
+		DEBUG_TRACE (DEBUG::Slave, string_compose ("%1: not locked, no speed and position!\n", name()));
 		return false;
 	}
 
@@ -108,18 +116,10 @@ TransportMaster::speed_and_position (double& speed, samplepos_t& pos, samplepos_
 			lp = last.position;
 			when = last.timestamp;
 			_current_delta = 0;
-			// queue_reset (false);
 			DEBUG_TRACE (DEBUG::Slave, string_compose ("%1 not seen since %2 vs %3 (%4) with seekahead = %5 reset pending, pos = %6\n", name(), last.timestamp, now, (now - last.timestamp), update_interval(), pos));
 			return false;
 		}
 	}
-
-	lp = last.position;
-	when = last.timestamp;
-	speed = last.speed;
-	pos   = last.position + (now - last.timestamp) * last.speed;
-
-	DEBUG_TRACE (DEBUG::Slave, string_compose ("%1: speed_and_position tme: %2 pos: %3 spd: %4\n", name(), last.timestamp, last.position, last.speed));
 
 	lp = last.position;
 	when = last.timestamp;
@@ -132,8 +132,8 @@ TransportMaster::speed_and_position (double& speed, samplepos_t& pos, samplepos_
 
 	pos = last.position + (now - last.timestamp) * speed;
 
-	DEBUG_TRACE (DEBUG::Slave, string_compose ("%1 sync spd: %2 pos: %3 | last-pos: %4 | elapsed: %5\n",
-	                                           name(), speed, pos, last.position, (now - last.timestamp)));
+	DEBUG_TRACE (DEBUG::Slave, string_compose ("%1 sync spd: %2 pos: %3 | last-pos: %4 @  %7| elapsed: %5 | speed: %6\n",
+	                                           name(), speed, pos, last.position, (now - last.timestamp), speed, when));
 
 	return true;
 }
@@ -144,7 +144,6 @@ TransportMaster::register_properties ()
 	_xml_node_name = state_node_name;
 
 	add_property (_name);
-	add_property (_locked);
 	add_property (_collect);
 	add_property (_sclock_synced);
 	add_property (_request_mask);
@@ -285,6 +284,7 @@ TransportMaster::get_state ()
 {
 	XMLNode* node = new XMLNode (state_node_name);
 	node->set_property (X_("type"), _type);
+	node->set_property (X_("removeable"), _removeable);
 
 	add_properties (*node);
 
@@ -329,6 +329,7 @@ TransportMaster::factory (XMLNode const & node)
 
 	SyncSource type;
 	std::string name;
+	bool removeable;
 
 	if (!node.get_property (X_("type"), type)) {
 		return boost::shared_ptr<TransportMaster>();
@@ -338,28 +339,104 @@ TransportMaster::factory (XMLNode const & node)
 		return boost::shared_ptr<TransportMaster>();
 	}
 
-	return factory (type, name);
+	if (!node.get_property (X_("removeable"), removeable)) {
+		/* development versions of 6.0 didn't have this property for a
+		   while. Any TM listed in XML at that time was non-removeable
+		*/
+		removeable = false;
+	}
+
+	DEBUG_TRACE (DEBUG::Slave, string_compose ("xml-construct %1 name %2 removeable %3\n", enum_2_string (type), name, removeable));
+
+	return factory (type, name, removeable);
 }
 
 boost::shared_ptr<TransportMaster>
-TransportMaster::factory (SyncSource type, std::string const& name)
+TransportMaster::factory (SyncSource type, std::string const& name, bool removeable)
 {
 	/* XXX need to count existing sources of a given type */
 
+	boost::shared_ptr<TransportMaster> tm;
+
+	DEBUG_TRACE (DEBUG::Slave, string_compose ("factory-construct %1 name %2 removeable %3\n", enum_2_string (type), name, removeable));
+
 	switch (type) {
 	case MTC:
-		return boost::shared_ptr<TransportMaster> (new MTC_TransportMaster (sync_source_to_string (type)));
+		tm.reset (new MTC_TransportMaster (name));
+		break;
 	case LTC:
-		return boost::shared_ptr<TransportMaster> (new LTC_TransportMaster (sync_source_to_string (type)));
+		tm.reset (new LTC_TransportMaster (name));
+		break;
 	case MIDIClock:
-		return boost::shared_ptr<TransportMaster> (new MIDIClock_TransportMaster (sync_source_to_string (type)));
+		tm.reset (new MIDIClock_TransportMaster (name));
+		break;
 	case Engine:
-		return boost::shared_ptr<TransportMaster> (new Engine_TransportMaster (*AudioEngine::instance()));
+		tm.reset (new Engine_TransportMaster (*AudioEngine::instance()));
+		break;
 	default:
 		break;
 	}
 
-	return boost::shared_ptr<TransportMaster>();
+	if (tm) {
+		tm->set_removeable (removeable);
+	}
+
+	return tm;
+}
+
+/** @param sh Return a short version of the string */
+std::string
+TransportMaster::display_name (bool sh) const
+{
+
+	switch (_type) {
+	case Engine:
+		/* no other backends offer sync for now ... deal with this if we
+		 * ever have to.
+		 */
+		return S_("SyncSource|JACK");
+
+	case MTC:
+		if (sh) {
+			if (name().length() <= 4) {
+				return name();
+			}
+			return S_("SyncSource|MTC");
+		} else {
+			return name();
+		}
+
+	case MIDIClock:
+		if (sh) {
+			if (name().length() <= 4) {
+				return name();
+			}
+			return S_("SyncSource|M-Clk");
+		} else {
+			return name();
+		}
+
+	case LTC:
+		if (sh) {
+			if (name().length() <= 4) {
+				return name();
+			}
+			return S_("SyncSource|LTC");
+		} else {
+			return name();
+		}
+	}
+	/* GRRRR .... stupid, stupid gcc - you can't get here from there, all enum values are handled */
+	return S_("SyncSource|JACK");
+}
+
+void
+TransportMaster::unregister_port ()
+{
+	if (_port) {
+		AudioEngine::instance()->unregister_port (_port);
+		_port.reset ();
+	}
 }
 
 boost::shared_ptr<Port>
@@ -413,3 +490,4 @@ TimecodeTransportMaster::set_fr2997 (bool yn)
 		PropertyChanged (Properties::fr2997);
 	}
 }
+

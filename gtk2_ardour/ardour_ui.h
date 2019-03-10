@@ -195,7 +195,6 @@ public:
 	void finish();
 
 	int load_session (const std::string& path, const std::string& snapshot, std::string mix_template = std::string());
-	bool session_loaded;
 	bool session_load_in_progress;
 	int build_session (const std::string& path, const std::string& snapshot, ARDOUR::BusProfile*);
 	bool session_is_new() const { return _session_is_new; }
@@ -229,17 +228,12 @@ public:
 	PublicEditor&	  the_editor() { return *editor;}
 	Mixer_UI* the_mixer() { return mixer; }
 
+	Gtk::Menu* shared_popup_menu ();
+
 	void new_midi_tracer_window ();
 	void toggle_editing_space();
 	void toggle_mixer_space();
-	void toggle_mixer_list();
-	void toggle_monitor_section_visibility ();
 	void toggle_keep_tearoffs();
-
-	void toggle_vca_pane();
-#ifdef MIXBUS
-	void toggle_mixbus_pane();
-#endif
 
 	void reset_focus (Gtk::Widget*);
 
@@ -300,7 +294,8 @@ public:
 	void flush_videotimeline_cache (bool localcacheonly=false);
 	void export_video (bool range = false);
 
-	void session_add_audio_route (bool, int32_t, int32_t, ARDOUR::TrackMode, ARDOUR::RouteGroup *, uint32_t, std::string const &, bool, ARDOUR::PresentationInfo::order_t order);
+	void session_add_audio_route (bool, int32_t, int32_t, ARDOUR::TrackMode, ARDOUR::RouteGroup *,
+	                              uint32_t, std::string const &, bool, ARDOUR::PresentationInfo::order_t order);
 
 	void session_add_mixed_track (const ARDOUR::ChanCount&, const ARDOUR::ChanCount&, ARDOUR::RouteGroup*,
 	                              uint32_t, std::string const &, bool strict_io,
@@ -314,6 +309,8 @@ public:
 	void session_add_midi_route (bool, ARDOUR::RouteGroup *, uint32_t, std::string const &, bool,
 	                             ARDOUR::PluginInfoPtr, ARDOUR::Plugin::PresetRecord*,
 	                             ARDOUR::PresentationInfo::order_t order);
+
+	void session_add_foldback_bus (uint32_t, std::string const &);
 
 	void display_insufficient_ports_message ();
 
@@ -361,14 +358,17 @@ public:
 	bool tabbed_window_state_event_handler (GdkEventWindowState*, void* object);
 	bool key_event_handler (GdkEventKey*, Gtk::Window* window);
 
-	Gtkmm2ext::ActionMap global_actions;
-
 	ARDOUR::PresentationInfo::order_t translate_order (RouteDialogs::InsertAt);
 
 	std::map<std::string, std::string> route_setup_info (const std::string& script_path);
 
 protected:
 	friend class PublicEditor;
+
+	void toggle_use_monitor_section ();
+	void monitor_dim_all ();
+	void monitor_cut_all ();
+	void monitor_mono ();
 
 	void toggle_auto_play ();
 	void toggle_auto_input ();
@@ -402,7 +402,8 @@ private:
 	bool          _was_dirty;
 	bool          _mixer_on_top;
 	bool          _initial_verbose_plugin_scan;
-	bool           first_time_engine_run;
+
+	Gtk::Menu*    _shared_popup_menu;
 
 	void hide_tabbable (ArdourWidgets::Tabbable*);
 	void detach_tabbable (ArdourWidgets::Tabbable*);
@@ -441,7 +442,7 @@ private:
 
 	void engine_halted (const char* reason, bool free_reason);
 	void engine_stopped ();
-	void engine_running ();
+	void engine_running (uint32_t cnt);
 
 	void use_config ();
 
@@ -557,8 +558,6 @@ private:
 	/* called by Blink signal */
 
 	void transport_rec_enable_blink (bool onoff);
-
-	Gtk::Menu*        session_popup_menu;
 
 	/* menu bar and associated stuff */
 
@@ -721,6 +720,7 @@ private:
 	/* Keymap handling */
 
 	void install_actions ();
+	void install_dependent_actions ();
 
 	void toggle_record_enable (uint16_t);
 
@@ -863,7 +863,6 @@ private:
 	bool main_window_delete_event (GdkEventAny*);
 	bool idle_ask_about_quit ();
 
-	void load_bindings ();
 	bool tabbable_visibility_button_press (GdkEventButton* ev, std::string const& tabbable_name);
 
 	void step_up_through_tabs ();

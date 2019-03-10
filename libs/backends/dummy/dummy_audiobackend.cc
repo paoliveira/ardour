@@ -635,12 +635,6 @@ DummyAudioBackend::my_name () const
 	return _instance_name;
 }
 
-bool
-DummyAudioBackend::available () const
-{
-	return _running;
-}
-
 uint32_t
 DummyAudioBackend::port_name_size () const
 {
@@ -676,6 +670,16 @@ DummyAudioBackend::get_port_name (PortEngine::PortHandle port) const
 		return std::string ();
 	}
 	return static_cast<DummyPort*>(port)->name ();
+}
+
+PortFlags
+DummyAudioBackend::get_port_flags (PortEngine::PortHandle port) const
+{
+	if (!valid_port (port)) {
+		PBD::error << _("DummyBackend::get_port_flags: Invalid Port(s)") << endmsg;
+		return PortFlags (0);
+	}
+	return static_cast<DummyPort*>(port)->flags ();
 }
 
 int
@@ -900,7 +904,7 @@ DummyAudioBackend::register_system_ports()
 	lr.min = lr.max = _systemic_input_latency;
 	for (int i = 0; i < m_ins; ++i) {
 		char tmp[64];
-		snprintf(tmp, sizeof(tmp), "system:midi_capture_%d", i+1);
+		snprintf(tmp, sizeof(tmp), "system:midi_capture_dummy_%d", i+1);
 		PortHandle p = add_port(std::string(tmp), DataType::MIDI, static_cast<PortFlags>(IsOutput | IsPhysical | IsTerminal));
 		if (!p) return -1;
 		set_latency_range (p, false, lr);
@@ -916,7 +920,7 @@ DummyAudioBackend::register_system_ports()
 	lr.min = lr.max = _systemic_output_latency;
 	for (int i = 1; i <= m_out; ++i) {
 		char tmp[64];
-		snprintf(tmp, sizeof(tmp), "system:midi_playback_%d", i);
+		snprintf(tmp, sizeof(tmp), "system:midi_playback_dummy_%d", i);
 		PortHandle p = add_port(std::string(tmp), DataType::MIDI, static_cast<PortFlags>(IsInput | IsPhysical | IsTerminal));
 		if (!p) return -1;
 		set_latency_range (p, true, lr);
@@ -1654,13 +1658,13 @@ void DummyPort::setup_random_number_generator ()
 #ifdef PLATFORM_WINDOWS
 	LARGE_INTEGER Count;
 	if (QueryPerformanceCounter (&Count)) {
-		_rseed = Count.QuadPart % UINT_MAX;
+		_rseed = Count.QuadPart;
 	} else
 #endif
 	{
-	_rseed = g_get_monotonic_time() % UINT_MAX;
+	_rseed = g_get_monotonic_time();
 	}
-	_rseed = (_rseed + (uint64_t)this) % UINT_MAX;
+	_rseed = (_rseed + (uint64_t)this) % INT_MAX;
 	if (_rseed == 0) _rseed = 1;
 }
 

@@ -20,6 +20,7 @@
 #include <cairomm/surface.h>
 #include <pango/pangocairo.h>
 
+#include "pbd/file_utils.h"
 #include "pbd/strsplit.h"
 
 #include "gtkmm2ext/bindings.h"
@@ -28,6 +29,7 @@
 #include "ardour/audioengine.h"
 #include "ardour/disk_reader.h"
 #include "ardour/disk_writer.h"
+#include "ardour/filesystem_paths.h"
 #include "ardour/plugin_manager.h"
 #include "ardour/route.h"
 #include "ardour/session.h"
@@ -53,6 +55,8 @@
 #include "utils_videotl.h"
 
 #include "pbd/i18n.h"
+
+static const char* ui_scripts_file_name = "ui_scripts";
 
 namespace LuaCairo {
 /** wrap RefPtr< Cairo::ImageSurface >
@@ -442,7 +446,7 @@ lua_actionlist (lua_State *L)
 	vector<string> tooltips;
 	vector<string> keys;
 	vector<Glib::RefPtr<Gtk::Action> > actions;
-	Gtkmm2ext::ActionMap::get_all_actions (paths, labels, tooltips, keys, actions);
+	ActionManager::get_all_actions (paths, labels, tooltips, keys, actions);
 
 	vector<string>::iterator p;
 	vector<string>::iterator l;
@@ -467,8 +471,6 @@ lua_actionlist (lua_State *L)
 		if (parts[1] == _("JACK"))
 			continue;
 		if (parts[1] == _("redirectmenu"))
-			continue;
-		if (parts[1] == _("Editor_menus"))
 			continue;
 		if (parts[1] == _("RegionList"))
 			continue;
@@ -508,6 +510,7 @@ lua_translate_order (RouteDialogs::InsertAt place)
 
 using namespace ARDOUR;
 
+PBD::Signal0<void> LuaInstance::LuaTimerS;
 PBD::Signal0<void> LuaInstance::LuaTimerDS;
 PBD::Signal0<void> LuaInstance::SetSession;
 
@@ -1091,8 +1094,6 @@ LuaInstance::LuaInstance ()
 {
 	lua.Print.connect (&_lua_print);
 	init ();
-
-	LuaScriptParamList args;
 }
 
 LuaInstance::~LuaInstance ()
@@ -1266,6 +1267,64 @@ LuaInstance::init ()
 	lua_setglobal (L, "Editor");
 }
 
+int
+LuaInstance::load_state ()
+{
+	std::string uiscripts;
+	if (!find_file (ardour_config_search_path(), ui_scripts_file_name, uiscripts)) {
+		return -1;
+	}
+	XMLTree tree;
+
+	info << string_compose (_("Loading user ui scripts file %1"), uiscripts) << endmsg;
+
+	if (!tree.read (uiscripts)) {
+		error << string_compose(_("cannot read ui scripts file \"%1\""), uiscripts) << endmsg;
+		return -1;
+	}
+
+	if (set_state (*tree.root())) {
+		error << string_compose(_("user ui scripts file \"%1\" not loaded successfully."), uiscripts) << endmsg;
+		return -1;
+	}
+
+	return 0;
+}
+
+int
+LuaInstance::save_state ()
+{
+	if (!_session) {
+		/* action scripts are un-registered with the session */
+		return -1;
+	}
+
+	std::string uiscripts = Glib::build_filename (user_config_directory(), ui_scripts_file_name);
+
+	XMLNode* node = new XMLNode (X_("UIScripts"));
+	node->add_child_nocopy (get_action_state ());
+	node->add_child_nocopy (get_hook_state ());
+
+	XMLTree tree;
+	tree.set_root (node);
+
+	if (!tree.write (uiscripts.c_str())){
+		error << string_compose (_("UI script file %1 not saved"), uiscripts) << endmsg;
+		return -1;
+	}
+	return 0;
+}
+
+void
+LuaInstance::set_dirty ()
+{
+	if (!_session || _session->deletion_in_progress()) {
+		return;
+	}
+	save_state ();
+	_session->set_dirty (); // XXX is this reasonable?
+}
+
 void LuaInstance::set_session (Session* s)
 {
 	SessionHandlePtr::set_session (s);
@@ -1273,12 +1332,15 @@ void LuaInstance::set_session (Session* s)
 		return;
 	}
 
+	load_state ();
+
 	lua_State* L = lua.getState();
 	LuaBindings::set_session (L, _session);
 
 	for (LuaCallbackMap::iterator i = _callbacks.begin(); i != _callbacks.end(); ++i) {
 		i->second->set_session (s);
 	}
+	second_connection = Timers::rapid_connect (sigc::mem_fun(*this, & LuaInstance::every_second));
 	point_one_second_connection = Timers::rapid_connect (sigc::mem_fun(*this, & LuaInstance::every_point_one_seconds));
 	SetSession (); /* EMIT SIGNAL */
 }
@@ -1287,6 +1349,7 @@ void
 LuaInstance::session_going_away ()
 {
 	ENSURE_GUI_THREAD (*this, &LuaInstance::session_going_away);
+	second_connection.disconnect ();
 	point_one_second_connection.disconnect ();
 
 	(*_lua_clear)();
@@ -1299,6 +1362,12 @@ LuaInstance::session_going_away ()
 	lua_State* L = lua.getState();
 	LuaBindings::set_session (L, _session);
 	lua.do_command ("collectgarbage();");
+}
+
+void
+LuaInstance::every_second ()
+{
+	LuaTimerS (); // emit signal
 }
 
 void
@@ -1332,6 +1401,7 @@ LuaInstance::set_state (const XMLNode& node)
 		}
 	}
 
+	assert (_callbacks.empty());
 	if ((child = find_named_node (node, "ActionHooks"))) {
 		for (XMLNodeList::const_iterator n = child->children ().begin (); n != child->children ().end (); ++n) {
 			try {
@@ -1537,7 +1607,7 @@ LuaInstance::set_lua_action (
 	} catch (...) {
 		return false;
 	}
-	_session->set_dirty ();
+	set_dirty ();
 	return true;
 }
 
@@ -1553,7 +1623,7 @@ LuaInstance::remove_lua_action (const int id)
 		return false;
 	}
 	ActionChanged (id, ""); /* EMIT SIGNAL */
-	_session->set_dirty ();
+	set_dirty ();
 	return true;
 }
 
@@ -1674,11 +1744,11 @@ LuaInstance::register_lua_slot (const std::string& name, const std::string& scri
 		_callbacks.insert (std::make_pair(p->id(), p));
 		p->drop_callback.connect (_slotcon, MISSING_INVALIDATOR, boost::bind (&LuaInstance::unregister_lua_slot, this, p->id()), gui_context());
 		SlotChanged (p->id(), p->name(), p->signals()); /* EMIT SIGNAL */
+		set_dirty ();
 		return true;
 	} catch (luabridge::LuaException const& e) {
 		cerr << "LuaException:" << e.what () << endl;
 	} catch (...) { }
-	_session->set_dirty ();
 	return false;
 }
 
@@ -1689,9 +1759,9 @@ LuaInstance::unregister_lua_slot (const PBD::ID& id)
 	if (i != _callbacks.end()) {
 		SlotChanged (id, "", ActionHook()); /* EMIT SIGNAL */
 		_callbacks.erase (i);
+		set_dirty ();
 		return true;
 	}
-	_session->set_dirty ();
 	return false;
 }
 

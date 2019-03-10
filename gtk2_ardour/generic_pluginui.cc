@@ -56,6 +56,7 @@
 #include "widgets/tooltips.h"
 
 #include "plugin_ui.h"
+#include "plugin_presets_ui.h"
 #include "plugin_display.h"
 #include "gui_thread.h"
 #include "automation_controller.h"
@@ -157,7 +158,9 @@ GenericPluginUI::GenericPluginUI (boost::shared_ptr<PluginInsert> pi, bool scrol
 		pack_end (plugin_analysis_expander, false, false);
 	}
 
-	pack_end (cpuload_expander, false, false);
+	if (insert->provides_stats ()) {
+		pack_end (cpuload_expander, false, false);
+	}
 
 	if (!plugin->get_docs().empty()) {
 		pack_end (description_expander, false, false);
@@ -197,7 +200,7 @@ GenericPluginUI::GenericPluginUI (boost::shared_ptr<PluginInsert> pi, bool scrol
 
 	main_contents.pack_start (scroller, true, true);
 
-	prefheight = 0;
+	prefheight = -1;
 	build ();
 
 	if (insert->plugin()->has_midnam() && insert->plugin()->knows_bank_patch()) {
@@ -209,6 +212,7 @@ GenericPluginUI::GenericPluginUI (boost::shared_ptr<PluginInsert> pi, bool scrol
 		scroller.set_name ("PluginEditor");
 	} else {
 		scroller.signal_size_request().connect (sigc::mem_fun(*this, &GenericPluginUI::scroller_size_request));
+		scroller.signal_realize().connect (sigc::mem_fun(scroller, &Widget::queue_resize));
 		scroller.set_policy (Gtk::POLICY_AUTOMATIC, Gtk::POLICY_NEVER);
 	}
 
@@ -220,6 +224,7 @@ GenericPluginUI::~GenericPluginUI ()
 	if (output_controls.size() > 0) {
 		screen_update_connection.disconnect();
 	}
+	delete automation_menu;
 	delete _pianomm;
 }
 
@@ -228,15 +233,15 @@ GenericPluginUI::scroller_size_request (Gtk::Requisition* a)
 {
 	GtkRequisition request = hpacker.size_request();
 
-	Glib::RefPtr<Gdk::Window> window (get_window());
+	Glib::RefPtr<Gdk::Window> window (scroller.get_window());
 	Glib::RefPtr<Gdk::Screen> screen;
 
 	if (window) {
-		screen = get_screen();
+		screen = window->get_screen();
 	}
 
 	if (!screen) {
-		a->width = request.width;
+		a->width = min(1024, request.width);
 		return;
 	}
 
@@ -314,7 +319,8 @@ void
 GenericPluginUI::build ()
 {
 	std::vector<ControlUI *> control_uis;
-	bool grid = plugin->parameter_count() > 0;
+	bool grid_avail = false;
+	bool grid_veto = false;
 
 	// Build a ControlUI for each control port
 	for (size_t i = 0; i < plugin->parameter_count(); ++i) {
@@ -337,8 +343,10 @@ GenericPluginUI::build ()
 			ControlUI* cui;
 			Plugin::UILayoutHint hint;
 
-			if (!plugin->get_layout(i, hint)) {
-				grid = false;
+			if (plugin->get_layout(i, hint)) {
+				grid_avail = true;
+			} else {
+				grid_veto = true;
 			}
 
 			boost::shared_ptr<ARDOUR::AutomationControl> c
@@ -352,7 +360,7 @@ GenericPluginUI::build ()
 				continue;
 			}
 
-			if (grid) {
+			if (grid_avail && !grid_veto) {
 				cui->x0 = hint.x0;
 				cui->x1 = hint.x1;
 				cui->y0 = hint.y0;
@@ -367,6 +375,8 @@ GenericPluginUI::build ()
 			control_uis.push_back(cui);
 		}
 	}
+
+	bool grid = grid_avail && !grid_veto;
 
 	// Build a ControlUI for each property
 	const Plugin::PropertyDescriptors& descs = plugin->get_supported_properties();
@@ -404,7 +414,20 @@ GenericPluginUI::build ()
 		plugin->announce_property_values();
 	}
 
-	if (grid) {
+	if (control_uis.empty ()) {
+		std::vector<Plugin::PresetRecord> presets = insert->plugin()->get_presets();
+		bool show_preset_browser = false;
+		for (std::vector<Plugin::PresetRecord>::const_iterator i = presets.begin(); i != presets.end(); ++i) {
+			if (i->valid && !i->description.empty()) {
+				show_preset_browser = true;
+				break;
+			}
+		}
+		if (show_preset_browser) {
+			preset_gui = new PluginPresetsUI (insert);
+			hpacker.pack_start (*preset_gui, true, true);
+		}
+	} else if (grid) {
 		custom_layout (control_uis);
 	} else {
 		automatic_layout (control_uis);
@@ -602,7 +625,7 @@ GenericPluginUI::automatic_layout (const std::vector<ControlUI*>& control_uis)
 		box->pack_start (*cui, false, false);
 	}
 
-	if (is_scrollable) {
+	if (is_scrollable && i > 0) {
 		prefheight = 30 * i;
 	}
 
@@ -939,6 +962,7 @@ GenericPluginUI::build_control_ui (const Evoral::Parameter&             param,
 			// Create/add controller
 			control_ui->file_button = manage(new Gtk::FileChooserButton(Gtk::FILE_CHOOSER_ACTION_OPEN));
 			control_ui->file_button->set_title(desc.label);
+			Gtkmm2ext::add_volume_shortcuts (*control_ui->file_button);
 
 			if (use_knob) {
 				control_ui->knobtable = manage (new Table());

@@ -199,7 +199,7 @@ SoundFileBox::SoundFileBox (bool /*persistent*/)
 	table.attach (timecode_clock, 1, 2, 5, 6, FILL, FILL);
 	table.attach (tempomap_value, 1, 2, 6, 7, FILL, FILL);
 
-	length_clock.set_mode (ARDOUR_UI::instance()->secondary_clock->mode());
+	length_clock.set_mode (ARDOUR_UI::instance()->primary_clock->mode());
 	timecode_clock.set_mode (AudioClock::Timecode);
 
 	main_box.pack_start (table, false, false);
@@ -855,6 +855,7 @@ void
 SoundFileBrowser::on_show ()
 {
 	ArdourWindow::on_show ();
+	reset_options ();
 	start_metering ();
 }
 
@@ -1797,6 +1798,9 @@ SoundFileOmega::SoundFileOmega (string title, ARDOUR::Session* s,
 	where_combo.set_active_text (str.back());
 	where_combo.signal_changed().connect (sigc::mem_fun (*this, &SoundFileOmega::where_combo_changed));
 
+	instrument_combo_changed();
+	instrument_combo.signal_changed().connect(sigc::mem_fun(*this, &SoundFileOmega::instrument_combo_changed) );
+
 	Label* l = manage (new Label);
 	l->set_markup (_("<b>Add files ...</b>"));
 	options.attach (*l, 0, 1, 0, 1, FILL, SHRINK, 8, 0);
@@ -1983,6 +1987,12 @@ SoundFileOmega::where_combo_changed()
 	preview.set_import_position(get_position());
 }
 
+void
+SoundFileOmega::instrument_combo_changed()
+{
+	_session->the_auditioner()->set_audition_synth_info( instrument_combo.selected_instrument() );
+}
+
 MidiTrackNameSource
 SoundFileOmega::get_midi_track_name_source () const
 {
@@ -2028,13 +2038,15 @@ SoundFileOmega::reset (uint32_t selected_audio_tracks, uint32_t selected_midi_tr
 		chooser.set_filter (audio_and_midi_filter);
 	}
 
-	reset_options ();
+	if (is_visible()) {
+		reset_options ();
+	}
 }
 
 void
 SoundFileOmega::file_selection_changed ()
 {
-	if (resetting_ourselves) {
+	if (resetting_ourselves || !is_visible ()) {
 		return;
 	}
 
@@ -2054,7 +2066,7 @@ SoundFileOmega::do_something (int action)
 {
 	SoundFileBrowser::do_something (action);
 
-	if (action == RESPONSE_CLOSE) {
+	if (action == RESPONSE_CLOSE || !ARDOUR_UI_UTILS::engine_is_running ()) {
 		hide ();
 		return;
 	}

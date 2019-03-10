@@ -39,6 +39,7 @@
 #include "midi++/mmc.h"
 
 #include "ardour/async_midi_port.h"
+#include "ardour/ardour.h"
 #include "ardour/audio_port.h"
 #include "ardour/audio_backend.h"
 #include "ardour/audioengine.h"
@@ -98,6 +99,7 @@ AudioEngine::AudioEngine ()
 	, _hw_devicelist_update_thread(0)
 	, _hw_devicelist_update_count(0)
 	, _stop_hw_devicelist_processing(0)
+	, _start_cnt (0)
 #ifdef SILENCE_AFTER_SECONDS
 	, _silence_countdown (0)
 	, _silence_hit_cnt (0)
@@ -578,7 +580,7 @@ AudioEngine::do_devicelist_update()
 
 	while (!_stop_hw_devicelist_processing) {
 
-		if (_hw_devicelist_update_count) {
+		if (g_atomic_int_get (&_hw_devicelist_update_count)) {
 
 			_devicelist_update_lock.unlock();
 
@@ -924,13 +926,25 @@ AudioEngine::start (bool for_latency)
 
 	}
 
-	/* XXX MIDI ports may not actually be available here yet .. */
-
-	PortManager::fill_midi_port_info ();
+	midi_info_dirty = true;
 
 	if (!for_latency) {
-		Running(); /* EMIT SIGNAL */
+		/* Call the library-wide ::init_post_engine() before emitting
+		 * running to ensure that its tasks are complete before any
+		 * signal handlers execute. PBD::Signal does not ensure
+		 * ordering of signal handlers so even if ::init_post_engine()
+		 * is connected first, it may not run first.
+		 */
+
+		ARDOUR::init_post_engine (_start_cnt);
+
+		Running (_start_cnt); /* EMIT SIGNAL */
+
+		/* latency start/stop cycles do not count as "starts" */
+
+		_start_cnt++;
 	}
+
 
 	return 0;
 }
@@ -968,7 +982,13 @@ AudioEngine::stop (bool for_latency)
 		pl.release ();
 	}
 
-	if (_session && _running && stop_engine &&
+	const bool was_running_will_stop = (_running && stop_engine);
+
+	if (was_running_will_stop) {
+		_running = false;
+	}
+
+	if (_session && was_running_will_stop &&
 	    (_session->state_of_the_state() & Session::Loading) == 0 &&
 	    (_session->state_of_the_state() & Session::Deletion) == 0) {
 		// it's not a halt, but should be handled the same way:
@@ -976,8 +996,7 @@ AudioEngine::stop (bool for_latency)
 		_session->engine_halted ();
 	}
 
-	if (stop_engine && _running) {
-		_running = false;
+	if (was_running_will_stop) {
 		if (!for_latency) {
 			_started_for_latency = false;
 		} else if (!_started_for_latency) {
@@ -994,6 +1013,8 @@ AudioEngine::stop (bool for_latency)
 	}
 
 	if (stop_engine) {
+		TransportMasterManager& tmm (TransportMasterManager::instance());
+		tmm.engine_stopped ();
 		Stopped (); /* EMIT SIGNAL */
 	}
 
@@ -1029,16 +1050,6 @@ AudioEngine::is_realtime() const
 	}
 
 	return _backend->is_realtime();
-}
-
-bool
-AudioEngine::connected() const
-{
-	if (!_backend) {
-		return false;
-	}
-
-	return _backend->available();
 }
 
 void

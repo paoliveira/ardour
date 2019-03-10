@@ -69,6 +69,7 @@ intptr_t Session::vst_callback (
 	static VstTimeInfo _timeinfo; // only uses as fallback
 	VstTimeInfo* timeinfo;
 	int32_t newflags = 0;
+	bool used_for_impulse_analysis = false;
 
 	if (effect && effect->ptr1) {
 		plug = (VSTPlugin *) (effect->ptr1);
@@ -77,6 +78,9 @@ intptr_t Session::vst_callback (
 		DEBUG_TRACE (PBD::DEBUG::VSTCallbacks, string_compose ("am callback 0x%1%2, opcode = %3%4, plugin = \"%5\"\n",
 					std::hex, (void*) DEBUG_THREAD_SELF,
 					std::dec, opcode, plug->name()));
+		if (plug->_for_impulse_analysis) {
+			plug = 0;
+		}
 	} else {
 		plug = 0;
 		session = 0;
@@ -299,6 +303,7 @@ intptr_t Session::vst_callback (
 	case audioMasterSetTime:
 		SHOW_CALLBACK ("audioMasterSetTime");
 		// VstTimenfo* in <ptr>, filter in <value>, not supported
+		return 0;
 
 	case audioMasterTempoAt:
 		SHOW_CALLBACK ("audioMasterTempoAt");
@@ -379,6 +384,7 @@ intptr_t Session::vst_callback (
 	case audioMasterGetNextPlug:
 		SHOW_CALLBACK ("audioMasterGetNextPlug");
 		// output pin in <value> (-1: first to come), returns cEffect*
+		return 0;
 
 	case audioMasterWillReplaceOrAccumulate:
 		SHOW_CALLBACK ("audioMasterWillReplaceOrAccumulate");

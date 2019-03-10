@@ -35,13 +35,20 @@ class LIBARDOUR_API TransportMasterManager : public boost::noncopyable
   public:
 	~TransportMasterManager ();
 
-	int init ();
+	int set_default_configuration ();
+	void restart ();
+	void engine_stopped ();
 
 	static TransportMasterManager& instance();
+	/* this method is not thread-safe and is intended to be used only
+	 * very early in application-lifetime to check if the TMM has
+	 * been created yet. Do not use in other code.
+	 */
+	static bool exists() { return _instance != 0; }
 
 	typedef std::list<boost::shared_ptr<TransportMaster> > TransportMasters;
 
-	int add (SyncSource type, std::string const & name);
+	int add (SyncSource type, std::string const & name, bool removeable = true);
 	int remove (std::string const & name);
 	void clear ();
 

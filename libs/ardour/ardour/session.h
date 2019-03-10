@@ -83,6 +83,8 @@ class XMLNode;
 struct _AEffect;
 typedef struct _AEffect AEffect;
 
+class PTFFormat;
+
 namespace MIDI {
 class Port;
 class MachineControl;
@@ -285,7 +287,7 @@ public:
 
 	boost::shared_ptr<RTTaskList> rt_tasklist () { return _rt_tasklist; }
 
-	RouteList get_routelist (bool mixer_order = false) const;
+	RouteList get_routelist (bool mixer_order = false, PresentationInfo::Flag fl = PresentationInfo::MixerRoutes) const;
 
 	CoreSelection& selection () { return *_selection; }
 
@@ -296,11 +298,13 @@ public:
 	 * with get_routes()
 	 */
 
-	void get_stripables (StripableList&) const;
+	void get_stripables (StripableList&, PresentationInfo::Flag fl = PresentationInfo::MixerStripables) const;
 	StripableList get_stripables () const;
 	boost::shared_ptr<RouteList> get_tracks() const;
 	boost::shared_ptr<RouteList> get_routes_with_internal_returns() const;
 	boost::shared_ptr<RouteList> get_routes_with_regions_at (samplepos_t const) const;
+
+	boost::shared_ptr<AudioTrack> get_nth_audio_track (int nth) const;
 
 	uint32_t nstripables (bool with_monitor = false) const;
 	uint32_t nroutes() const { return routes.reader()->size(); }
@@ -464,8 +468,8 @@ public:
 	void set_auto_punch_location (Location *);
 	void set_auto_loop_location (Location *);
 	void set_session_extents (samplepos_t start, samplepos_t end);
-	bool end_is_free () const { return _session_range_end_is_free; }
-	void set_end_is_free (bool);
+	bool session_range_is_free () const { return _session_range_is_free; }
+	void set_session_range_is_free (bool);
 
 	pframes_t get_block_size () const         { return current_block_size; }
 	samplecnt_t worst_output_latency () const { return _worst_output_latency; }
@@ -718,7 +722,7 @@ public:
 	static PBD::Signal1<void, samplepos_t> EndTimeChanged;
 
 	void   request_sync_source (boost::shared_ptr<TransportMaster>);
-	bool   synced_to_engine() const { return config.get_external_sync() && Config->get_sync_source() == Engine; }
+	bool   synced_to_engine() const;
 
 	double engine_speed() const { return _engine_speed; }
 	double actual_speed() const {
@@ -734,6 +738,7 @@ public:
 
 	TempoMap&       tempo_map()       { return *_tempo_map; }
 	const TempoMap& tempo_map() const { return *_tempo_map; }
+	void maybe_update_tempo_from_midiclock_tempo (float bpm);
 
 	unsigned int    get_xrun_count () const {return _xrun_count; }
 	void            reset_xrun_count () {_xrun_count = 0; }
@@ -868,15 +873,14 @@ public:
 	PBD::Signal0<void> MuteChanged;
 	PBD::Signal0<void> IsolatedChanged;
 	PBD::Signal0<void> MonitorChanged;
+	PBD::Signal0<void> MonitorBusAddedOrRemoved;
 
 	PBD::Signal0<void> session_routes_reconnected;
 
 	/* monitor/master out */
 	int add_master_bus (ChanCount const&);
 
-	void add_monitor_section ();
 	void reset_monitor_section ();
-	void remove_monitor_section ();
 	bool monitor_active() const { return (_monitor_out && _monitor_out->monitor_control () && _monitor_out->monitor_control ()->monitor_active()); }
 
 	boost::shared_ptr<Route> monitor_out() const { return _monitor_out; }
@@ -1100,11 +1104,11 @@ public:
 		PostTransportRoll               = 0x8,
 		PostTransportAbort              = 0x10,
 		PostTransportOverWrite          = 0x20,
-		/* was ... PostTransportSpeed              = 0x40, */
+		/* PostTransportSpeed           = 0x40, */
 		PostTransportAudition           = 0x80,
 		PostTransportReverse            = 0x100,
-		PostTransportInputChange        = 0x200,
-		PostTransportCurveRealloc       = 0x400,
+		/* PostTransportInputChange     = 0x200, */
+		/*PostTransportCurveRealloc       = 0x400, */
 		PostTransportClearSubstate      = 0x800,
 		PostTransportAdjustPlaybackBuffering  = 0x1000,
 		PostTransportAdjustCaptureBuffering   = 0x2000
@@ -1195,7 +1199,11 @@ public:
 
 	double compute_speed_from_master (pframes_t nframes);
 	bool   transport_master_is_external() const;
+	bool   transport_master_no_external_or_using_engine() const;
 	boost::shared_ptr<TransportMaster> transport_master() const;
+
+	void import_pt (PTFFormat& ptf, ImportStatus& status);
+	bool import_sndfile_as_region (std::string path, SrcQuality quality, samplepos_t& pos, SourceList& sources, ImportStatus& status);
 
 protected:
 	friend class AudioEngine;
@@ -1206,7 +1214,6 @@ protected:
 #endif
 
 	friend class Route;
-	void schedule_curve_reallocation ();
 	void update_latency_compensation (bool force = false);
 
 private:
@@ -1237,7 +1244,7 @@ private:
 	samplepos_t             _transport_sample;
 	gint                    _seek_counter;
 	Location*               _session_range_location; ///< session range, or 0 if there is nothing in the session yet
-	bool                    _session_range_end_is_free;
+	bool                    _session_range_is_free;
 	bool                    _silent;
 	samplecnt_t             _remaining_latency_preroll;
 
@@ -1267,6 +1274,9 @@ private:
 	unsigned int            _xrun_count;
 
 	std::string             _missing_file_replacement;
+
+	void add_monitor_section ();
+	void remove_monitor_section ();
 
 	void initialize_latencies ();
 	void update_latency (bool playback);
@@ -1405,9 +1415,7 @@ private:
 
 	static const PostTransportWork ProcessCannotProceedMask =
 		PostTransportWork (
-			PostTransportInputChange|
 			PostTransportReverse|
-			PostTransportCurveRealloc|
 			PostTransportAudition|
 			PostTransportStop|
 			PostTransportClearSubstate);
@@ -1419,12 +1427,6 @@ private:
 
 	void schedule_playback_buffering_adjustment ();
 	void schedule_capture_buffering_adjustment ();
-
-	uint32_t    cumulative_rf_motion;
-	uint32_t    rf_scale;
-
-	void set_rf_speed (float speed);
-	void reset_rf_scale (samplecnt_t samples_moved);
 
 	Locations*       _locations;
 	void location_added (Location*);
@@ -1531,6 +1533,8 @@ private:
 		ChanCount input_offset;
 		ChanCount output_offset;
 	};
+
+	Glib::Threads::Mutex  _update_latency_lock;
 
 	typedef std::queue<AutoConnectRequest> AutoConnectQueue;
 	Glib::Threads::Mutex  _auto_connect_queue_lock;
@@ -1644,6 +1648,7 @@ private:
 	int           start_midi_thread ();
 
 	bool should_ignore_transport_request (TransportRequestSource, TransportRequestType) const;
+	bool declick_in_progress () const;
 
 	void set_play_loop (bool yn, double speed);
 	void unset_play_loop ();

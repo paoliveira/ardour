@@ -97,6 +97,7 @@ setup_enum_writer ()
 	Session::PullupFormat _Session_PullupFormat;
 	FadeShape _FadeShape;
 	RegionSelectionAfterSplit _RegionSelectionAfterSplit;
+	RangeSelectionAfterSplit _RangeSelectionAfterSplit;
 	IOChange _IOChange;
 	AutomationType _AutomationType;
 	AutoState _AutoState;
@@ -380,6 +381,7 @@ setup_enum_writer ()
 	REGISTER_ENUM (RF64);
 	REGISTER_ENUM (RF64_WAV);
 	REGISTER_ENUM (MBWF);
+	REGISTER_ENUM (FLAC);
 	REGISTER (_HeaderFormat);
 
 	REGISTER_ENUM (AudioUnit);
@@ -403,7 +405,7 @@ setup_enum_writer ()
 	REGISTER_ENUM (TR_Speed);
 	REGISTER_ENUM (TR_Locate);
 	REGISTER (_TransportRequestType);
-	
+
 	REGISTER_ENUM (Sprung);
 	REGISTER_ENUM (Wheel);
 	REGISTER (_ShuttleBehaviour);
@@ -459,8 +461,6 @@ setup_enum_writer ()
 	REGISTER_CLASS_ENUM (Session, PostTransportOverWrite);
 	REGISTER_CLASS_ENUM (Session, PostTransportAudition);
 	REGISTER_CLASS_ENUM (Session, PostTransportReverse);
-	REGISTER_CLASS_ENUM (Session, PostTransportInputChange);
-	REGISTER_CLASS_ENUM (Session, PostTransportCurveRealloc);
 	REGISTER_CLASS_ENUM (Session, PostTransportClearSubstate);
 	REGISTER_BITS (_Session_PostTransportWork);
 
@@ -523,6 +523,7 @@ setup_enum_writer ()
 	REGISTER_ENUM(ExistingNewlyCreatedRight);
 	REGISTER_ENUM(ExistingNewlyCreatedBoth);
 	REGISTER (_RegionSelectionAfterSplit);
+	REGISTER (_RangeSelectionAfterSplit);
 
 	REGISTER_CLASS_ENUM (DiskIOProcessor, Recordable);
 	REGISTER_CLASS_ENUM (DiskIOProcessor, Hidden);
@@ -576,6 +577,7 @@ setup_enum_writer ()
 
 	REGISTER_CLASS_ENUM (ExportFormatBase, T_None);
 	REGISTER_CLASS_ENUM (ExportFormatBase, T_Sndfile);
+	REGISTER_CLASS_ENUM (ExportFormatBase, T_FFMPEG);
 	REGISTER (_ExportFormatBase_Type);
 
 	REGISTER_CLASS_ENUM (ExportFormatBase, F_None);
@@ -588,6 +590,7 @@ setup_enum_writer ()
 	REGISTER_CLASS_ENUM (ExportFormatBase, F_FLAC);
 	REGISTER_CLASS_ENUM (ExportFormatBase, F_Ogg);
 	REGISTER_CLASS_ENUM (ExportFormatBase, F_CAF);
+	REGISTER_CLASS_ENUM (ExportFormatBase, F_FFMPEG);
 	REGISTER (_ExportFormatBase_FormatId);
 
 	REGISTER_CLASS_ENUM (ExportFormatBase, E_FileDefault);
@@ -655,6 +658,7 @@ setup_enum_writer ()
 	REGISTER_CLASS_ENUM (Delivery, Listen);
 	REGISTER_CLASS_ENUM (Delivery, Main);
 	REGISTER_CLASS_ENUM (Delivery, Aux);
+	REGISTER_CLASS_ENUM (Delivery, Foldback);
 	REGISTER_BITS (_Delivery_Role);
 
 	REGISTER_CLASS_ENUM (MuteMaster, PreFader);
@@ -733,6 +737,7 @@ setup_enum_writer ()
 	REGISTER_CLASS_ENUM (PresentationInfo, Auditioner);
 	REGISTER_CLASS_ENUM (PresentationInfo, Hidden);
 	REGISTER_CLASS_ENUM (PresentationInfo, OrderSet);
+	REGISTER_CLASS_ENUM (PresentationInfo, FoldbackBus);
 	REGISTER_BITS (_PresentationInfo_Flag);
 
 	REGISTER_CLASS_ENUM (MusicalMode,Dorian);

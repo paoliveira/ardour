@@ -16,6 +16,7 @@
     Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
 */
+#include <gtkmm/stock.h>
 
 #include "pbd/enumwriter.h"
 #include "pbd/i18n.h"
@@ -46,8 +47,12 @@ using namespace ArdourWidgets;
 
 TransportMastersWidget::TransportMastersWidget ()
 	: table (4, 13)
+	, add_button (_("Add a new Transport Master"))
 {
 	pack_start (table, PACK_EXPAND_WIDGET, 12);
+	pack_start (add_button, FALSE, FALSE);
+
+	add_button.signal_clicked ().connect (sigc::mem_fun (*this, &TransportMastersWidget::add_master));
 
 	col_title[0].set_markup (string_compose ("<span weight=\"bold\">%1</span>", _("Use")));
 	col_title[1].set_markup (string_compose ("<span weight=\"bold\">%1</span>", _("Name")));
@@ -61,7 +66,8 @@ TransportMastersWidget::TransportMastersWidget ()
 	col_title[9].set_markup (string_compose ("<span weight=\"bold\">%1</span>", _("Data Source")));
 	col_title[10].set_markup (string_compose ("<span weight=\"bold\">%1</span>", _("Active\nCommands")));
 	col_title[11].set_markup (string_compose ("<span weight=\"bold\">%1</span>", _("Clock\nSynced")));
-	col_title[12].set_markup (string_compose ("<span weight=\"bold\">%1</span>", _("29.97/30")));
+	col_title[12].set_markup (string_compose ("<span weight=\"bold\">%1</span>", _("29.97/\n30")));
+	col_title[13].set_markup (string_compose ("<span weight=\"bold\">%1</span>", _("Remove")));
 
 	set_tooltip (col_title[12], _("<b>When enabled</b> the external timecode source is assumed to use 29.97 fps instead of 30000/1001.\n"
 	                              "SMPTE 12M-1999 specifies 29.97df as 30000/1001. The spec further mentions that "
@@ -77,6 +83,8 @@ TransportMastersWidget::TransportMastersWidget ()
 	table.set_spacings (6);
 
 	TransportMasterManager::instance().CurrentChanged.connect (current_connection, invalidator (*this), boost::bind (&TransportMastersWidget::current_changed, this, _1, _2), gui_context());
+	TransportMasterManager::instance().Added.connect (add_connection, invalidator (*this), boost::bind (&TransportMastersWidget::rebuild, this), gui_context());
+	TransportMasterManager::instance().Removed.connect (remove_connection, invalidator (*this), boost::bind (&TransportMastersWidget::rebuild, this), gui_context());
 
 	rebuild ();
 }
@@ -86,6 +94,12 @@ TransportMastersWidget::~TransportMastersWidget ()
 	for (vector<Row*>::iterator r = rows.begin(); r != rows.end(); ++r) {
 		delete *r;
 	}
+}
+
+void
+TransportMastersWidget::set_transport_master (boost::shared_ptr<TransportMaster> tm)
+{
+	_session->request_sync_source (tm);
 }
 
 void
@@ -100,10 +114,37 @@ TransportMastersWidget::current_changed (boost::shared_ptr<TransportMaster> old_
 }
 
 void
-TransportMastersWidget::rebuild ()
+TransportMastersWidget::add_master ()
 {
-	TransportMasterManager::TransportMasters const & masters (TransportMasterManager::instance().transport_masters());
+	AddTransportMasterDialog d;
 
+	d.present ();
+	string name;
+
+	while (name.empty()) {
+
+		int r = d.run ();
+
+		switch (r) {
+		case RESPONSE_ACCEPT:
+			name = d.get_name();
+			break;
+		default:
+			return;
+		}
+	}
+
+	d.hide ();
+
+	if (TransportMasterManager::instance().add (d.get_type(), name)) {
+		MessageDialog msg (_("New transport master not added - check error log for details"));
+		msg.run ();
+	}
+}
+
+void
+TransportMastersWidget::clear ()
+{
 	container_clear (table);
 
 	for (vector<Row*>::iterator r = rows.begin(); r != rows.end(); ++r) {
@@ -111,7 +152,15 @@ TransportMastersWidget::rebuild ()
 	}
 
 	rows.clear ();
-	table.resize (masters.size()+1, 13);
+}
+
+void
+TransportMastersWidget::rebuild ()
+{
+	TransportMasterManager::TransportMasters const & masters (TransportMasterManager::instance().transport_masters());
+
+	clear ();
+	table.resize (masters.size()+1, 14);
 
 	for (size_t col = 0; col < sizeof (col_title) / sizeof (col_title[0]); ++col) {
 		table.attach (col_title[col], col, col+1, 0, 1);
@@ -119,9 +168,11 @@ TransportMastersWidget::rebuild ()
 
 	uint32_t n = 1;
 
+	Gtk::RadioButtonGroup use_button_group;
+
 	for (TransportMasterManager::TransportMasters::const_iterator m = masters.begin(); m != masters.end(); ++m, ++n) {
 
-		Row* r = new Row;
+		Row* r = new Row (*this);
 		rows.push_back (r);
 
 		r->tm = *m;
@@ -156,14 +207,24 @@ TransportMastersWidget::rebuild ()
 			table.attach (r->sclock_synced_button, col, col+1, n, n+1); ++col;
 			table.attach (r->fr2997_button, col, col+1, n, n+1); ++col;
 			r->fr2997_button.signal_toggled().connect (sigc::mem_fun (*r, &TransportMastersWidget::Row::fr2997_button_toggled));
+		} else {
+			col += 2;
 		}
 
-		r->label_box.set_events (Gdk::BUTTON_PRESS_MASK|Gdk::BUTTON_RELEASE_MASK);
+		if (r->tm->removeable()) {
+			table.attach (r->remove_button, col, col+1, n, n+1); ++col;
+		} else {
+			col++;
+		}
+
+		table.show_all ();
+
 		r->label_box.signal_button_press_event().connect (sigc::mem_fun (*r, &TransportMastersWidget::Row::name_press));
 		r->port_combo.signal_changed().connect (sigc::mem_fun (*r, &TransportMastersWidget::Row::port_choice_changed));
 		r->use_button.signal_toggled().connect (sigc::mem_fun (*r, &TransportMastersWidget::Row::use_button_toggled));
 		r->collect_button.signal_toggled().connect (sigc::mem_fun (*r, &TransportMastersWidget::Row::collect_button_toggled));
 		r->request_options.signal_button_press_event().connect (sigc::mem_fun (*r, &TransportMastersWidget::Row::request_option_press), false);
+		r->remove_button.signal_clicked().connect (sigc::mem_fun (*r, &TransportMastersWidget::Row::remove_clicked));
 
 		if (ttm) {
 			r->sclock_synced_button.signal_toggled().connect (sigc::mem_fun (*r, &TransportMastersWidget::Row::sync_button_toggled));
@@ -185,12 +246,19 @@ TransportMastersWidget::rebuild ()
 	}
 }
 
-TransportMastersWidget::Row::Row ()
-	: request_option_menu (0)
+TransportMastersWidget::Row::Row (TransportMastersWidget& p)
+	: parent (p)
+	, request_option_menu (0)
+	, remove_button (X_("x"))
 	, name_editor (0)
 	, save_when (0)
 	, ignore_active_change (false)
 {
+}
+
+TransportMastersWidget::Row::~Row ()
+{
+	delete request_option_menu;
 }
 
 bool
@@ -207,6 +275,22 @@ TransportMastersWidget::Row::name_press (GdkEventButton* ev)
 		return true;
 	}
 	return false;
+}
+
+bool
+TransportMastersWidget::idle_remove (TransportMastersWidget::Row* row)
+{
+	TransportMasterManager::instance().remove (row->tm->name());
+	return false;
+}
+
+void
+TransportMastersWidget::Row::remove_clicked ()
+{
+	/* have to do this via an idle callback, because it will destroy the
+	   widget from which this callback was initiated.
+	*/
+	Glib::signal_idle().connect (sigc::bind (sigc::mem_fun (parent, &TransportMastersWidget::idle_remove), this));
 }
 
 void
@@ -248,7 +332,7 @@ void
 TransportMastersWidget::Row::use_button_toggled ()
 {
 	if (use_button.get_active()) {
-		Config->set_sync_source (tm->type());
+		parent.set_transport_master (tm);
 	}
 }
 
@@ -288,7 +372,7 @@ TransportMastersWidget::Row::build_request_options ()
 {
 	using namespace Gtk::Menu_Helpers;
 
-	request_option_menu = manage (new Menu);
+	request_option_menu = new Menu;
 
 	MenuList& items (request_option_menu->items());
 
@@ -409,6 +493,10 @@ TransportMastersWidget::Row::update (Session* s, samplepos_t now)
 	boost::shared_ptr<TimecodeTransportMaster> ttm;
 	boost::shared_ptr<MIDIClock_TransportMaster> mtm;
 
+	if (!AudioEngine::instance()->running()) {
+		return;
+	}
+
 	if (s) {
 
 		if (tm->speed_and_position (speed, pos, most_recent, when, now)) {
@@ -429,11 +517,17 @@ TransportMastersWidget::Row::update (Session* s, samplepos_t now)
 				last.set_text ("");
 			}
 			current.set_text (Timecode::timecode_format_time (t));
-			timestamp.set_markup (tm->position_string());
 			delta.set_markup (tm->delta_string ());
 
 			char gap[32];
-			snprintf (gap, sizeof (gap), "%.3fs", (when - now) / (float) AudioEngine::instance()->sample_rate());
+			const float seconds = (when - now) / (float) AudioEngine::instance()->sample_rate();
+			if (abs (seconds) < 1.0) {
+				snprintf (gap, sizeof (gap), "%.3fs", seconds);
+			} else if (abs (seconds) < 4.0) {
+				snprintf (gap, sizeof (gap), "%ds", (int) floor (seconds));
+			} else {
+				snprintf (gap, sizeof (gap), "%s", _(">4s ago"));
+			}
 			timestamp.set_text (gap);
 			save_when = when;
 
@@ -442,16 +536,25 @@ TransportMastersWidget::Row::update (Session* s, samplepos_t now)
 			if (save_when) {
 				char gap[32];
 
-				snprintf (gap, sizeof (gap), "%.3fs", (save_when - now) / (float) AudioEngine::instance()->sample_rate());
+				const float seconds = (when - now) / (float) AudioEngine::instance()->sample_rate();
+				if (abs (seconds) < 1.0) {
+					snprintf (gap, sizeof (gap), "%.3fs", seconds);
+				} else if (abs (seconds) < 4.0) {
+					snprintf (gap, sizeof (gap), "%ds", (int) floor (seconds));
+				} else {
+					snprintf (gap, sizeof (gap), "%s", _(">4s ago"));
+				}
 				timestamp.set_text (gap);
 				save_when = when;
 			}
+			delta.set_text ("");
+			current.set_text ("");
 		}
 	}
 }
 
 void
-	TransportMastersWidget::update (samplepos_t /* audible */)
+TransportMastersWidget::update (samplepos_t /* audible */)
 {
 	samplepos_t now = AudioEngine::instance()->sample_time ();
 
@@ -496,4 +599,62 @@ TransportMastersWindow::set_session (ARDOUR::Session* s)
 {
 	ArdourWindow::set_session (s);
 	w.set_session (s);
+}
+
+TransportMastersWidget::AddTransportMasterDialog::AddTransportMasterDialog ()
+	: ArdourDialog (_("Add Transport Master"), true, false)
+	, name_label (_("Name"))
+	, type_label (_("Type"))
+{
+	name_hbox.set_spacing (6);
+	name_hbox.pack_start (name_label, false, false);
+	name_hbox.pack_start (name_entry, true, true);
+
+	type_hbox.set_spacing (6);
+	type_hbox.pack_start (type_label, false, false);
+	type_hbox.pack_start (type_combo, true, true);
+
+	vector<string> s;
+
+	s.push_back (X_("MTC"));
+	s.push_back (X_("LTC"));
+	s.push_back (X_("MIDI Clock"));
+
+	set_popdown_strings (type_combo, s);
+	type_combo.set_active_text (X_("LTC"));
+
+	get_vbox()->pack_start (name_hbox, false, false);
+	get_vbox()->pack_start (type_hbox, false, false);
+
+	add_button (_("Cancel"), RESPONSE_CANCEL);
+	add_button (_("Add"), RESPONSE_ACCEPT);
+
+	name_entry.show ();
+	type_combo.show ();
+	name_label.show ();
+	type_label.show ();
+	name_hbox.show ();
+	type_hbox.show ();
+
+	name_entry.signal_activate().connect (sigc::bind (sigc::mem_fun (*this, &Gtk::Dialog::response), Gtk::RESPONSE_ACCEPT));
+}
+
+string
+TransportMastersWidget::AddTransportMasterDialog::get_name () const
+{
+	return name_entry.get_text ();
+}
+
+SyncSource
+TransportMastersWidget::AddTransportMasterDialog::get_type() const
+{
+	string t = type_combo.get_active_text ();
+
+	if (t == X_("MTC")) {
+		return MTC;
+	} else if (t == X_("MIDI Clock")) {
+		return MIDIClock;
+	}
+
+	return LTC;
 }

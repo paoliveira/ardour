@@ -55,24 +55,33 @@ const string Automatable::xml_node_name = X_("Automation");
 
 Automatable::Automatable(Session& session)
 	: _a_session(session)
+	, _automated_controls (new ControlList)
 {
 }
 
 Automatable::Automatable (const Automatable& other)
-        : ControlSet (other)
-        , Slavable ()
-        , _a_session (other._a_session)
+	: ControlSet (other)
+	, Slavable ()
+	, _a_session (other._a_session)
+	, _automated_controls (new ControlList)
 {
-        Glib::Threads::Mutex::Lock lm (other._control_lock);
+	Glib::Threads::Mutex::Lock lm (other._control_lock);
 
-        for (Controls::const_iterator i = other._controls.begin(); i != other._controls.end(); ++i) {
-                boost::shared_ptr<Evoral::Control> ac (control_factory (i->first));
+	for (Controls::const_iterator i = other._controls.begin(); i != other._controls.end(); ++i) {
+		boost::shared_ptr<Evoral::Control> ac (control_factory (i->first));
 		add_control (ac);
-        }
+	}
 }
 
 Automatable::~Automatable ()
 {
+	{
+		RCUWriter<ControlList> writer (_automated_controls);
+		boost::shared_ptr<ControlList> cl = writer.get_copy ();
+		cl->clear ();
+	}
+	_automated_controls.flush ();
+
 	Glib::Threads::Mutex::Lock lm (_control_lock);
 	for (Controls::const_iterator li = _controls.begin(); li != _controls.end(); ++li) {
 		boost::dynamic_pointer_cast<AutomationControl>(li->second)->drop_references ();
@@ -139,7 +148,7 @@ Automatable::load_automation (const string& path)
 
 	return 0;
 
-  bad:
+bad:
 	error << string_compose(_("cannot load automation data from %2"), fullpath) << endmsg;
 	controls().clear ();
 	::fclose (in);
@@ -240,24 +249,32 @@ Automatable::set_automation_xml_state (const XMLNode& node, Evoral::Parameter le
 				continue;
 			}
 
-			if (_can_automate_list.find (param) == _can_automate_list.end ()) {
-				warning << "Ignored automation data for non-automatable parameter" << endl;
-				continue;
-			}
-
 			if (!id_prop) {
 				warning << "AutomationList node without automation-id property, "
 					<< "using default: " << EventTypeMap::instance().to_symbol(legacy_param) << endmsg;
 			}
 
+			if (_can_automate_list.find (param) == _can_automate_list.end ()) {
+				boost::shared_ptr<AutomationControl> actl = automation_control (param);
+				if (actl && (*niter)->children().size() > 0 && Config->get_limit_n_automatables () > 0) {
+					actl->set_flags (Controllable::Flag ((int)actl->flags() & ~Controllable::NotAutomatable));
+					can_automate (param);
+					info << "Marked parmater as automatable" << endl;
+				} else {
+					warning << "Ignored automation data for non-automatable parameter" << endl;
+					continue;
+				}
+			}
+
+
 			boost::shared_ptr<AutomationControl> existing = automation_control (param);
 
 			if (existing) {
-                                existing->alist()->set_state (**niter, 3000);
+				existing->alist()->set_state (**niter, 3000);
 			} else {
-                                boost::shared_ptr<Evoral::Control> newcontrol = control_factory(param);
+				boost::shared_ptr<Evoral::Control> newcontrol = control_factory(param);
 				add_control (newcontrol);
-                                boost::shared_ptr<AutomationList> al (new AutomationList(**niter, param));
+				boost::shared_ptr<AutomationList> al (new AutomationList(**niter, param));
 				newcontrol->set_list(al);
 			}
 
@@ -333,7 +350,7 @@ Automatable::protect_automation ()
 			l->set_automation_state (Off);
 			break;
 		case Latch:
-			// no break
+			/* fall through */
 		case Touch:
 			l->set_automation_state (Play);
 			break;
@@ -431,8 +448,16 @@ Automatable::non_realtime_transport_stop (samplepos_t now, bool /*flush_processo
 }
 
 void
-Automatable::automation_run (samplepos_t start, pframes_t nframes)
+Automatable::automation_run (samplepos_t start, pframes_t nframes, bool only_active)
 {
+	if (only_active) {
+		boost::shared_ptr<ControlList> cl = _automated_controls.reader ();
+		for (ControlList::const_iterator ci = cl->begin(); ci != cl->end(); ++ci) {
+			(*ci)->automation_run (start, nframes);
+		}
+		return;
+	}
+
 	for (Controls::iterator li = controls().begin(); li != controls().end(); ++li) {
 		boost::shared_ptr<AutomationControl> c =
 			boost::dynamic_pointer_cast<AutomationControl>(li->second);
@@ -441,6 +466,35 @@ Automatable::automation_run (samplepos_t start, pframes_t nframes)
 		}
 		c->automation_run (start, nframes);
 	}
+}
+
+void
+Automatable::automation_list_automation_state_changed (Evoral::Parameter param, AutoState as)
+{
+	{
+		boost::shared_ptr<AutomationControl> c (automation_control(param));
+		assert (c && c->list());
+
+		RCUWriter<ControlList> writer (_automated_controls);
+		boost::shared_ptr<ControlList> cl = writer.get_copy ();
+
+		ControlList::iterator fi = std::find (cl->begin(), cl->end(), c);
+		if (fi != cl->end()) {
+			cl->erase (fi);
+		}
+		switch (as) {
+			/* all potential  automation_playback() states */
+			case Play:
+			case Touch:
+			case Latch:
+				cl->push_back (c);
+				break;
+			case Off:
+			case Write:
+				break;
+		}
+	}
+	_automated_controls.flush();
 }
 
 boost::shared_ptr<Evoral::Control>
@@ -560,47 +614,55 @@ Automatable::clear_controls ()
 }
 
 bool
-Automatable::find_next_event (double now, double end, Evoral::ControlEvent& next_event, bool only_active) const
+Automatable::find_next_event (double start, double end, Evoral::ControlEvent& next_event, bool only_active) const
 {
-	Controls::const_iterator li;
-
 	next_event.when = std::numeric_limits<double>::max();
 
-	for (li = _controls.begin(); li != _controls.end(); ++li) {
-		boost::shared_ptr<AutomationControl> c
-			= boost::dynamic_pointer_cast<AutomationControl>(li->second);
-
-		if (only_active && (!c || !c->automation_playback())) {
-			continue;
-		}
-
-		boost::shared_ptr<SlavableAutomationControl> sc
-			= boost::dynamic_pointer_cast<SlavableAutomationControl>(li->second);
-
-		if (sc) {
-			sc->find_next_event (now, end, next_event);
-		}
-
-		Evoral::ControlList::const_iterator i;
-		boost::shared_ptr<const Evoral::ControlList> alist (li->second->list());
-		Evoral::ControlEvent cp (now, 0.0f);
-		if (!alist) {
-			continue;
-		}
-
-		for (i = lower_bound (alist->begin(), alist->end(), &cp, Evoral::ControlList::time_comparator);
-		     i != alist->end() && (*i)->when < end; ++i) {
-			if ((*i)->when > now) {
-				break;
+	if (only_active) {
+		boost::shared_ptr<ControlList> cl = _automated_controls.reader ();
+		for (ControlList::const_iterator ci = cl->begin(); ci != cl->end(); ++ci) {
+			if ((*ci)->automation_playback()) {
+				find_next_ac_event (*ci, start, end, next_event);
 			}
 		}
-
-		if (i != alist->end() && (*i)->when < end) {
-			if ((*i)->when < next_event.when) {
-				next_event.when = (*i)->when;
+	} else {
+		for (Controls::const_iterator li = _controls.begin(); li != _controls.end(); ++li) {
+			boost::shared_ptr<AutomationControl> c
+				= boost::dynamic_pointer_cast<AutomationControl>(li->second);
+			if (c) {
+				find_next_ac_event (c, start, end, next_event);
 			}
 		}
 	}
-
 	return next_event.when != std::numeric_limits<double>::max();
+}
+
+void
+Automatable::find_next_ac_event (boost::shared_ptr<AutomationControl> c, double start, double end, Evoral::ControlEvent& next_event) const
+{
+	boost::shared_ptr<SlavableAutomationControl> sc
+		= boost::dynamic_pointer_cast<SlavableAutomationControl>(c);
+
+	if (sc) {
+		sc->find_next_event (start, end, next_event);
+	}
+
+	Evoral::ControlList::const_iterator i;
+	boost::shared_ptr<const Evoral::ControlList> alist (c->list());
+	Evoral::ControlEvent cp (start, 0.0f);
+	if (!alist) {
+		return;
+	}
+
+	for (i = lower_bound (alist->begin(), alist->end(), &cp, Evoral::ControlList::time_comparator); i != alist->end() && (*i)->when < end; ++i) {
+		if ((*i)->when > start) {
+			break;
+		}
+	}
+
+	if (i != alist->end() && (*i)->when < end) {
+		if ((*i)->when < next_event.when) {
+			next_event.when = (*i)->when;
+		}
+	}
 }

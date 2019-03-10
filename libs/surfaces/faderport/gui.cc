@@ -25,6 +25,7 @@
 #include "pbd/strsplit.h"
 #include "pbd/file_utils.h"
 
+#include "gtkmm2ext/actions.h"
 #include "gtkmm2ext/bindings.h"
 #include "gtkmm2ext/gtk_ui.h"
 #include "gtkmm2ext/gui_thread.h"
@@ -359,7 +360,7 @@ FPGUI::build_available_action_menu ()
 	vector<string> keys;
 	vector<Glib::RefPtr<Gtk::Action> > actions;
 
-	Gtkmm2ext::ActionMap::get_all_actions (paths, labels, tooltips, keys, actions);
+	ActionManager::get_all_actions (paths, labels, tooltips, keys, actions);
 
 	typedef std::map<string,TreeIter> NodeMap;
 	NodeMap nodes;
@@ -412,13 +413,11 @@ FPGUI::build_available_action_menu ()
 		}
 
 		//kinda kludgy way to avoid displaying menu items as mappable
-		if ( parts[1] == _("Main_menu") )
+		if ( parts[1] == _("Main Menu") )
 			continue;
 		if ( parts[1] == _("JACK") )
 			continue;
 		if ( parts[1] == _("redirectmenu") )
-			continue;
-		if ( parts[1] == _("Editor_menus") )
 			continue;
 		if ( parts[1] == _("RegionList") )
 			continue;
@@ -519,7 +518,7 @@ FPGUI::build_mix_action_combo (Gtk::ComboBox& cb, FaderPort::ButtonState bs)
 {
 	vector<pair<string,string> > actions;
 
-	actions.push_back (make_pair (string (_("Show Mixer Window")), string (X_("Window/show-mixer"))));
+	actions.push_back (make_pair (string (_("Show Mixer Window")), string (X_("Common/show-mixer"))));
 	actions.push_back (make_pair (string (_("Show/Hide Mixer list")), string (X_("Common/ToggleMixerList"))));
 	actions.push_back (make_pair (string("Toggle Meterbridge"), string(X_("Common/toggle-meterbridge"))));
 	actions.push_back (make_pair (string (_("Show/Hide Editor mixer strip")), string (X_("Editor/show-editor-mixer"))));
@@ -571,6 +570,8 @@ FPGUI::build_foot_action_combo (Gtk::ComboBox& cb, FaderPort::ButtonState bs)
 	actions.push_back (make_pair (string("Toggle Roll+Rec"), string(X_("Transport/record-roll"))));
 	actions.push_back (make_pair (string("Toggle Loop"), string(X_("Transport/Loop"))));
 	actions.push_back (make_pair (string("Toggle Click"), string(X_("Transport/ToggleClick"))));
+	actions.push_back (make_pair (string("Record with Pre-Roll"), string(X_("Transport/RecordPreroll"))));
+	actions.push_back (make_pair (string("Record with Count-In"), string(X_("Transport/RecordCountIn"))));
 
 	build_action_combo (cb, actions, FaderPort::Footswitch, bs);
 }

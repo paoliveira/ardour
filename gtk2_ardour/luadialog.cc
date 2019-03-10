@@ -40,7 +40,7 @@ using namespace LuaDialog;
  * Simple Message Dialog
  */
 Message::Message (std::string const& title, std::string const& msg, Message::MessageType mt, Message::ButtonType bt)
-	: _message_dialog (msg, false, to_gtk_mt (mt), to_gtk_bt (bt), true)
+	: _message_dialog (msg, true, to_gtk_mt (mt), to_gtk_bt (bt), true)
 {
 	_message_dialog.set_title (title);
 }
@@ -520,6 +520,7 @@ public:
 		: LuaDialogWidget (key, title)
 		, _fc (a)
 	{
+		Gtkmm2ext::add_volume_shortcuts (_fc);
 		if (!path.empty ()) {
 			switch (a) {
 				case Gtk::FILE_CHOOSER_ACTION_OPEN:

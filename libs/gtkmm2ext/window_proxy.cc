@@ -68,6 +68,7 @@ WindowProxy::WindowProxy (const std::string& name, const std::string& menu_name,
 	, _width (-1)
 	, _height (-1)
 	, vistracker (0)
+	, _state_mask (StateMask (Position|Size))
 {
 	set_state (node, 0);
 }
@@ -144,7 +145,11 @@ WindowProxy::toggle()
 			save_pos_and_size();
 		}
 
-		vistracker->cycle_visibility ();
+		if (vistracker) {
+			vistracker->cycle_visibility ();
+		} else {
+			_window->present ();
+		}
 
 		if (_window->is_mapped()) {
 			if (_width != -1 && _height != -1) {
@@ -210,11 +215,11 @@ void
 WindowProxy::drop_window ()
 {
 	if (_window) {
+		_window->hide ();
 		delete_connection.disconnect ();
 		configure_connection.disconnect ();
 		map_connection.disconnect ();
 		unmap_connection.disconnect ();
-		_window->hide ();
 		delete _window;
 		_window = 0;
 		delete vistracker;

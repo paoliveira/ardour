@@ -41,6 +41,14 @@
 
 #include "lv2_external_ui.h"
 
+#include "lv2/lv2plug.in/ns/extensions/ui/ui.h"
+#ifndef LV2_1_14_0
+typedef struct _LV2UI_Request_Parameter {
+	LV2UI_Feature_Handle handle;
+	uint32_t (*request)(LV2UI_Feature_Handle handle, LV2_URID key);
+}LV2UI_Request_Parameter;
+#endif
+
 namespace ARDOUR {
 	class PluginInsert;
 	class LV2Plugin;
@@ -82,6 +90,8 @@ private:
 	struct lv2_external_ui_host          _external_ui_host;
 	LV2_Feature                          _external_ui_feature;
 	LV2_Feature                          _external_kxui_feature;
+	LV2UI_Request_Parameter              _lv2ui_request_paramater;
+	LV2_Feature                          _lv2ui_request_feature;
 	struct lv2_external_ui*              _external_ui_ptr;
 	LV2_Feature                          _parent_feature;
 	Gtk::Window*                         _win_ptr;
@@ -108,6 +118,12 @@ private:
 	static void touch(void*    controller,
 	                  uint32_t port_index,
 	                  bool     grabbed);
+
+	static uint32_t request_parameter (void* handle, LV2_URID key);
+	void set_path_property (int,
+	                        const ARDOUR::ParameterDescriptor&,
+	                        Gtk::FileChooserDialog*);
+	std::set<uint32_t> active_parameter_requests;
 
 	void update_timeout();
 

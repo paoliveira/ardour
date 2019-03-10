@@ -567,7 +567,6 @@ SessionDialog::open_button_pressed (GdkEventButton* ev)
 struct LuaScriptListSorter
 {
 	bool operator() (LuaScriptInfoPtr const a, LuaScriptInfoPtr const b) const {
-		printf ("-- CMD %s <> %s = %d\n", a->name.c_str(), b->name.c_str(), ARDOUR::cmp_nocase_utf8 (a->name, b->name));
 		return ARDOUR::cmp_nocase_utf8 (a->name, b->name) < 0;
 	}
 };
@@ -667,7 +666,7 @@ SessionDialog::setup_new_session_page ()
 	//determine the text in the new folder selector
 	if (!ARDOUR_COMMAND_LINE::session_name.empty()) {
 		new_folder_chooser.set_current_folder (poor_mans_glob (Glib::path_get_dirname (ARDOUR_COMMAND_LINE::session_name)));
-	} else if (ARDOUR_UI::instance()->session_loaded) {
+	} else if (ARDOUR_UI::instance()->the_session ()) {
 		// point the new session file chooser at the parent directory of the current session
 		string session_parent_dir = Glib::path_get_dirname(ARDOUR_UI::instance()->the_session()->path());
 		new_folder_chooser.set_current_folder (session_parent_dir);
@@ -723,11 +722,13 @@ SessionDialog::setup_new_session_page ()
 #ifdef MIXBUS
 	template_chooser.append_column (_("Modified With"), session_template_columns.modified_with_short);
 #endif
-	template_chooser.set_tooltip_column(4); // modified_with_long
 	template_chooser.set_headers_visible (true);
 	template_chooser.get_selection()->set_mode (SELECTION_SINGLE);
 	template_chooser.get_selection()->signal_changed().connect (sigc::mem_fun (*this, &SessionDialog::template_row_selected));
 	template_chooser.set_sensitive (true);
+	if (UIConfiguration::instance().get_use_tooltips()) {
+		template_chooser.set_tooltip_column(4); // modified_with_long
+	}
 
 	session_new_vbox.pack_start (*template_hbox, true, true);
 	session_new_vbox.pack_start (*folder_box, false, true);
@@ -953,7 +954,9 @@ SessionDialog::redisplay_recent_sessions ()
 		row[recent_session_columns.time_formatted] = gdt.format ("%F %H:%M");
 	}
 
-	recent_session_display.set_tooltip_column(1); // recent_session_columns.tip
+	if (UIConfiguration::instance().get_use_tooltips()) {
+		recent_session_display.set_tooltip_column(1); // recent_session_columns.tip
+	}
 	recent_session_display.set_model (recent_session_model);
 
 	// custom sort
@@ -1059,7 +1062,7 @@ SessionDialog::recent_context_mennu (GdkEventButton *ev)
 	Gtk::TreeModel::Path tpath = recent_session_model->get_path(iter);
 	const bool is_child = tpath.up () && tpath.up ();
 
-	Gtk::Menu* m = manage (new Menu);
+	Gtk::Menu* m = ARDOUR_UI::instance()->shared_popup_menu ();
 	MenuList& items = m->items ();
 	items.push_back (MenuElem (s, sigc::bind (sigc::hide_return (sigc::ptr_fun (&PBD::open_folder)), s)));
 	if (!is_child) {

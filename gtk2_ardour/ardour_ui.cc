@@ -92,6 +92,7 @@
 #include "ardour/filename_extensions.h"
 #include "ardour/filesystem_paths.h"
 #include "ardour/ltc_file_reader.h"
+#include "ardour/monitor_control.h"
 #include "ardour/midi_track.h"
 #include "ardour/port.h"
 #include "ardour/plugin_manager.h"
@@ -272,14 +273,12 @@ libxml_structured_error_func (void* /* parsing_context*/,
 
 ARDOUR_UI::ARDOUR_UI (int *argcp, char **argvp[], const char* localedir)
 	: Gtkmm2ext::UI (PROGRAM_NAME, X_("gui"), argcp, argvp)
-	, session_loaded (false)
 	, session_load_in_progress (false)
 	, gui_object_state (new GUIObjectState)
 	, primary_clock   (new MainClock (X_("primary"),   X_("transport"), true ))
 	, secondary_clock (new MainClock (X_("secondary"), X_("secondary"), false))
 	, big_clock (new AudioClock (X_("bigclock"), false, "big", true, true, false, false))
 	, video_timeline(0)
-	, global_actions (X_("global"))
 	, ignore_dual_punch (false)
 	, main_window_visibility (0)
 	, editor (0)
@@ -288,7 +287,7 @@ ARDOUR_UI::ARDOUR_UI (int *argcp, char **argvp[], const char* localedir)
 	, _was_dirty (false)
 	, _mixer_on_top (false)
 	, _initial_verbose_plugin_scan (false)
-	, first_time_engine_run (true)
+	, _shared_popup_menu (0)
 	, secondary_clock_spacer (0)
 	, auto_input_button (ArdourButton::led_default_elements)
 	, time_info_box (0)
@@ -377,6 +376,32 @@ ARDOUR_UI::ARDOUR_UI (int *argcp, char **argvp[], const char* localedir)
 	xmlSetGenericErrorFunc (this, libxml_generic_error_func);
 	xmlSetStructuredErrorFunc (this, libxml_structured_error_func);
 
+	/* Set this up early */
+
+	ActionManager::init ();
+
+	/* we like keyboards */
+
+	keyboard = new ArdourKeyboard(*this);
+
+	XMLNode* node = ARDOUR_UI::instance()->keyboard_settings();
+	if (node) {
+		keyboard->set_state (*node, Stateful::loading_state_version);
+	}
+
+	/* actions do not need to be defined when we load keybindings. They
+	 * will be lazily discovered. But bindings do need to exist when we
+	 * create windows/tabs with their own binding sets.
+	 */
+
+	keyboard->setup_keybindings ();
+
+	if ((global_bindings = Bindings::get_bindings (X_("Global"))) == 0) {
+		error << _("Global keybindings are missing") << endmsg;
+	}
+
+	install_actions ();
+
 	UIConfiguration::instance().ParameterChanged.connect (sigc::mem_fun (*this, &ARDOUR_UI::parameter_changed));
 	boost::function<void (string)> pc (boost::bind (&ARDOUR_UI::parameter_changed, this, _1));
 	UIConfiguration::instance().map_parameters (pc);
@@ -440,22 +465,9 @@ ARDOUR_UI::ARDOUR_UI (int *argcp, char **argvp[], const char* localedir)
 
 	SessionEvent::create_per_thread_pool ("GUI", 4096);
 
-	/* we like keyboards */
-
-	keyboard = new ArdourKeyboard(*this);
-
-	XMLNode* node = ARDOUR_UI::instance()->keyboard_settings();
-	if (node) {
-		keyboard->set_state (*node, Stateful::loading_state_version);
-	}
-
 	UIConfiguration::instance().reset_dpi ();
 
 	TimeAxisViewItem::set_constant_heights ();
-
-	/* Set this up so that our window proxies can register actions */
-
-	ActionManager::init ();
 
 	/* The following must happen after ARDOUR::init() so that Config is set up */
 
@@ -535,11 +547,12 @@ release software. So, a few guidelines:\n\
    though it may be so, depending on your workflow.\n\
 2) Please wait for a helpful writeup of new features.\n\
 3) <b>Please do NOT use the forums at ardour.org to report issues</b>.\n\
-4) Please <b>DO</b> use the bugtracker at http://tracker.ardour.org/ to report issues\n\
-   making sure to note the product version number as 6.0-pre.\n\
-5) Please <b>DO</b> use the ardour-users mailing list to discuss ideas and pass on comments.\n\
-6) Please <b>DO</b> join us on IRC for real time discussions about %1 %2. You\n\
+4) <b>Please do NOT file bugs for this alpha-development versions at this point in time</b>.\n\
+   There is no bug triaging before the initial development concludes and\n\
+   reporting issue for incomplete, ongoing work-in-progress is mostly useless.\n\
+5) Please <b>DO</b> join us on IRC for real time discussions about %1 %2. You\n\
    can get there directly from within the program via the Help->Chat menu option.\n\
+6) Please <b>DO</b> submit patches for issues after discussing them on IRC.\n\
 \n\
 Full information on all the above can be found on the support page at\n\
 \n\
@@ -565,7 +578,7 @@ ARDOUR_UI::create_global_port_matrix (ARDOUR::DataType type)
 void
 ARDOUR_UI::attach_to_engine ()
 {
-	AudioEngine::instance()->Running.connect (forever_connections, MISSING_INVALIDATOR, boost::bind (&ARDOUR_UI::engine_running, this), gui_context());
+	AudioEngine::instance()->Running.connect (forever_connections, MISSING_INVALIDATOR, boost::bind (&ARDOUR_UI::engine_running, this, _1), gui_context());
 	ARDOUR::Port::set_connecting_blocked (ARDOUR_COMMAND_LINE::no_connect_ports);
 }
 
@@ -580,12 +593,10 @@ ARDOUR_UI::engine_stopped ()
 }
 
 void
-ARDOUR_UI::engine_running ()
+ARDOUR_UI::engine_running (uint32_t cnt)
 {
-	ENSURE_GUI_THREAD (*this, &ARDOUR_UI::engine_running)
-	if (first_time_engine_run) {
+	if (cnt == 0) {
 		post_engine();
-		first_time_engine_run = false;
 	}
 
 	if (_session) {
@@ -656,8 +667,6 @@ ARDOUR_UI::post_engine ()
 		info << au_msg << endmsg;
 	}
 #endif
-
-	ARDOUR::init_post_engine ();
 
 	/* connect to important signals */
 
@@ -757,7 +766,7 @@ ARDOUR_UI::post_engine ()
 		output << "      <tr><th>Action Name</th><th>Menu Name</th></tr>" << endl;
 		output << "  </thead>\n  <tbody>" << endl;
 
-		Gtkmm2ext::ActionMap::get_all_actions (paths, labels, tooltips, keys, actions);
+		ActionManager::get_all_actions (paths, labels, tooltips, keys, actions);
 
 		vector<string>::iterator p;
 		vector<string>::iterator l;
@@ -860,6 +869,7 @@ ARDOUR_UI::~ARDOUR_UI ()
 		delete rc_option_editor; rc_option_editor = 0; // failed to wrap object warning
 		delete nsm; nsm = 0;
 		delete gui_object_state; gui_object_state = 0;
+		delete _shared_popup_menu ; _shared_popup_menu = 0;
 		delete main_window_visibility;
 		FastMeter::flush_pattern_cache ();
 		ArdourFader::flush_pattern_cache ();
@@ -1595,7 +1605,7 @@ ARDOUR_UI::update_sample_rate (samplecnt_t)
 
 	ENSURE_GUI_THREAD (*this, &ARDOUR_UI::update_sample_rate, ignored)
 
-	if (!AudioEngine::instance()->connected()) {
+	if (!AudioEngine::instance()->running()) {
 
 		snprintf (buf, sizeof (buf), "%s", _("Audio: <span foreground=\"red\">none</span>"));
 
@@ -1660,6 +1670,9 @@ ARDOUR_UI::update_format ()
 		break;
 	case MBWF:
 		s << _("MBWF");
+		break;
+	case FLAC:
+		s << _("FLAC");
 		break;
 	}
 
@@ -1895,7 +1908,7 @@ ARDOUR_UI::open_recent_session ()
 bool
 ARDOUR_UI::check_audioengine (Gtk::Window& parent)
 {
-	if (!AudioEngine::instance()->connected()) {
+	if (!AudioEngine::instance()->running()) {
 		MessageDialog msg (parent, string_compose (
 		                           _("%1 is not connected to any audio backend.\n"
 		                           "You cannot open or close sessions in this condition"),
@@ -2120,6 +2133,32 @@ ARDOUR_UI::session_add_audio_route (
 }
 
 void
+ARDOUR_UI::session_add_foldback_bus (uint32_t how_many, string const & name_template)
+{
+	RouteList routes;
+
+	assert (_session);
+
+	try {
+		routes = _session->new_audio_route (2, 2, 0, how_many, name_template, PresentationInfo::FoldbackBus, -1);
+
+		if (routes.size() != how_many) {
+			error << string_compose (P_("could not create %1 new foldback bus", "could not create %1 new foldback busses", how_many), how_many)
+			      << endmsg;
+		}
+	}
+
+	catch (...) {
+		display_insufficient_ports_message ();
+		return;
+	}
+
+	for (RouteList::iterator i = routes.begin(); i != routes.end(); ++i) {
+		(*i)->set_strict_io (true);
+	}
+}
+
+void
 ARDOUR_UI::display_insufficient_ports_message ()
 {
 	MessageDialog msg (_main_window,
@@ -2304,9 +2343,8 @@ ARDOUR_UI::transport_roll ()
 		return;
 	}
 
-#if 0
 	if (_session->config.get_external_sync()) {
-		switch (Config->get_sync_source()) {
+		switch (TransportMasterManager::instance().current()->type()) {
 		case Engine:
 			break;
 		default:
@@ -2314,7 +2352,6 @@ ARDOUR_UI::transport_roll ()
 			return;
 		}
 	}
-#endif
 
 	bool rolling = _session->transport_rolling();
 
@@ -2368,7 +2405,7 @@ ARDOUR_UI::toggle_roll (bool with_abort, bool roll_out_of_bounded_mode)
 	}
 
 	if (_session->config.get_external_sync()) {
-		switch (Config->get_sync_source()) {
+		switch (TransportMasterManager::instance().current()->type()) {
 		case Engine:
 			break;
 		default:
@@ -2686,7 +2723,7 @@ If you still wish to proceed, please use the\n\n\
 					msg.run ();
 					return;
 				}
-				// no break
+				/* fall through */
 			case 0:
 				_session->remove_pending_capture_state ();
 				break;
@@ -2882,7 +2919,7 @@ If you still wish to proceed, please use the\n\n\
 					msg.run ();
 					return;
 				}
-				// no break
+				/* fall through */
 			case 0:
 				_session->remove_pending_capture_state ();
 				break;
@@ -3520,8 +3557,6 @@ ARDOUR_UI::load_session (const std::string& path, const std::string& snap_name, 
 		}
 	}
 
-	session_loaded = false;
-
 	loading_message (string_compose (_("Please wait while %1 loads your session"), PROGRAM_NAME));
 
 	try {
@@ -3631,8 +3666,6 @@ ARDOUR_UI::load_session (const std::string& path, const std::string& snap_name, 
 
 	set_session (new_session);
 
-	session_loaded = true;
-
 	if (_session) {
 		_session->set_clean ();
 	}
@@ -3676,7 +3709,6 @@ ARDOUR_UI::build_session (const std::string& path, const std::string& snap_name,
 	Session *new_session;
 	int x;
 
-	session_loaded = false;
 	x = unload_session ();
 
 	if (x < 0) {
@@ -3740,8 +3772,6 @@ ARDOUR_UI::build_session (const std::string& path, const std::string& snap_name,
 	}
 
 	set_session (new_session);
-
-	session_loaded = true;
 
 	new_session->save_state(new_session->name());
 
@@ -4326,6 +4356,19 @@ ARDOUR_UI::add_route_dialog_response (int r)
 		return;
 	}
 
+	if (!AudioEngine::instance()->running ()) {
+		switch (r) {
+			case AddRouteDialog::Add:
+			case AddRouteDialog::AddAndClose:
+				break;
+			default:
+				return;
+		}
+		add_route_dialog->ArdourDialog::on_response (r);
+		ARDOUR_UI_UTILS::engine_is_running ();
+		return;
+	}
+
 	int count;
 
 	switch (r) {
@@ -4399,6 +4442,9 @@ ARDOUR_UI::add_route_dialog_response (int r)
 		break;
 	case AddRouteDialog::VCAMaster:
 		_session->vca_manager().create_vca (count, name_template);
+		break;
+	case AddRouteDialog::FoldbackBus:
+		session_add_foldback_bus (count, name_template);
 		break;
 	}
 }
@@ -5389,12 +5435,12 @@ ARDOUR_UI::popup_editor_meter_menu (GdkEventButton* ev)
 {
 	using namespace Gtk::Menu_Helpers;
 
-	Gtk::Menu* m = manage (new Menu);
+	Gtk::Menu* m = shared_popup_menu ();
 	MenuList& items = m->items ();
 
 	RadioMenuItem::Group group;
 
-	_suspend_editor_meter_callbacks = true;
+	PBD::Unwinder<bool> uw (_suspend_editor_meter_callbacks, true);
 	add_editor_meter_type_item (items, group, ArdourMeter::meter_type_string(MeterPeak), MeterPeak);
 	add_editor_meter_type_item (items, group, ArdourMeter::meter_type_string(MeterPeak0dB), MeterPeak0dB);
 	add_editor_meter_type_item (items, group, ArdourMeter::meter_type_string(MeterKrms),  MeterKrms);
@@ -5408,7 +5454,6 @@ ARDOUR_UI::popup_editor_meter_menu (GdkEventButton* ev)
 	add_editor_meter_type_item (items, group, ArdourMeter::meter_type_string(MeterVU),  MeterVU);
 
 	m->popup (ev->button, ev->time);
-	_suspend_editor_meter_callbacks = false;
 }
 
 bool
@@ -5821,7 +5866,7 @@ ARDOUR_UI::key_press_focus_accelerator_handler (Gtk::Window& window, GdkEventKey
 			}
 		}
 
-		DEBUG_TRACE (DEBUG::Accelerators, "\tnot yet handled, try global bindings\n");
+		DEBUG_TRACE (DEBUG::Accelerators, string_compose ("\tnot yet handled, try global bindings (%1)\n", global_bindings));
 
 		if (global_bindings && global_bindings->activate (k, Bindings::Press)) {
 			DEBUG_TRACE (DEBUG::Accelerators, "\t\thandled\n");
@@ -5871,7 +5916,7 @@ ARDOUR_UI::key_press_focus_accelerator_handler (Gtk::Window& window, GdkEventKey
 			}
 		}
 
-		DEBUG_TRACE (DEBUG::Accelerators, "\tnot yet handled, try global bindings\n");
+		DEBUG_TRACE (DEBUG::Accelerators, string_compose ("\tnot yet handled, try global bindings (%1)\n", global_bindings));
 
 		if (global_bindings && global_bindings->activate (k, Bindings::Press)) {
 			DEBUG_TRACE (DEBUG::Accelerators, "\t\thandled\n");
@@ -5881,14 +5926,6 @@ ARDOUR_UI::key_press_focus_accelerator_handler (Gtk::Window& window, GdkEventKey
 
 	DEBUG_TRACE (DEBUG::Accelerators, "\tnot handled\n");
 	return true;
-}
-
-void
-ARDOUR_UI::load_bindings ()
-{
-	if ((global_bindings = Bindings::get_bindings (X_("Global"), global_actions)) == 0) {
-		error << _("Global keybindings are missing") << endmsg;
-	}
 }
 
 void
@@ -5949,4 +5986,54 @@ ARDOUR_UI::reset_focus (Gtk::Widget* w)
 
 	gtk_window_set_focus (GTK_WINDOW(top->gobj()), 0);
 
+}
+
+void
+ARDOUR_UI::monitor_dim_all ()
+{
+	boost::shared_ptr<Route> mon = _session->monitor_out ();
+	if (!mon) {
+		return;
+	}
+	boost::shared_ptr<ARDOUR::MonitorProcessor> _monitor = mon->monitor_control ();
+
+	Glib::RefPtr<ToggleAction> tact = ActionManager::get_toggle_action (X_("Monitor"), "monitor-dim-all");
+	_monitor->set_dim_all (tact->get_active());
+}
+
+void
+ARDOUR_UI::monitor_cut_all ()
+{
+	boost::shared_ptr<Route> mon = _session->monitor_out ();
+	if (!mon) {
+		return;
+	}
+	boost::shared_ptr<ARDOUR::MonitorProcessor> _monitor = mon->monitor_control ();
+
+	Glib::RefPtr<ToggleAction> tact = ActionManager::get_toggle_action (X_("Monitor"), "monitor-cut-all");
+	_monitor->set_cut_all (tact->get_active());
+}
+
+void
+ARDOUR_UI::monitor_mono ()
+{
+	boost::shared_ptr<Route> mon = _session->monitor_out ();
+	if (!mon) {
+		return;
+	}
+	boost::shared_ptr<ARDOUR::MonitorProcessor> _monitor = mon->monitor_control ();
+
+	Glib::RefPtr<ToggleAction> tact = ActionManager::get_toggle_action (X_("Monitor"), "monitor-mono");
+	_monitor->set_mono (tact->get_active());
+}
+
+Gtk::Menu*
+ARDOUR_UI::shared_popup_menu ()
+{
+	ENSURE_GUI_THREAD (*this, &ARDOUR_UI::shared_popup_menu, ignored);
+
+	assert (!_shared_popup_menu || !_shared_popup_menu->is_visible());
+	delete _shared_popup_menu;
+	_shared_popup_menu = new Gtk::Menu;
+	return _shared_popup_menu;
 }

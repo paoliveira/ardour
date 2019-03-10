@@ -135,8 +135,9 @@ Meterbridge::Meterbridge ()
 	signal_delete_event().connect (sigc::mem_fun (*this, &Meterbridge::hide_window));
 	signal_configure_event().connect (sigc::mem_fun (*ARDOUR_UI::instance(), &ARDOUR_UI::configure_handler));
 	MeterStrip::CatchDeletion.connect (*this, invalidator (*this), boost::bind (&Meterbridge::remove_strip, this, _1), gui_context());
-	MeterStrip::MetricChanged.connect (*this, invalidator (*this), boost::bind(&Meterbridge::resync_order, this), gui_context());
+	MeterStrip::MetricChanged.connect (*this, invalidator (*this), boost::bind(&Meterbridge::sync_order_keys, this), gui_context());
 	MeterStrip::ConfigurationChanged.connect (*this, invalidator (*this), boost::bind(&Meterbridge::queue_resize, this), gui_context());
+	PresentationInfo::Change.connect (*this, invalidator (*this), boost::bind (&Meterbridge::resync_order, this, _1), gui_context());
 
 	/* work around ScrolledWindowViewport alignment mess Part one */
 	Gtk::HBox * yspc = manage (new Gtk::HBox());
@@ -431,9 +432,7 @@ Meterbridge::set_session (Session* s)
 	_show_master = _session->config.get_show_master_on_meterbridge();
 	_show_midi = _session->config.get_show_midi_on_meterbridge();
 
-	boost::shared_ptr<RouteList> routes = _session->get_routes();
-
-	RouteList copy (*routes);
+	RouteList copy = _session->get_routelist ();
 	copy.sort (Stripable::Sorter (true));
 	add_strips (copy);
 
@@ -554,7 +553,7 @@ Meterbridge::add_strips (RouteList& routes)
 
 		strip = new MeterStrip (_session, route);
 		strips.push_back (MeterBridgeStrip(strip));
-		route->active_changed.connect (*this, invalidator (*this), boost::bind (&Meterbridge::resync_order, this), gui_context ());
+		route->active_changed.connect (*this, invalidator (*this), boost::bind (&Meterbridge::sync_order_keys, this), gui_context ());
 
 		meterarea.pack_start (*strip, false, false);
 		strip->show();
@@ -719,9 +718,11 @@ Meterbridge::sync_order_keys ()
 }
 
 void
-Meterbridge::resync_order()
+Meterbridge::resync_order (PropertyChange what_changed)
 {
-	sync_order_keys();
+	if (what_changed.contains (ARDOUR::Properties::order)) {
+		sync_order_keys();
+	}
 }
 
 void

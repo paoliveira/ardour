@@ -69,15 +69,11 @@ CONFIG_VARIABLE (bool, midi_input_follows_selection, "midi-input-follows-selecti
 /* Timecode and related */
 
 CONFIG_VARIABLE (bool, run_all_transport_masters_always, "run-all-transport-masters-always", true)
-CONFIG_VARIABLE (bool, use_session_timecode_format, "use-session-timecode-format", true)
 CONFIG_VARIABLE (int, mtc_qf_speed_tolerance, "mtc-qf-speed-tolerance", 5)
 CONFIG_VARIABLE (bool, timecode_sync_frame_rate, "timecode-sync-frame-rate", true)
 #ifdef USE_TRACKS_CODE_FEATURES
 CONFIG_VARIABLE (SyncSource, sync_source, "sync-source", MTC)
-#else
-CONFIG_VARIABLE (SyncSource, sync_source, "sync-source", Engine)
 #endif
-CONFIG_VARIABLE (std::string, ltc_source_port, "ltc-source-port", "system:capture_1")
 CONFIG_VARIABLE (bool, send_ltc, "send-ltc", false)
 CONFIG_VARIABLE (bool, ltc_send_continuously, "ltc-send-continuously", true)
 CONFIG_VARIABLE (std::string, ltc_output_port, "ltc-output-port", "")
@@ -113,6 +109,7 @@ CONFIG_VARIABLE (bool, automation_follows_regions, "automation-follows-regions",
 CONFIG_VARIABLE (bool, region_boundaries_from_selected_tracks, "region-boundaries-from-selected-tracks", true)
 CONFIG_VARIABLE (bool, region_boundaries_from_onscreen_tracks, "region-boundaries-from-onscreen_tracks", true)
 CONFIG_VARIABLE (FadeShape, default_fade_shape, "default-fade-shape", FadeLinear)
+CONFIG_VARIABLE (RangeSelectionAfterSplit, range_selection_after_split, "range-selection-after-split", PreserveSel)
 CONFIG_VARIABLE (RegionSelectionAfterSplit, region_selection_after_split, "region-selection-after-split", None)
 
 /* monitoring, mute, solo etc */
@@ -143,7 +140,7 @@ CONFIG_VARIABLE (std::string, monitor_bus_preferred_bundle, "monitor-bus-preferr
 CONFIG_VARIABLE (bool, quieten_at_speed, "quieten-at-speed", true)
 
 CONFIG_VARIABLE (bool, link_send_and_route_panner, "link-send-and-route-panner", true)
-CONFIG_VARIABLE (std::string, midi_audition_synth_uri, "midi-audition-synth-uri", "@default@")
+CONFIG_VARIABLE (std::string, midi_audition_synth_uri, "midi-audition-synth-uri", "@default@") /*deprecated*/
 
 /* click */
 
@@ -173,7 +170,6 @@ CONFIG_VARIABLE (bool, loop_is_mode, "loop-is-mode", false)
 #endif
 CONFIG_VARIABLE (samplecnt_t, preroll, "preroll", 0)
 CONFIG_VARIABLE (samplecnt_t, postroll, "postroll", 0)
-CONFIG_VARIABLE (float, rf_speed, "rf-speed", 2.0f)
 CONFIG_VARIABLE (float, shuttle_speed_factor, "shuttle-speed-factor", 1.0f) // used for MMC shuttle
 CONFIG_VARIABLE (float, shuttle_speed_threshold, "shuttle-speed-threshold", 5.0f) // used for MMC shuttle
 CONFIG_VARIABLE (ShuttleBehaviour, shuttle_behaviour, "shuttle-behaviour", Sprung)
@@ -247,6 +243,7 @@ CONFIG_VARIABLE (int, vst_scan_timeout, "vst-scan-timeout", 1200) /* deciseconds
 CONFIG_VARIABLE (bool, discover_audio_units, "discover-audio-units", false)
 CONFIG_VARIABLE (bool, ask_replace_instrument, "ask-replace-instrument", true)
 CONFIG_VARIABLE (bool, ask_setup_instrument, "ask-setup-instrument", true)
+CONFIG_VARIABLE (uint32_t, limit_n_automatables, "limit-n-automatables", 512)
 
 /* custom user plugin paths */
 CONFIG_VARIABLE (std::string, plugin_path_vst, "plugin-path-vst", "@default@")
@@ -271,6 +268,7 @@ CONFIG_VARIABLE (std::string, updates_url, "updates-url", "http://ardour.org/wha
 CONFIG_VARIABLE (std::string, donate_url, "donate-url", "http://ardour.org/donate")
 
 /* video timeline configuration */
+CONFIG_VARIABLE (std::string, xjadeo_binary, "xjadeo-binary", "")
 CONFIG_VARIABLE (bool, video_advanced_setup, "video-advanced-setup", false)
 CONFIG_VARIABLE (std::string, video_server_url, "video-server-url", "http://127.0.0.1:1554")
 #ifndef PLATFORM_WINDOWS

@@ -67,6 +67,7 @@ public:
 		AudioBus,
 		MidiBus,
 		VCAMaster,
+		FoldbackBus,
 	};
 	TypeWanted type_wanted();
 

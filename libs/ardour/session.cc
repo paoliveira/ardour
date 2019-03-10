@@ -183,7 +183,7 @@ Session::Session (AudioEngine &eng,
 	, _transport_sample (0)
 	, _seek_counter (0)
 	, _session_range_location (0)
-	, _session_range_end_is_free (true)
+	, _session_range_is_free (true)
 	, _silent (false)
 	, _remaining_latency_preroll (0)
 	, _engine_speed (1.0)
@@ -241,8 +241,6 @@ Session::Session (AudioEngine &eng,
 	, _n_lua_scripts (0)
 	, _butler (new Butler (*this))
 	, _post_transport_work (0)
-	,  cumulative_rf_motion (0)
-	, rf_scale (1.0)
 	, _locations (new Locations (*this))
 	, _ignore_skips_updates (false)
 	, _rt_thread_active (false)
@@ -1161,6 +1159,12 @@ Session::remove_monitor_section ()
 		return;
 	}
 
+	/* allow deletion when session is unloaded */
+	if (!_engine.running() && !(_state_of_the_state & Deletion)) {
+		error << _("Cannot remove monitor section while the engine is offline.") << endmsg;
+		return;
+	}
+
 	/* force reversion to Solo-In-Place */
 	Config->set_solo_control_is_listen_control (false);
 
@@ -1209,13 +1213,18 @@ Session::remove_monitor_section ()
 		auditioner->connect ();
 	}
 
-	Config->ParameterChanged ("use-monitor-bus");
+	MonitorBusAddedOrRemoved (); /* EMIT SIGNAL */
 }
 
 void
 Session::add_monitor_section ()
 {
 	RouteList rl;
+
+	if (!_engine.running()) {
+		error << _("Cannot create monitor section while the engine is offline.") << endmsg;
+		return;
+	}
 
 	if (_monitor_out || !_master_out || Profile->get_trx()) {
 		return;
@@ -1360,7 +1369,8 @@ Session::add_monitor_section ()
 	if (auditioner) {
 		auditioner->connect ();
 	}
-	Config->ParameterChanged ("use-monitor-bus");
+
+	MonitorBusAddedOrRemoved (); /* EMIT SIGNAL */
 }
 
 void
@@ -1953,24 +1963,27 @@ Session::location_added (Location *location)
 void
 Session::location_removed (Location *location)
 {
-        if (location->is_auto_loop()) {
-	        set_auto_loop_location (0);
-	        set_track_loop (false);
-        }
+	if (location->is_auto_loop()) {
+		set_auto_loop_location (0);
+		if (!play_loop) {
+			set_track_loop (false);
+		}
+		unset_play_loop ();
+	}
 
-        if (location->is_auto_punch()) {
-                set_auto_punch_location (0);
-        }
+	if (location->is_auto_punch()) {
+		set_auto_punch_location (0);
+	}
 
-        if (location->is_session_range()) {
-                /* this is never supposed to happen */
-                error << _("programming error: session range removed!") << endl;
-        }
+	if (location->is_session_range()) {
+		/* this is never supposed to happen */
+		error << _("programming error: session range removed!") << endl;
+	}
 
-        if (location->is_skip()) {
+	if (location->is_skip()) {
 
-                update_skips (location, false);
-        }
+		update_skips (location, false);
+	}
 
 	set_dirty ();
 }
@@ -3254,6 +3267,8 @@ Session::new_audio_route (int input_channels, int output_channels, RouteGroup* r
 		StateProtector sp (this);
 		if (Profile->get_trx()) {
 			add_routes (ret, false, false, false, order);
+		} else if (flags == PresentationInfo::FoldbackBus) {
+			add_routes (ret, false, false, true, order); // no autoconnect
 		} else {
 			add_routes (ret, false, true, true, order); // autoconnect // outputs only
 		}
@@ -3308,7 +3323,7 @@ Session::new_route_from_template (uint32_t how_many, PresentationInfo::order_t i
 
 				if (!find_route_name (name_base.c_str(), ++number, name, (being_added > 1))) {
 					fatal << _("Session: UINT_MAX routes? impossible!") << endmsg;
-					/*NOTREACHDE*/
+					/*NOTREACHED*/
 				}
 
 			} else {
@@ -3435,6 +3450,11 @@ Session::new_route_from_template (uint32_t how_many, PresentationInfo::order_t i
 			goto out;
 		}
 
+		catch (...) {
+			IO::enable_connecting ();
+			throw;
+		}
+
 		--how_many;
 	}
 
@@ -3446,8 +3466,9 @@ Session::new_route_from_template (uint32_t how_many, PresentationInfo::order_t i
 		} else {
 			add_routes (ret, true, true, false, insert_at);
 		}
-		IO::enable_connecting ();
 	}
+
+	IO::enable_connecting ();
 
 	return ret;
 }
@@ -3798,7 +3819,7 @@ Session::remove_routes (boost::shared_ptr<RouteList> routes_to_remove)
 		resort_routes ();
 #endif
 
-	if (_process_graph && !(_state_of_the_state & Deletion)) {
+	if (_process_graph && !(_state_of_the_state & Deletion) && _engine.running()) {
 		_process_graph->clear_other_chain ();
 	}
 
@@ -4230,30 +4251,41 @@ Session::cancel_all_mute ()
 }
 
 void
-Session::get_stripables (StripableList& sl) const
+Session::get_stripables (StripableList& sl, PresentationInfo::Flag fl) const
 {
 	boost::shared_ptr<RouteList> r = routes.reader ();
-	sl.insert (sl.end(), r->begin(), r->end());
+	for (RouteList::iterator it = r->begin(); it != r->end(); ++it) {
+		if ((*it)->presentation_info ().flags () & fl) {
+			sl.push_back (*it);
+		}
+	}
 
-	VCAList v = _vca_manager->vcas ();
-	sl.insert (sl.end(), v.begin(), v.end());
+	if (fl & PresentationInfo::VCA) {
+		VCAList v = _vca_manager->vcas ();
+		sl.insert (sl.end(), v.begin(), v.end());
+	}
 }
 
 StripableList
 Session::get_stripables () const
 {
+	PresentationInfo::Flag fl = PresentationInfo::AllStripables;
 	StripableList rv;
-	Session::get_stripables (rv);
+	Session::get_stripables (rv, fl);
 	rv.sort (Stripable::Sorter ());
 	return rv;
 }
 
 RouteList
-Session::get_routelist (bool mixer_order) const
+Session::get_routelist (bool mixer_order, PresentationInfo::Flag fl) const
 {
 	boost::shared_ptr<RouteList> r = routes.reader ();
 	RouteList rv;
-	rv.insert (rv.end(), r->begin(), r->end());
+	for (RouteList::iterator it = r->begin(); it != r->end(); ++it) {
+		if ((*it)->presentation_info ().flags () & fl) {
+			rv.push_back (*it);
+		}
+	}
 	rv.sort (Stripable::Sorter (mixer_order));
 	return rv;
 }
@@ -4609,20 +4641,20 @@ Session::maybe_update_session_range (samplepos_t a, samplepos_t b)
 
 	} else {
 
-		if (a < _session_range_location->start()) {
+		if (_session_range_is_free && (a < _session_range_location->start())) {
 			_session_range_location->set_start (a);
 		}
 
-		if (_session_range_end_is_free && (b > _session_range_location->end())) {
+		if (_session_range_is_free && (b > _session_range_location->end())) {
 			_session_range_location->set_end (b);
 		}
 	}
 }
 
 void
-Session::set_end_is_free (bool yn)
+Session::set_session_range_is_free (bool yn)
 {
-	_session_range_end_is_free = yn;
+	_session_range_is_free = yn;
 }
 
 void
@@ -6405,6 +6437,10 @@ Session::update_route_record_state ()
 void
 Session::listen_position_changed ()
 {
+	if (loading ())  {
+		/* skip duing session restore (already taken care of) */
+		return;
+	}
 	ProcessorChangeBlocker pcb (this);
 	boost::shared_ptr<RouteList> r = routes.reader ();
 	for (RouteList::iterator i = r->begin(); i != r->end(); ++i) {
@@ -6455,6 +6491,25 @@ Session::route_removed_from_route_group (RouteGroup* rg, boost::weak_ptr<Route> 
 	if (!rg->has_control_master () && !rg->has_subgroup () && rg->empty()) {
 		remove_route_group (*rg);
 	}
+}
+
+boost::shared_ptr<AudioTrack>
+Session::get_nth_audio_track (int nth) const
+{
+	boost::shared_ptr<RouteList> rl = routes.reader ();
+	rl->sort (Stripable::Sorter ());
+
+	for (RouteList::const_iterator r = rl->begin(); r != rl->end(); ++r) {
+		if (!boost::dynamic_pointer_cast<AudioTrack> (*r)) {
+			continue;
+		}
+
+		if (--nth > 0) {
+			continue;
+		}
+		return boost::dynamic_pointer_cast<AudioTrack> (*r);
+	}
+	return boost::shared_ptr<AudioTrack> ();
 }
 
 boost::shared_ptr<RouteList>
@@ -6879,7 +6934,7 @@ Session::set_worst_output_latency ()
 
 	_worst_output_latency = 0;
 
-	if (!_engine.connected()) {
+	if (!_engine.running()) {
 		return;
 	}
 
@@ -6903,7 +6958,7 @@ Session::set_worst_input_latency ()
 
 	_worst_input_latency = 0;
 
-	if (!_engine.connected()) {
+	if (!_engine.running()) {
 		return;
 	}
 
@@ -6920,6 +6975,17 @@ void
 Session::update_latency_compensation (bool force_whole_graph)
 {
 	if (_state_of_the_state & (InitialConnecting|Deletion)) {
+		return;
+	}
+	/* this lock is not usually contended, but under certain conditions,
+	 * update_latency_compensation may be called concurrently.
+	 * e.g. drag/drop copy a latent plugin while rolling.
+	 * GUI thread (via route_processors_changed) and
+	 * auto_connect_thread_run may race.
+	 */
+	Glib::Threads::Mutex::Lock lx (_update_latency_lock, Glib::Threads::TRY_LOCK);
+	if (!lx.locked()) {
+		/* no need to do this twice */
 		return;
 	}
 
@@ -7272,4 +7338,17 @@ Session::cancel_all_solo ()
 
 	set_controls (stripable_list_to_control_list (sl, &Stripable::solo_control), 0.0, Controllable::NoGroup);
 	clear_all_solo_state (routes.reader());
+}
+
+void
+Session::maybe_update_tempo_from_midiclock_tempo (float bpm)
+{
+	if (_tempo_map->n_tempos() == 1) {
+		TempoSection& ts (_tempo_map->tempo_section_at_sample (0));
+		if (fabs (ts.note_types_per_minute() - bpm) > (0.01 * ts.note_types_per_minute())) {
+			const Tempo tempo (bpm, 4.0, bpm);
+			std::cerr << "new tempo " << bpm << " old " << ts.note_types_per_minute() << std::endl;
+			_tempo_map->replace_tempo (ts, tempo, 0.0, 0.0, AudioTime);
+		}
+	}
 }

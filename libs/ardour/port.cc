@@ -72,7 +72,7 @@ Port::Port (std::string const & n, DataType t, PortFlags f)
 
 	assert (_name.find_first_of (':') == std::string::npos);
 
-	if (!port_engine.available ()) {
+	if (!port_manager->running ()) {
 		DEBUG_TRACE (DEBUG::Ports, string_compose ("port-engine n/a postpone registering %1\n", name()));
 		_port_handle = 0; // created during ::reestablish() later
 	} else if ((_port_handle = port_engine.register_port (_name, t, _flags)) == 0) {
@@ -89,6 +89,7 @@ Port::Port (std::string const & n, DataType t, PortFlags f)
 /** Port destructor */
 Port::~Port ()
 {
+	DEBUG_TRACE (DEBUG::Destruction, string_compose ("destroying port @ %1 named %2\n", this, name()));
 	drop ();
 }
 
@@ -205,7 +206,7 @@ Port::connected_to (std::string const & o) const
 		return false;
 	}
 
-	if (!port_engine.available()) {
+	if (!port_manager->running()) {
 		return false;
 	}
 
@@ -215,7 +216,7 @@ Port::connected_to (std::string const & o) const
 int
 Port::get_connections (std::vector<std::string> & c) const
 {
-	if (!port_engine.available()) {
+	if (!port_manager->running()) {
 		c.insert (c.end(), _connections.begin(), _connections.end());
 		return c.size();
 	}

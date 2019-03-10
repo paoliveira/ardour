@@ -262,11 +262,6 @@ Editor::Editor ()
 	, clicked_control_point (0)
 	, button_release_can_deselect (true)
 	, _mouse_changed_selection (false)
-	, region_edit_menu_split_item (0)
-	, region_edit_menu_split_multichannel_item (0)
-	, track_region_edit_playlist_menu (0)
-	, track_edit_playlist_submenu (0)
-	, track_selection_edit_playlist_submenu (0)
 	, _popup_region_menu_item (0)
 	, _track_canvas (0)
 	, _track_canvas_viewport (0)
@@ -375,9 +370,7 @@ Editor::Editor ()
 	, meter_marker_menu (0)
 	, marker_menu (0)
 	, range_marker_menu (0)
-	, transport_marker_menu (0)
 	, new_transport_marker_menu (0)
-	, cd_marker_menu (0)
 	, marker_menu_item (0)
 	, bbt_beat_subdivision (4)
 	, _visible_track_count (-1)
@@ -448,7 +441,6 @@ Editor::Editor ()
 	, _stepping_axis_view (0)
 	, quantize_dialog (0)
 	, _main_menu_disabler (0)
-	, myactions (X_("editor"))
 {
 	/* we are a singleton */
 
@@ -775,8 +767,8 @@ Editor::Editor ()
 
 	/* register actions now so that set_state() can find them and set toggles/checks etc */
 
-	register_actions ();
 	load_bindings ();
+	register_actions ();
 
 	setup_toolbar ();
 
@@ -837,7 +829,6 @@ Editor::Editor ()
 
 	_ignore_region_action = false;
 	_last_region_menu_was_main = false;
-	_popup_region_menu_item = 0;
 
 	_show_marker_lines = false;
 
@@ -861,12 +852,18 @@ Editor::Editor ()
 	setup_fade_images ();
 
 	set_grid_to (GridTypeNone);
-
-	instant_save ();
 }
 
 Editor::~Editor()
 {
+	delete tempo_marker_menu;
+	delete meter_marker_menu;
+	delete marker_menu;
+	delete range_marker_menu;
+	delete new_transport_marker_menu;
+	delete editor_ruler_menu;
+	delete _popup_region_menu_item;
+
 	delete button_bindings;
 	delete _routes;
 	delete _route_groups;
@@ -984,15 +981,11 @@ Editor::set_entered_track (TimeAxisView* tav)
 void
 Editor::instant_save ()
 {
-	if (!constructed || !ARDOUR_UI::instance()->session_loaded || no_save_instant) {
+	if (!constructed || !_session || no_save_instant) {
 		return;
 	}
 
-	if (_session) {
-		_session->add_instant_xml(get_state());
-	} else {
-		Config->add_instant_xml(get_state());
-	}
+	_session->add_instant_xml(get_state());
 }
 
 void
@@ -1612,22 +1605,6 @@ Editor::popup_track_context_menu (int button, int32_t time, ItemType item_type, 
 	case RegionViewNameHighlight:
 	case LeftFrameHandle:
 	case RightFrameHandle:
-		if (!with_selection) {
-			if (region_edit_menu_split_item) {
-				if (clicked_regionview && clicked_regionview->region()->covers (get_preferred_edit_position())) {
-					ActionManager::set_sensitive (ActionManager::edit_point_in_region_sensitive_actions, true);
-				} else {
-					ActionManager::set_sensitive (ActionManager::edit_point_in_region_sensitive_actions, false);
-				}
-			}
-			if (region_edit_menu_split_multichannel_item) {
-				if (clicked_regionview && clicked_regionview->region()->n_channels() > 1) {
-					region_edit_menu_split_multichannel_item->set_sensitive (true);
-				} else {
-					region_edit_menu_split_multichannel_item->set_sensitive (false);
-				}
-			}
-		}
 		break;
 
 	case SelectionItem:
@@ -1714,9 +1691,6 @@ Editor::build_track_region_context_menu ()
 	/* we've just cleared the track region context menu, so the menu that these
 	   two items were on will have disappeared; stop them dangling.
 	*/
-	region_edit_menu_split_item = 0;
-	region_edit_menu_split_multichannel_item = 0;
-
 	RouteTimeAxisView* rtv = dynamic_cast<RouteTimeAxisView*> (clicked_axisview);
 
 	if (rtv) {
@@ -2112,7 +2086,7 @@ Editor::add_bus_context_items (Menu_Helpers::MenuList& edit_items)
 	edit_items.push_back (MenuElem (_("Select"), *select_menu));
 
 	/* Cut-n-Paste */
-
+#if 0 // unused, why?
 	Menu *cutnpaste_menu = manage (new Menu);
 	MenuList& cutnpaste_items = cutnpaste_menu->items();
 	cutnpaste_menu->set_name ("ArdourContextMenu");
@@ -2120,6 +2094,7 @@ Editor::add_bus_context_items (Menu_Helpers::MenuList& edit_items)
 	cutnpaste_items.push_back (MenuElem (_("Cut"), sigc::mem_fun(*this, &Editor::cut)));
 	cutnpaste_items.push_back (MenuElem (_("Copy"), sigc::mem_fun(*this, &Editor::copy)));
 	cutnpaste_items.push_back (MenuElem (_("Paste"), sigc::bind (sigc::mem_fun(*this, &Editor::paste), 1.0f, true)));
+#endif
 
 	Menu *nudge_menu = manage (new Menu());
 	MenuList& nudge_items = nudge_menu->items();
@@ -2356,10 +2331,8 @@ Editor::set_edit_point_preference (EditPoint ep, bool force)
 		break;
 	}
 
-	Glib::RefPtr<Action> act = ActionManager::get_action ("Editor", action);
-	if (act) {
-		Glib::RefPtr<RadioAction>::cast_dynamic(act)->set_active (true);
-	}
+	Glib::RefPtr<ToggleAction> tact = ActionManager::get_toggle_action ("Editor", action);
+	tact->set_active (true);
 
 	samplepos_t foo;
 	bool in_track_canvas;
@@ -2457,13 +2430,13 @@ Editor::set_state (const XMLNode& node, int version)
 		reset_y_origin (y_origin);
 	}
 
-	if (node.get_property ("join-object-range", yn)) {
-		RefPtr<Action> act = ActionManager::get_action (X_("MouseMode"), X_("set-mouse-mode-object-range"));
-		if (act) {
-			RefPtr<ToggleAction> tact = RefPtr<ToggleAction>::cast_dynamic(act);
-			tact->set_active (!yn);
-			tact->set_active (yn);
-		}
+	yn = false;
+	node.get_property ("join-object-range", yn);
+	{
+		RefPtr<ToggleAction> tact = ActionManager::get_toggle_action (X_("MouseMode"), X_("set-mouse-mode-object-range"));
+		/* do it twice to force the change */
+		tact->set_active (!yn);
+		tact->set_active (yn);
 		set_mouse_mode(mouse_mode, true);
 	}
 
@@ -2487,28 +2460,20 @@ Editor::set_state (const XMLNode& node, int version)
 		_regions->reset_sort_type (sort_type, true);
 	}
 
-	if (node.get_property ("show-editor-mixer", yn)) {
-
-		Glib::RefPtr<Action> act = ActionManager::get_action (X_("Editor"), X_("show-editor-mixer"));
-		assert (act);
-
-		Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
-
+	yn = false;
+	node.get_property ("show-editor-mixer", yn);
+	{
+		Glib::RefPtr<ToggleAction> tact = ActionManager::get_toggle_action (X_("Editor"), X_("show-editor-mixer"));
 		/* do it twice to force the change */
-
 		tact->set_active (!yn);
 		tact->set_active (yn);
 	}
 
-	if (node.get_property ("show-editor-list", yn)) {
-
-		Glib::RefPtr<Action> act = ActionManager::get_action (X_("Editor"), X_("show-editor-list"));
-		assert (act);
-
-		Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
-
+	yn = false;
+	node.get_property ("show-editor-list", yn);
+	{
+		Glib::RefPtr<ToggleAction> tact = ActionManager::get_toggle_action (X_("Editor"), X_("show-editor-list"));
 		/* do it twice to force the change */
-
 		tact->set_active (!yn);
 		tact->set_active (yn);
 	}
@@ -2518,11 +2483,11 @@ Editor::set_state (const XMLNode& node, int version)
 		_the_notebook.set_current_page (el_page);
 	}
 
-	if (node.get_property (X_("show-marker-lines"), yn)) {
-		Glib::RefPtr<Action> act = ActionManager::get_action (X_("Editor"), X_("show-marker-lines"));
-		assert (act);
-		Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic (act);
-
+	yn = false;
+	node.get_property (X_("show-marker-lines"), yn);
+	{
+		Glib::RefPtr<ToggleAction> tact = ActionManager::get_toggle_action (X_("Editor"), X_("show-marker-lines"));
+		/* do it twice to force the change */
 		tact->set_active (!yn);
 		tact->set_active (yn);
 	}
@@ -2535,10 +2500,8 @@ Editor::set_state (const XMLNode& node, int version)
 	}
 
 	if (node.get_property ("maximised", yn)) {
-		Glib::RefPtr<Action> act = ActionManager::get_action (X_("Common"), X_("ToggleMaximalEditor"));
-		assert (act);
-		Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
-		bool fs = tact && tact->get_active();
+		Glib::RefPtr<ToggleAction> tact = ActionManager::get_toggle_action (X_("Common"), X_("ToggleMaximalEditor"));
+		bool fs = tact->get_active();
 		if (yn ^ fs) {
 			ActionManager::do_action ("Common", "ToggleMaximalEditor");
 		}
@@ -2557,28 +2520,22 @@ Editor::set_state (const XMLNode& node, int version)
 		 * Not all properties may have been in XML, but
 		 * those that are linked to a private variable may need changing
 		 */
-		RefPtr<Action> act;
+		RefPtr<ToggleAction> tact;
 
-		act = ActionManager::get_action (X_("Editor"), X_("toggle-follow-playhead"));
+		tact = ActionManager::get_toggle_action (X_("Editor"), X_("toggle-follow-playhead"));
 		yn = _follow_playhead;
-		if (act) {
-			RefPtr<ToggleAction> tact = RefPtr<ToggleAction>::cast_dynamic(act);
-			if (tact->get_active() != yn) {
-				tact->set_active (yn);
-			}
+		if (tact->get_active() != yn) {
+			tact->set_active (yn);
 		}
 
-		act = ActionManager::get_action (X_("Editor"), X_("toggle-stationary-playhead"));
+		tact = ActionManager::get_toggle_action (X_("Editor"), X_("toggle-stationary-playhead"));
 		yn = _stationary_playhead;
-		if (act) {
-			RefPtr<ToggleAction> tact = RefPtr<ToggleAction>::cast_dynamic(act);
-			if (tact->get_active() != yn) {
-				tact->set_active (yn);
-			}
+		if (tact->get_active() != yn) {
+			tact->set_active (yn);
 		}
 	}
 
-	return LuaInstance::instance()->set_state(node);
+	return 0;
 }
 
 XMLNode&
@@ -2619,17 +2576,11 @@ Editor::get_state ()
 	node->set_property ("mouse-mode", mouse_mode);
 	node->set_property ("join-object-range", smart_mode_action->get_active ());
 
-	Glib::RefPtr<Action> act = ActionManager::get_action (X_("Editor"), X_("show-editor-mixer"));
-	if (act) {
-		Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
-		node->set_property (X_("show-editor-mixer"), tact->get_active());
-	}
+	Glib::RefPtr<ToggleAction> tact = ActionManager::get_toggle_action (X_("Editor"), X_("show-editor-mixer"));
+	node->set_property (X_("show-editor-mixer"), tact->get_active());
 
-	act = ActionManager::get_action (X_("Editor"), X_("show-editor-list"));
-	if (act) {
-		Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
-		node->set_property (X_("show-editor-list"), tact->get_active());
-	}
+	tact = ActionManager::get_toggle_action (X_("Editor"), X_("show-editor-list"));
+	node->set_property (X_("show-editor-list"), tact->get_active());
 
 	node->set_property (X_("editor-list-page"), _the_notebook.get_current_page ());
 
@@ -2646,8 +2597,6 @@ Editor::get_state ()
 
 	node->set_property ("nudge-clock-value", nudge_clock->current_duration());
 
-	node->add_child_nocopy (LuaInstance::instance()->get_action_state());
-	node->add_child_nocopy (LuaInstance::instance()->get_hook_state());
 	node->add_child_nocopy (_locations->get_state ());
 
 	return *node;
@@ -2824,7 +2773,7 @@ MusicSample
 Editor::snap_to_minsec (MusicSample presnap, RoundMode direction, SnapPref gpref)
 {
 	MusicSample ret(presnap);
-	
+
 	const samplepos_t one_second = _session->sample_rate();
 	const samplepos_t one_minute = one_second * 60;
 	const samplepos_t one_hour = one_minute * 60;
@@ -2866,7 +2815,7 @@ Editor::snap_to_minsec (MusicSample presnap, RoundMode direction, SnapPref gpref
 			}
 		} break;
 	}
-	
+
 	return ret;
 }
 
@@ -2875,12 +2824,12 @@ Editor::snap_to_cd_frames (MusicSample presnap, RoundMode direction, SnapPref gp
 {
 	if ((gpref != SnapToGrid_Unscaled) && (minsec_ruler_scale != minsec_show_msecs)) {
 		return snap_to_minsec (presnap, direction, gpref);
-	}	
-	
+	}
+
 	const samplepos_t one_second = _session->sample_rate();
 
 	MusicSample ret(presnap);
-	
+
 	if ((direction == RoundUpMaybe || direction == RoundDownMaybe) &&
 		presnap.sample % (one_second/75) == 0) {
 		/* start is already on a whole CD sample, do nothing */
@@ -2897,7 +2846,7 @@ MusicSample
 Editor::snap_to_bbt (MusicSample presnap, RoundMode direction, SnapPref gpref)
 {
 	MusicSample ret(presnap);
-	
+
 	if (gpref != SnapToGrid_Unscaled) { // use the visual grid lines which are limited by the zoom scale that the user selected
 
 		int divisor = 2;
@@ -2947,7 +2896,7 @@ Editor::snap_to_bbt (MusicSample presnap, RoundMode direction, SnapPref gpref)
 	} else {
 		ret = _session->tempo_map().round_to_quarter_note_subdivision (presnap.sample, get_grid_beat_divisions(_grid_type), direction);
 	}
-	
+
 	return ret;
 }
 
@@ -2955,11 +2904,11 @@ ARDOUR::MusicSample
 Editor::snap_to_grid (MusicSample presnap, RoundMode direction, SnapPref gpref)
 {
 	MusicSample ret(presnap);
-	
+
 	if (grid_musical()) {
 		ret = snap_to_bbt (presnap, direction, gpref);
 	}
-	
+
 	switch (_grid_type) {
 		case GridTypeTimecode:
 			ret = snap_to_timecode(presnap, direction, gpref);
@@ -4083,11 +4032,8 @@ Editor::update_grid ()
 void
 Editor::toggle_follow_playhead ()
 {
-	RefPtr<Action> act = ActionManager::get_action (X_("Editor"), X_("toggle-follow-playhead"));
-	if (act) {
-		RefPtr<ToggleAction> tact = RefPtr<ToggleAction>::cast_dynamic(act);
-		set_follow_playhead (tact->get_active());
-	}
+	RefPtr<ToggleAction> tact = ActionManager::get_toggle_action (X_("Editor"), X_("toggle-follow-playhead"));
+	set_follow_playhead (tact->get_active());
 }
 
 /** @param yn true to follow playhead, otherwise false.
@@ -4108,11 +4054,8 @@ Editor::set_follow_playhead (bool yn, bool catch_up)
 void
 Editor::toggle_stationary_playhead ()
 {
-	RefPtr<Action> act = ActionManager::get_action (X_("Editor"), X_("toggle-stationary-playhead"));
-	if (act) {
-		RefPtr<ToggleAction> tact = RefPtr<ToggleAction>::cast_dynamic(act);
-		set_stationary_playhead (tact->get_active());
-	}
+	RefPtr<ToggleAction> tact = ActionManager::get_toggle_action (X_("Editor"), X_("toggle-stationary-playhead"));
+	set_stationary_playhead (tact->get_active());
 }
 
 void
@@ -5942,7 +5885,7 @@ Editor::super_rapid_screen_update ()
 		_last_update_time = 0;
 	}
 
-	if (!_session->transport_rolling ()) {
+	if (!_session->transport_rolling () || _session->is_auditioning ()) {
 		/* Do not interpolate the playhead position; just set it */
 		_last_update_time = 0;
 	}

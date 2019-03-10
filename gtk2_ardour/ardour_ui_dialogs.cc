@@ -144,13 +144,6 @@ ARDOUR_UI::set_session (Session *s)
 		ActionManager::set_sensitive (ActionManager::range_sensitive_actions, false);
 	}
 
-	if (!_session->monitor_out()) {
-		Glib::RefPtr<Action> act = ActionManager::get_action (X_("options"), X_("SoloViaBus"));
-		if (act) {
-			act->set_sensitive (false);
-		}
-	}
-
 	/* allow wastebasket flush again */
 
 	Glib::RefPtr<Action> act = ActionManager::get_action (X_("Main"), X_("FlushWastebasket"));
@@ -337,10 +330,9 @@ ARDOUR_UI::unload_session (bool hide_stuff)
 
 	blink_connection.disconnect ();
 
-	delete _session;
+	ARDOUR::Session* session_to_delete = _session;
 	_session = 0;
-
-	session_loaded = false;
+	delete session_to_delete;
 
 	update_title ();
 
@@ -718,14 +710,14 @@ ARDOUR_UI::tabbable_state_change (Tabbable& t)
 	}
 
 	for (std::vector<std::string>::iterator s = insensitive_action_names.begin(); s != insensitive_action_names.end(); ++s) {
-		action = ActionManager::get_action (X_("Common"), (*s).c_str());
+		action = ActionManager::get_action (X_("Common"), (*s).c_str(), false);
 		if (action) {
 			action->set_sensitive (false);
 		}
 	}
 
 	for (std::vector<std::string>::iterator s = sensitive_action_names.begin(); s != sensitive_action_names.end(); ++s) {
-		action = ActionManager::get_action (X_("Common"), (*s).c_str());
+		action = ActionManager::get_action (X_("Common"), (*s).c_str(), false);
 		if (action) {
 			action->set_sensitive (true);
 		}
@@ -949,60 +941,10 @@ ARDOUR_UI::editor_meter_peak_button_release (GdkEventButton* ev)
 void
 ARDOUR_UI::toggle_mixer_space()
 {
-	Glib::RefPtr<Action> act = ActionManager::get_action ("Common", "ToggleMaximalMixer");
-
-	if (act) {
-		Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
-		if (tact->get_active()) {
-			mixer->maximise_mixer_space ();
-		} else {
-			mixer->restore_mixer_space ();
-		}
+	Glib::RefPtr<ToggleAction> tact = ActionManager::get_toggle_action ("Common", "ToggleMaximalMixer");
+	if (tact->get_active()) {
+		mixer->maximise_mixer_space ();
+	} else {
+		mixer->restore_mixer_space ();
 	}
 }
-
-void
-ARDOUR_UI::toggle_mixer_list()
-{
-	Glib::RefPtr<Action> act = ActionManager::get_action ("Common", "ToggleMixerList");
-
-	if (act) {
-		Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
-			mixer->show_mixer_list (tact->get_active());
-	}
-}
-
-void
-ARDOUR_UI::toggle_monitor_section_visibility ()
-{
-	Glib::RefPtr<Action> act = ActionManager::get_action ("Common", "ToggleMonitorSection");
-
-	if (act) {
-		Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
-			mixer->show_monitor_section (tact->get_active());
-	}
-}
-
-void
-ARDOUR_UI::toggle_vca_pane ()
-{
-	Glib::RefPtr<Action> act = ActionManager::get_action ("Common", "ToggleVCAPane");
-
-	if (act) {
-		Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
-		mixer->showhide_vcas (tact->get_active());
-	}
-}
-
-#ifdef MIXBUS
-void
-ARDOUR_UI::toggle_mixbus_pane ()
-{
-	Glib::RefPtr<Action> act = ActionManager::get_action ("Common", "ToggleMixbusPane");
-
-	if (act) {
-		Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
-		mixer->showhide_mixbusses (tact->get_active());
-	}
-}
-#endif

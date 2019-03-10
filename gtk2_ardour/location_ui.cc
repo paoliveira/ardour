@@ -423,7 +423,7 @@ LocationEditRow::to_playhead_button_pressed (LocationPart part)
 		case LocEnd:
 			location->set_end (_session->transport_sample (), false, true,divisions);
 			if (location->is_session_range()) {
-				_session->set_end_is_free (false);
+				_session->set_session_range_is_free (false);
 			}
 			break;
 		default:
@@ -472,13 +472,13 @@ LocationEditRow::clock_changed (LocationPart part)
 		case LocEnd:
 			location->set_end (end_clock.current_time(), false, true, divisions);
 			if (location->is_session_range()) {
-				_session->set_end_is_free (false);
+				_session->set_session_range_is_free (false);
 			}
 			break;
 		case LocLength:
 			location->set_end (location->start() + length_clock.current_duration(), false, true, divisions);
 			if (location->is_session_range()) {
-				_session->set_end_is_free (false);
+				_session->set_session_range_is_free (false);
 			}
 		default:
 			break;
@@ -1180,11 +1180,11 @@ LocationUI::clock_mode_from_session_instant_xml ()
 
 	XMLNode* node = _session->instant_xml (_state_node_name);
 	if (!node) {
-		return ARDOUR_UI::instance()->secondary_clock->mode();
+		return ARDOUR_UI::instance()->primary_clock->mode();
 	}
 
 	if (!node->get_property (X_("clock-mode"), _mode)) {
-		return ARDOUR_UI::instance()->secondary_clock->mode();
+		return ARDOUR_UI::instance()->primary_clock->mode();
 	}
 
 	_mode_set = true;

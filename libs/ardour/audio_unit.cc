@@ -452,6 +452,7 @@ AUPlugin::AUPlugin (AudioEngine& engine, Session& session, boost::shared_ptr<CAC
 	, transport_sample (0)
 	, transport_speed (0)
 	, last_transport_speed (0.0)
+	, preset_holdoff (0)
 {
 	if (!preset_search_path_initialized) {
 		Glib::ustring p = Glib::get_home_dir();
@@ -493,9 +494,15 @@ AUPlugin::AUPlugin (const AUPlugin& other)
 	, transport_sample (0)
 	, transport_speed (0)
 	, last_transport_speed (0.0)
+	, preset_holdoff (0)
 
 {
 	init ();
+
+	XMLNode root (other.state_node_name ());
+	other.add_state (&root);
+	set_state (root, Stateful::loading_state_version);
+
 	for (size_t i = 0; i < descriptors.size(); ++i) {
 		set_parameter (i, other.get_parameter (i));
 	}
@@ -952,7 +959,7 @@ AUPlugin::default_value (uint32_t port)
 }
 
 samplecnt_t
-AUPlugin::signal_latency () const
+AUPlugin::plugin_latency () const
 {
 	guint lat = g_atomic_int_get (&_current_latency);;
 	if (lat == UINT_MAX) {
@@ -1639,7 +1646,7 @@ AUPlugin::render_callback(AudioUnitRenderActionFlags*,
 int
 AUPlugin::connect_and_run (BufferSet& bufs,
 		samplepos_t start, samplepos_t end, double speed,
-		ChanMapping in_map, ChanMapping out_map,
+		ChanMapping const& in_map, ChanMapping const& out_map,
 		pframes_t nframes, samplecnt_t offset)
 {
 	Plugin::connect_and_run(bufs, start, end, speed, in_map, out_map, nframes, offset);
@@ -1650,6 +1657,10 @@ AUPlugin::connect_and_run (BufferSet& bufs,
 	AudioUnitRenderActionFlags flags = 0;
 	AudioTimeStamp ts;
 	OSErr err;
+
+	if (preset_holdoff > 0) {
+		preset_holdoff -= std::min (nframes, preset_holdoff);
+	}
 
 	if (requires_fixed_size_buffers() && (nframes != _last_nframes)) {
 		unit->GlobalReset();
@@ -2170,8 +2181,6 @@ AUPlugin::set_state(const XMLNode& node, int version)
 bool
 AUPlugin::load_preset (PresetRecord r)
 {
-	Plugin::load_preset (r);
-
 	bool ret = false;
 	CFPropertyListRef propertyList;
 	Glib::ustring path;
@@ -2217,13 +2226,39 @@ AUPlugin::load_preset (PresetRecord r)
 			AUParameterListenerNotify (NULL, NULL, &changedUnit);
 		}
 	}
+	if (ret) {
+		preset_holdoff = std::max (_session.get_block_size() * 2.0, _session.sample_rate() * .2);
+	}
 
-	return ret;
+	return ret && Plugin::load_preset (r);
 }
 
 void
-AUPlugin::do_remove_preset (std::string)
+AUPlugin::do_remove_preset (std::string preset_name)
 {
+	vector<Glib::ustring> v;
+
+	std::string m = maker();
+	std::string n = name();
+
+	strip_whitespace_edges (m);
+	strip_whitespace_edges (n);
+
+	v.push_back (Glib::get_home_dir());
+	v.push_back ("Library");
+	v.push_back ("Audio");
+	v.push_back ("Presets");
+	v.push_back (m);
+	v.push_back (n);
+	v.push_back (preset_name + preset_suffix);
+
+	Glib::ustring user_preset_path = Glib::build_filename (v);
+
+	DEBUG_TRACE (DEBUG::AudioUnits, string_compose("AU Deleting Preset file %1\n", user_preset_path));
+
+	if (g_unlink (user_preset_path.c_str())) {
+		error << string_compose (X_("Could not delete preset at \"%1\": %2"), user_preset_path, strerror (errno)) << endmsg;
+	}
 }
 
 string
@@ -2279,7 +2314,7 @@ AUPlugin::do_save_preset (string preset_name)
 
 	DEBUG_TRACE (DEBUG::AudioUnits, string_compose("AU Saving Preset to %1\n", user_preset_path));
 
-	return string ("file:///") + user_preset_path;
+	return user_preset_path;
 }
 
 //-----------------------------------------------------------------------------
@@ -2556,7 +2591,7 @@ AUPlugin::find_presets ()
 		*/
 
 		if (check_and_get_preset_name (get_comp()->Comp(), path, preset_name)) {
-			user_preset_map[preset_name] = "file:///" + path;
+			user_preset_map[preset_name] = path;
 			DEBUG_TRACE (DEBUG::AudioUnits, string_compose("AU Preset File: %1 > %2\n", preset_name, path));
 		} else {
 			DEBUG_TRACE (DEBUG::AudioUnits, string_compose("AU INVALID Preset: %1 > %2\n", preset_name, path));
@@ -2574,10 +2609,7 @@ AUPlugin::find_presets ()
 	/* add factory presets */
 
 	for (FactoryPresetMap::iterator i = factory_preset_map.begin(); i != factory_preset_map.end(); ++i) {
-		/* XXX: dubious -- deleting & re-adding a preset -> same URI
-		 * good that we don't support deleting AU presets :)
-		 */
-		string const uri = PBD::to_string<uint32_t> (_presets.size ());
+		string const uri = string_compose ("AU2:%1", std::setw(4), std::setfill('0'), i->second);
 		_presets.insert (make_pair (uri, Plugin::PresetRecord (uri, i->first, false)));
 		DEBUG_TRACE (DEBUG::AudioUnits, string_compose("AU Adding Factory Preset: %1 > %2\n", i->first, i->second));
 	}
@@ -3479,7 +3511,11 @@ AUPlugin::parameter_change_listener (void* /*arg*/, void* src, const AudioUnitEv
                 /* whenever we change a parameter, we request that we are NOT notified of the change, so anytime we arrive here, it
                    means that something else (i.e. the plugin GUI) made the change.
                 */
-                ParameterChangedExternally (i->second, new_value);
+                if (preset_holdoff > 0) {
+	                ParameterChangedExternally (i->second, new_value);
+                } else {
+                        Plugin::parameter_changed_externally (i->second, new_value);
+		}
                 break;
         default:
                 break;

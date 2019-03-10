@@ -186,6 +186,7 @@ gtk2_ardour_sources = [
         'plugin_display.cc',
         'plugin_eq_gui.cc',
         'plugin_pin_dialog.cc',
+        'plugin_presets_ui.cc',
         'plugin_setup_dialog.cc',
         'plugin_selector.cc',
         'plugin_ui.cc',
@@ -204,6 +205,7 @@ gtk2_ardour_sources = [
         'processor_selection.cc',
         'patch_change_dialog.cc',
         'progress_reporter.cc',
+        'pt_import_selector.cc',
         'public_editor.cc',
         'quantize_dialog.cc',
         'rc_option_editor.cc',
@@ -284,8 +286,7 @@ gtk2_ardour_sources = [
         'video_server_dialog.cc',
         'utils_videotl.cc',
         'export_video_dialog.cc',
-        'export_video_infobox.cc',
-        'video_tool_paths.cc'
+        'export_video_infobox.cc'
 ]
 
 def enoify (major, minor):
@@ -598,7 +599,7 @@ def build(bld):
         obj.includes  = [ '../libs/fst', '.' ]
         obj.name      = 'libgtk2_ardour'
         obj.target    = 'gtk2_ardour'
-        obj.cflags  = [ '-fPIC' ]
+        obj.cflags = [ bld.env['compiler_flags_dict']['pic'] ]
 
     else:
         # just the normal executable version of the GTK GUI

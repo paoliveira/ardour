@@ -145,7 +145,9 @@ private:
 	void update_time (ARDOUR::AnyTime & time, AudioClock const & clock);
 
 	void update_src_quality_selection ();
+	void update_codec_quality_selection ();
 	void update_tagging_selection ();
+	void set_codec_quality_selection ();
 
 	/*** Encoding options */
 
@@ -158,8 +160,10 @@ private:
 	void show_ogg_enconding_options (boost::shared_ptr<ARDOUR::ExportFormatOggVorbis> ptr);
 	void show_flac_enconding_options (boost::shared_ptr<ARDOUR::ExportFormatFLAC> ptr);
 	void show_bwf_enconding_options (boost::shared_ptr<ARDOUR::ExportFormatBWF> ptr);
+	void show_ffmpeg_enconding_options (boost::shared_ptr<ARDOUR::ExportFormatFFMPEG> ptr);
 
 	void fill_sample_format_lists (boost::shared_ptr<ARDOUR::HasSampleFormat> ptr);
+	void fill_codec_quality_lists (boost::shared_ptr<ARDOUR::HasCodecQuality> ptr);
 
 	/*** GUI components ***/
 
@@ -342,6 +346,22 @@ private:
 
 	Gtk::TreeView sample_format_view;
 	Gtk::TreeView dither_type_view;
+
+
+	/* codec quality combo */
+
+	struct CodecQualityCols : public Gtk::TreeModelColumnRecord
+	{
+	public:
+		Gtk::TreeModelColumn<int>          quality;
+		Gtk::TreeModelColumn<std::string>  label;
+
+		CodecQualityCols () { add(quality); add(label); }
+	};
+	CodecQualityCols             codec_quality_cols;
+	Glib::RefPtr<Gtk::ListStore> codec_quality_list;
+
+	Gtk::ComboBox   codec_quality_combo;
 
 	/* Tagging */
 

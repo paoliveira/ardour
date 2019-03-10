@@ -312,10 +312,11 @@ vstfx_load_info_block (FILE* fp, VSTInfo *info)
 		info->wantMidi = 1;
 	}
 
-	// TODO read isInstrument -- effFlagsIsSynth
-	info->isInstrument = info->numInputs == 0 && info->numOutputs > 0 && 1 == (info->wantMidi & 1);
+	info->isInstrument = (info->wantMidi & 4) ? 1 : 0;
+
+	info->isInstrument |= info->numInputs == 0 && info->numOutputs > 0 && 1 == (info->wantMidi & 1);
 	if (!strcmp (info->Category, "Instrument")) {
-		info->isInstrument = true;
+		info->isInstrument = 1;
 	}
 
 	if ((info->numParams) == 0) {
@@ -396,10 +397,9 @@ vstfx_write_info_block (FILE* fp, VSTInfo *info)
 	fprintf (fp, "%d\n", info->numInputs);
 	fprintf (fp, "%d\n", info->numOutputs);
 	fprintf (fp, "%d\n", info->numParams);
-	fprintf (fp, "%d\n", info->wantMidi);
+	fprintf (fp, "%d\n", info->wantMidi | (info->isInstrument ? 4 : 0));
 	fprintf (fp, "%d\n", info->hasEditor);
 	fprintf (fp, "%d\n", info->canProcessReplacing);
-	// TODO write isInstrument in a backwards compat way
 
 	for (int i = 0; i < info->numParams; i++) {
 		fprintf (fp, "%s\n", info->ParamNames[i]);
@@ -530,17 +530,13 @@ bool vstfx_midi_input (VSTState* vstfx)
 {
 	AEffect* plugin = vstfx->plugin;
 
-	int const vst_version = plugin->dispatcher (plugin, effGetVstVersion, 0, 0, 0, 0.0f);
+	/* should we send it VST events (i.e. MIDI) */
 
-	if (vst_version >= 2) {
-		/* should we send it VST events (i.e. MIDI) */
-
-		if ((plugin->flags & effFlagsIsSynth)
-				|| (plugin->dispatcher (plugin, effCanDo, 0, 0, const_cast<char*> ("receiveVstEvents"), 0.0f) > 0)
-				|| (plugin->dispatcher (plugin, effCanDo, 0, 0, const_cast<char*> ("receiveVstMidiEvents"), 0.0f) > 0)
-				) {
-			return true;
-		}
+	if ((plugin->flags & effFlagsIsSynth)
+			|| (plugin->dispatcher (plugin, effCanDo, 0, 0, const_cast<char*> ("receiveVstEvents"), 0.0f) > 0)
+			|| (plugin->dispatcher (plugin, effCanDo, 0, 0, const_cast<char*> ("receiveVstMidiEvents"), 0.0f) > 0)
+		 ) {
+		return true;
 	}
 
 	return false;
@@ -1002,7 +998,7 @@ vstfx_get_info (const char* dllpath, enum ARDOUR::PluginType type, enum VSTScanM
 		ARDOUR::SystemExec scanner (scanner_bin_path, argp);
 		PBD::ScopedConnectionList cons;
 		scanner.ReadStdout.connect_same_thread (cons, boost::bind (&parse_scanner_output, _1 ,_2));
-		if (scanner.start (2 /* send stderr&stdout via signal */)) {
+		if (scanner.start (ARDOUR::SystemExec::MergeWithStdin)) {
 			PBD::error << string_compose (_("Cannot launch VST scanner app '%1': %2"), scanner_bin_path, strerror (errno)) << endmsg;
 			close_error_log ();
 			return infos;

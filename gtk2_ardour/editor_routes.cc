@@ -323,6 +323,11 @@ EditorRoutes::EditorRoutes (Editor* e)
 	Route::PluginSetup.connect_same_thread (*this, boost::bind (&EditorRoutes::plugin_setup, this, _1, _2, _3));
 }
 
+EditorRoutes::~EditorRoutes ()
+{
+	delete _menu;
+}
+
 bool
 EditorRoutes::focus_in (GdkEventFocus*)
 {
@@ -1486,16 +1491,7 @@ EditorRoutes::initial_display ()
 
 	StripableList s;
 
-	RouteList r (*_session->get_routes());
-	for (RouteList::iterator ri = r.begin(); ri != r.end(); ++ri) {
-		s.push_back (*ri);
-	}
-
-	VCAList v (_session->vca_manager().vcas());
-	for (VCAList::iterator vi = v.begin(); vi != v.end(); ++vi) {
-		s.push_back (*vi);
-	}
-
+	_session->get_stripables (s);
 	_editor->add_stripables (s);
 
 	sync_treeview_from_presentation_info (Properties::order);

@@ -65,7 +65,7 @@ LatencyBarController::get_label (double&)
 
 LatencyGUI::LatencyGUI (Latent& l, samplepos_t sr, samplepos_t psz)
 	: _latent (l),
-	  initial_value (_latent.user_latency()),
+	  initial_value (_latent.effective_latency ()),
 	  sample_rate (sr),
 	  period_size (psz),
 	  ignored (new PBD::IgnorableControllable()),
@@ -125,14 +125,18 @@ LatencyGUI::finish ()
 void
 LatencyGUI::reset ()
 {
-	_latent.set_user_latency (0);
+	_latent.unset_user_latency ();
+	initial_value = std::min (sample_rate, _latent.signal_latency ());
 	adjustment.set_value (initial_value);
 }
 
 void
 LatencyGUI::refresh ()
 {
-	initial_value = _latent.signal_latency();
+	/* limit to adjustment range, otherwise LatencyGUI::finish() would
+	 * set the adjustment's value as custom-latency
+	 */
+	initial_value = std::min (sample_rate, _latent.effective_latency ());
 	adjustment.set_value (initial_value);
 }
 

@@ -161,6 +161,8 @@ extern void setup_enum_writer ();
 */
 PBD::PropertyChange ARDOUR::bounds_change;
 
+static PBD::ScopedConnection engine_startup_connection;
+
 void
 setup_hardware_optimization (bool try_optimization)
 {
@@ -269,7 +271,7 @@ lotsa_files_please ()
 			}
 		} else {
 			if (rl.rlim_cur != RLIM_INFINITY) {
-				info << string_compose (_("Your system is configured to limit %1 to only %2 open files"), PROGRAM_NAME, rl.rlim_cur) << endmsg;
+				info << string_compose (_("Your system is configured to limit %1 to %2 open files"), PROGRAM_NAME, rl.rlim_cur) << endmsg;
 			}
 		}
 	} else {
@@ -286,7 +288,7 @@ lotsa_files_please ()
 	 */
 	int newmax = _setmaxstdio (2048);
 	if (newmax > 0) {
-		info << string_compose (_("Your system is configured to limit %1 to only %2 open files"), PROGRAM_NAME, newmax) << endmsg;
+		info << string_compose (_("Your system is configured to limit %1 to %2 open files"), PROGRAM_NAME, newmax) << endmsg;
 	} else {
 		error << string_compose (_("Could not set system open files limit. Current limit is %1 open files"), _getmaxstdio())  << endmsg;
 	}
@@ -594,37 +596,35 @@ ARDOUR::init (bool use_windows_vst, bool try_optimization, const char* localedir
 }
 
 void
-ARDOUR::init_post_engine ()
+ARDOUR::init_post_engine (uint32_t start_cnt)
 {
 	XMLNode* node;
 
-	if ((node = Config->control_protocol_state()) != 0) {
-		ControlProtocolManager::instance().set_state (*node, 0 /* here: global-config state */);
+	if (start_cnt == 0) {
+
+		/* find plugins */
+
+		ARDOUR::PluginManager::instance().refresh (!Config->get_discover_vst_on_start());
 	}
 
-	if ((node = Config->transport_master_state()) != 0) {
-		if (TransportMasterManager::instance().set_state (*node, Stateful::loading_state_version)) {
-			error << _("Cannot restore transport master manager") << endmsg;
-			/* XXX now what? */
+	if (start_cnt == 0) {
+
+		if ((node = Config->control_protocol_state()) != 0) {
+			ControlProtocolManager::instance().set_state (*node, 0 /* here: global-config state */);
 		}
-	} else {
-		if (TransportMasterManager::instance().init ()) {
-			error << _("Cannot initialize transport master manager") << endmsg;
-			/* XXX now what? */
-		}
+
+		TransportMasterManager::instance().restart ();
 	}
-
-	/* find plugins */
-
-	ARDOUR::PluginManager::instance().refresh (!Config->get_discover_vst_on_start());
 }
 
 void
-	ARDOUR::cleanup ()
+ARDOUR::cleanup ()
 {
 	if (!libardour_initialized) {
 		return;
 	}
+
+	engine_startup_connection.disconnect ();
 
 	delete &ControlProtocolManager::instance();
 	ARDOUR::AudioEngine::destroy ();

@@ -70,7 +70,6 @@ class LIBARDOUR_API AUPlugin : public ARDOUR::Plugin
 	const char * maker () const { return _info->creator.c_str(); }
 	uint32_t parameter_count () const;
 	float default_value (uint32_t port);
-	samplecnt_t signal_latency() const;
 	void set_parameter (uint32_t which, float val);
 	float get_parameter (uint32_t which) const;
 
@@ -85,7 +84,7 @@ class LIBARDOUR_API AUPlugin : public ARDOUR::Plugin
 
 	int connect_and_run (BufferSet& bufs,
 			samplepos_t start, samplepos_t end, double speed,
-			ChanMapping in, ChanMapping out,
+			ChanMapping const& in, ChanMapping const& out,
 			pframes_t nframes, samplecnt_t offset);
 	std::set<Evoral::Parameter> automatable() const;
 	std::string describe_parameter (Evoral::Parameter);
@@ -161,6 +160,7 @@ class LIBARDOUR_API AUPlugin : public ARDOUR::Plugin
 	void do_remove_preset (std::string);
 
   private:
+	samplecnt_t plugin_latency() const;
 	void find_presets ();
 
 	boost::shared_ptr<CAComponent> comp;
@@ -216,7 +216,7 @@ class LIBARDOUR_API AUPlugin : public ARDOUR::Plugin
 	samplecnt_t input_offset;
 	samplecnt_t *cb_offsets;
 	BufferSet* input_buffers;
-	ChanMapping * input_map;
+	ChanMapping const * input_map;
 	samplecnt_t samples_processed;
 	uint32_t   audio_input_cnt;
 
@@ -228,8 +228,9 @@ class LIBARDOUR_API AUPlugin : public ARDOUR::Plugin
 	void discover_factory_presets ();
 
 	samplepos_t transport_sample;
-	float      transport_speed;
-	float      last_transport_speed;
+	float       transport_speed;
+	float       last_transport_speed;
+	pframes_t   preset_holdoff;
 
 	static void _parameter_change_listener (void* /*arg*/, void* /*src*/, const AudioUnitEvent* event, UInt64 host_time, Float32 new_value);
 	void parameter_change_listener (void* /*arg*/, void* /*src*/, const AudioUnitEvent* event, UInt64 host_time, Float32 new_value);

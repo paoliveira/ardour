@@ -27,10 +27,10 @@
 #include "pbd/floating.h"
 #include "pbd/locale_guard.h"
 
+#include "ardour/vst_types.h"
 #include "ardour/vst_plugin.h"
 #include "ardour/vestige/vestige.h"
 #include "ardour/session.h"
-#include "ardour/vst_types.h"
 #include "ardour/filesystem_paths.h"
 #include "ardour/audio_buffer.h"
 
@@ -137,6 +137,31 @@ VSTPlugin::set_block_size (pframes_t nframes)
 	_plugin->dispatcher (_plugin, effSetBlockSize, 0, nframes, NULL, 0.0f);
 	activate ();
 	return 0;
+}
+
+bool
+VSTPlugin::requires_fixed_sized_buffers () const
+{
+	/* This controls if Ardour will split the plugin's run()
+	 * on automation events in order to pass sample-accurate automation
+	 * via standard control-ports.
+	 *
+	 * When returning true Ardour will *not* sub-divide the process-cycle.
+	 * Automation events that happen between cycle-start and cycle-end will be
+	 * ignored (ctrl values are interpolated to cycle-start).
+	 *
+	 * Note: This does not guarantee a fixed block-size.
+	 * e.g The process cycle may be split when looping, also
+	 * the period-size may change any time: see set_block_size()
+	 */
+	if (get_info()->n_inputs.n_midi() > 0) {
+		/* we don't yet implement midi buffer offsets (for split cycles).
+		 * Also session_vst callbacls uses _session.transport_sample() directly
+		 * (for BBT) which is not offset for plugin cycle split.
+		 */
+		return true;
+	}
+	return false;
 }
 
 float
@@ -542,19 +567,23 @@ VSTPlugin::do_save_preset (string name)
 	string const uri = string_compose (X_("VST:%1:x%2"), unique_id (), hash);
 
 	if (_plugin->flags & 32 /* effFlagsProgramsChunks */) {
-
 		p = new XMLNode (X_("ChunkPreset"));
-		p->set_property (X_("uri"), uri);
-		p->set_property (X_("label"), name);
+	} else {
+		p = new XMLNode (X_("Preset"));
+	}
+
+	p->set_property (X_("uri"), uri);
+	p->set_property (X_("version"), version ());
+	p->set_property (X_("label"), name);
+	p->set_property (X_("numParams"), parameter_count ());
+
+	if (_plugin->flags & 32) {
+
 		gchar* data = get_chunk (true);
 		p->add_content (string (data));
 		g_free (data);
 
 	} else {
-
-		p = new XMLNode (X_("Preset"));
-		p->set_property (X_("uri"), uri);
-		p->set_property (X_("label"), name);
 
 		for (uint32_t i = 0; i < parameter_count(); ++i) {
 			if (parameter_is_input (i)) {
@@ -614,12 +643,8 @@ VSTPlugin::describe_parameter (Evoral::Parameter param)
 }
 
 samplecnt_t
-VSTPlugin::signal_latency () const
+VSTPlugin::plugin_latency () const
 {
-	if (_user_latency) {
-		return _user_latency;
-	}
-
 #if ( defined(__x86_64__) || defined(_M_X64) )
 	return *((int32_t *) (((char *) &_plugin->flags) + 24)); /* initialDelay */
 #else
@@ -642,7 +667,7 @@ VSTPlugin::automatable () const
 int
 VSTPlugin::connect_and_run (BufferSet& bufs,
 		samplepos_t start, samplepos_t end, double speed,
-		ChanMapping in_map, ChanMapping out_map,
+		ChanMapping const& in_map, ChanMapping const& out_map,
 		pframes_t nframes, samplecnt_t offset)
 {
 	Plugin::connect_and_run(bufs, start, end, speed, in_map, out_map, nframes, offset);
@@ -705,6 +730,7 @@ VSTPlugin::connect_and_run (BufferSet& bufs,
 		VstEvents* v = 0;
 		bool valid = false;
 		const uint32_t buf_index_in = in_map.get(DataType::MIDI, 0, &valid);
+		/* TODO: apply offset to MIDI buffer and trim at nframes */
 		if (valid) {
 			v = bufs.get_vst_midi (buf_index_in);
 		}
@@ -712,7 +738,8 @@ VSTPlugin::connect_and_run (BufferSet& bufs,
 		const uint32_t buf_index_out = out_map.get(DataType::MIDI, 0, &valid);
 		if (valid) {
 			_midi_out_buf = &bufs.get_midi(buf_index_out);
-			_midi_out_buf->silence(0, 0);
+			/* TODO: apply offset to MIDI buffer and trim at nframes */
+			_midi_out_buf->silence(nframes, offset);
 		} else {
 			_midi_out_buf = 0;
 		}
@@ -761,6 +788,12 @@ VSTPlugin::label () const
 	return _handle->name;
 }
 
+int32_t
+VSTPlugin::version () const
+{
+	return _plugin->version;
+}
+
 uint32_t
 VSTPlugin::parameter_count () const
 {
@@ -803,7 +836,8 @@ VSTPlugin::find_presets ()
 
 	int const vst_version = _plugin->dispatcher (_plugin, effGetVstVersion, 0, 0, NULL, 0);
 	for (int i = 0; i < _plugin->numPrograms; ++i) {
-		PresetRecord r (string_compose (X_("VST:%1:%2"), unique_id (), i), "", false);
+
+		PresetRecord r (string_compose (X_("VST:%1:%2"), unique_id (), std::setw(4), std::setfill('0'), i), "", false);
 
 		if (vst_version >= 2) {
 			char buf[256];
@@ -885,3 +919,31 @@ VSTPlugin::presets_file () const
 	return string("vst-") + unique_id ();
 }
 
+
+VSTPluginInfo::VSTPluginInfo (VSTInfo* nfo)
+{
+
+	char buf[32];
+	snprintf (buf, sizeof (buf), "%d", nfo->UniqueID);
+	unique_id = buf;
+
+	index = 0;
+
+	name = nfo->name;
+	creator = nfo->creator;
+	n_inputs.set_audio  (nfo->numInputs);
+	n_outputs.set_audio (nfo->numOutputs);
+	n_inputs.set_midi  ((nfo->wantMidi & 1) ? 1 : 0);
+	n_outputs.set_midi ((nfo->wantMidi & 2) ? 1 : 0);
+
+	_is_instrument = nfo->isInstrument;
+}
+
+bool
+VSTPluginInfo::is_instrument () const
+{
+	if (_is_instrument) {
+		return true;
+	}
+	return PluginInfo::is_instrument ();
+}

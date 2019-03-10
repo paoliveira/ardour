@@ -28,6 +28,7 @@
 #include <gtkmm/radiobutton.h>
 #include <gtkmm/label.h>
 #include <gtkmm/table.h>
+#include <gtkmm/entry.h>
 #include <gtkmm/treestore.h>
 
 #include "ardour_window.h"
@@ -49,6 +50,7 @@ class TransportMastersWidget : public Gtk::VBox, public ARDOUR::SessionHandlePtr
 	~TransportMastersWidget ();
 
 	void update (ARDOUR::samplepos_t);
+	void set_transport_master (boost::shared_ptr<ARDOUR::TransportMaster>);
 
   protected:
 	void on_map ();
@@ -56,7 +58,23 @@ class TransportMastersWidget : public Gtk::VBox, public ARDOUR::SessionHandlePtr
 
   private:
 
+	struct AddTransportMasterDialog : public ArdourDialog {
+	  public:
+		AddTransportMasterDialog ();
+		std::string get_name () const;
+		ARDOUR::SyncSource get_type () const;
+
+	  private:
+		Gtk::Label name_label;
+		Gtk::Label type_label;
+		Gtk::HBox name_hbox;
+		Gtk::HBox type_hbox;
+		Gtk::Entry name_entry;
+		Gtk::ComboBoxText type_combo;
+	};
+
 	struct Row : sigc::trackable, PBD::ScopedConnectionList {
+		TransportMastersWidget& parent;
 		Gtk::EventBox label_box;
 		Gtk::Label label;
 		Gtk::Label type;
@@ -72,6 +90,7 @@ class TransportMastersWidget : public Gtk::VBox, public ARDOUR::SessionHandlePtr
 		Gtk::CheckButton fr2997_button;
 		Gtk::Button request_options;
 		Gtk::Menu* request_option_menu;
+		Gtk::Button remove_button;
 		FloatingTextEntry* name_editor;
 		samplepos_t save_when;
 
@@ -81,7 +100,8 @@ class TransportMastersWidget : public Gtk::VBox, public ARDOUR::SessionHandlePtr
 
 		void update (ARDOUR::Session*, ARDOUR::samplepos_t);
 
-		Row ();
+		Row (TransportMastersWidget& parent);
+		~Row ();
 
 		struct PortColumns : public Gtk::TreeModel::ColumnRecord {
 			PortColumns() {
@@ -105,6 +125,7 @@ class TransportMastersWidget : public Gtk::VBox, public ARDOUR::SessionHandlePtr
 		void connection_handler ();
 		bool request_option_press (GdkEventButton*);
 		void prop_change (PBD::PropertyChange);
+		void remove_clicked ();
 
 		bool name_press (GdkEventButton*);
 		void name_edited (std::string, int);
@@ -115,16 +136,22 @@ class TransportMastersWidget : public Gtk::VBox, public ARDOUR::SessionHandlePtr
 
 	std::vector<Row*> rows;
 
-	Gtk::RadioButtonGroup use_button_group;
 	Gtk::Table table;
-	Gtk::Label col_title[13];
+	Gtk::Label col_title[14];
+	Gtk::Button add_button;
 
 	sigc::connection update_connection;
 	PBD::ScopedConnection current_connection;
+	PBD::ScopedConnection add_connection;
+	PBD::ScopedConnection remove_connection;
 
 	void rebuild ();
+	void clear ();
 	void current_changed (boost::shared_ptr<ARDOUR::TransportMaster> old_master, boost::shared_ptr<ARDOUR::TransportMaster> new_master);
+	void add_master ();
 
+  public:
+	bool idle_remove (Row*);
 };
 
 class TransportMastersWindow : public ArdourWindow

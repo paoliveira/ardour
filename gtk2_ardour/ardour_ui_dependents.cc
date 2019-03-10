@@ -28,6 +28,7 @@
 #include <cstdio>
 
 #include "pbd/error.h"
+#include "pbd/i18n.h"
 
 #include "ardour/session.h"
 
@@ -46,10 +47,10 @@
 #include "rc_option_editor.h"
 #include "route_params_ui.h"
 #include "time_info_box.h"
+#include "step_entry.h"
 #include "opts.h"
 #include "utils.h"
 
-#include "pbd/i18n.h"
 
 using namespace Gtk;
 using namespace PBD;
@@ -60,14 +61,22 @@ namespace ARDOUR {
 }
 
 using namespace ARDOUR;
+using namespace Gtkmm2ext;
 
 void
 ARDOUR_UI::we_have_dependents ()
 {
-	install_actions ();
-	load_bindings ();
+	install_dependent_actions ();
 
+	/* The monitor section relies on at least 1 action defined by us. Since that
+	 * action now exists, give it a chance to use it.
+	 */
+	mixer->monitor_section().use_others_actions ();
+
+	/* Create "static" actions that apply to all ProcessorBoxes
+	 */
 	ProcessorBox::register_actions ();
+	StepEntry::setup_actions_and_bindings ();
 
 	/* Global, editor, mixer, processor box actions are defined now. Link
 	   them with any bindings, so that GTK does not get a chance to define
@@ -230,13 +239,6 @@ tab_window_root_drop (GtkNotebook* src,
 int
 ARDOUR_UI::setup_windows ()
 {
-	/* actions do not need to be defined when we load keybindings. They
-	 * will be lazily discovered. But bindings do need to exist when we
-	 * create windows/tabs with their own binding sets.
-	 */
-
-	keyboard->setup_keybindings ();
-
 	_tabs.set_show_border(false);
 	_tabs.signal_switch_page().connect (sigc::mem_fun (*this, &ARDOUR_UI::tabs_switch));
 	_tabs.signal_page_added().connect (sigc::mem_fun (*this, &ARDOUR_UI::tabs_page_added));
@@ -265,16 +267,16 @@ ARDOUR_UI::setup_windows ()
 		return -1;
 	}
 
+	time_info_box = new TimeInfoBox ("ToolbarTimeInfo", false);
+	/* all other dialogs are created conditionally */
+
+	we_have_dependents ();
+
 	/* order of addition affects order seen in initial window display */
 
 	rc_option_editor->add_to_notebook (_tabs, _("Preferences"));
 	mixer->add_to_notebook (_tabs, _("Mixer"));
 	editor->add_to_notebook (_tabs, _("Editor"));
-
-	time_info_box = new TimeInfoBox ("ToolbarTimeInfo", false);
-	/* all other dialogs are created conditionally */
-
-	we_have_dependents ();
 
 	top_packer.pack_start (menu_bar_base, false, false);
 

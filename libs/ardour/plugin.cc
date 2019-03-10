@@ -92,6 +92,7 @@ Plugin::Plugin (AudioEngine& e, Session& s)
 	, _session (s)
 	, _cycles (0)
 	, _owner (0)
+	, _for_impulse_analysis (false)
 	, _have_presets (false)
 	, _have_pending_stop_events (false)
 	, _parameter_changed_since_last_preset (false)
@@ -102,14 +103,16 @@ Plugin::Plugin (AudioEngine& e, Session& s)
 
 Plugin::Plugin (const Plugin& other)
 	: StatefulDestructible()
-	, Latent()
+	, HasLatency()
 	, _engine (other._engine)
 	, _session (other._session)
 	, _info (other._info)
 	, _cycles (0)
 	, _owner (other._owner)
+	, _for_impulse_analysis (false)
 	, _have_presets (false)
 	, _have_pending_stop_events (false)
+	, _last_preset (other._last_preset)
 	, _parameter_changed_since_last_preset (false)
 	, _immediate_events(6096) // FIXME: size?
 {
@@ -353,7 +356,7 @@ Plugin::write_immediate_event (size_t size, const uint8_t* buf)
 int
 Plugin::connect_and_run (BufferSet& bufs,
 		samplepos_t /*start*/, samplepos_t /*end*/, double /*speed*/,
-		ChanMapping /*in_map*/, ChanMapping /*out_map*/,
+		ChanMapping const& /*in_map*/, ChanMapping const& /*out_map*/,
 		pframes_t nframes, samplecnt_t /*offset*/)
 {
 	if (bufs.count().n_midi() > 0) {
@@ -475,9 +478,18 @@ Plugin::parameter_changed_externally (uint32_t which, float /* value */)
 int
 Plugin::set_state (const XMLNode& node, int /*version*/)
 {
-	node.get_property (X_("last-preset-uri"), _last_preset.uri);
-	node.get_property (X_("last-preset-label"), _last_preset.label);
-	node.get_property (X_("parameter-changed-since-last-preset"), _parameter_changed_since_last_preset);
+	std::string preset_uri;
+	const Plugin::PresetRecord* r = 0;
+	if (node.get_property (X_("last-preset-uri"), preset_uri)) {
+		r = preset_by_uri (preset_uri);
+	}
+	if (r) {
+		_last_preset = *r;
+		node.get_property (X_("parameter-changed-since-last-preset"), _parameter_changed_since_last_preset); // XXX
+	} else {
+		_last_preset.uri = "";
+		_last_preset.valid = false;
+	}
 	return 0;
 }
 

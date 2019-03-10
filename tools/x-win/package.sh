@@ -211,16 +211,16 @@ if test -z "$NOVIDEOTOOLS"; then
 	XJADEO_VERSION=$(curl -s -S http://ardour.org/files/video-tools/xjadeo_version.txt)
 
 	rsync -a -q --partial \
-		rsync://ardour.org/video-tools/harvid_win-${HARVID_VERSION}.tar.xz \
-		"${SRCCACHE}/harvid_win-${HARVID_VERSION}.tar.xz"
+		rsync://ardour.org/video-tools/harvid_${WARCH}-${HARVID_VERSION}.tar.xz \
+		"${SRCCACHE}/harvid_${WARCH}-${HARVID_VERSION}.tar.xz"
 
 	rsync -a -q --partial \
-		rsync://ardour.org/video-tools/xjadeo_win-${XJADEO_VERSION}.tar.xz \
-		"${SRCCACHE}/xjadeo_win-${XJADEO_VERSION}.tar.xz"
+		rsync://ardour.org/video-tools/xjadeo_${WARCH}-${XJADEO_VERSION}.tar.xz \
+		"${SRCCACHE}/xjadeo_${WARCH}-${XJADEO_VERSION}.tar.xz"
 
 	mkdir $DESTDIR/video
-	tar -xf "${SRCCACHE}/harvid_win-${HARVID_VERSION}.tar.xz" -C "$DESTDIR/video/"
-	tar -xf "${SRCCACHE}/xjadeo_win-${XJADEO_VERSION}.tar.xz" -C "$DESTDIR/video/"
+	tar -xf "${SRCCACHE}/harvid_${WARCH}-${HARVID_VERSION}.tar.xz" -C "$DESTDIR/video/"
+	tar -xf "${SRCCACHE}/xjadeo_${WARCH}-${XJADEO_VERSION}.tar.xz" -C "$DESTDIR/video/"
 
 	echo " === unzipped"
 	du -sh $DESTDIR/video
@@ -271,7 +271,7 @@ if test x$WITH_X42_LV2 != x ; then
 
 	echo "Adding x42 Plugins"
 
-	for proj in x42-meters x42-midifilter x42-midimap x42-stereoroute x42-eq setBfree x42-avldrums x42-whirl; do
+	for proj in x42-meters x42-midifilter x42-midimap x42-stereoroute x42-eq setBfree x42-avldrums x42-whirl x42-limiter; do
 		X42_VERSION=$(curl -s -S http://x42-plugins.com/x42/win/${proj}.latest.txt)
 		rsync -a -q --partial \
 			rsync://x42-plugins.com/x42/win/${proj}-lv2-${WARCH}-${X42_VERSION}.zip \

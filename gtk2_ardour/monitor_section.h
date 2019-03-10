@@ -17,6 +17,9 @@
 
 */
 
+#ifndef __gtk2_ardour_monitor_section_h__
+#define __gtk2_ardour_monitor_section_h__
+
 #include <gtkmm/box.h>
 #include <gtkmm/eventbox.h>
 #include <gtkmm/sizegroup.h>
@@ -44,7 +47,7 @@ namespace ArdourWidgets {
 class MonitorSection : public RouteUI, public Gtk::EventBox
 {
 public:
-	MonitorSection (ARDOUR::Session*);
+	MonitorSection ();
 	~MonitorSection ();
 
 	void set_session (ARDOUR::Session*);
@@ -54,6 +57,8 @@ public:
 	std::string state_id() const;
 
 	PluginSelector* plugin_selector() { return _plugin_selector; }
+
+	void use_others_actions ();
 
 private:
 	Gtk::HBox hpacker;
@@ -106,32 +111,10 @@ private:
 	void map_state ();
 
 	boost::shared_ptr<ARDOUR::MonitorProcessor> _monitor;
-	boost::shared_ptr<ARDOUR::Route> _route;
 
-	enum MonitorActions {
-		MonitorMono,
-		MonitorCutAll,
-		MonitorDimAll,
-		ToggleExclusiveSolo,
-		ToggleMuteOverridesSolo,
-		SoloUseInPlace,
-		SoloUseAFL,
-		SoloUsePFL,
-		ToggleMonitorProcessorBox
-	};
-
-	enum ChannelActions {
-		CutChannel,
-		DimChannel,
-		SoloChannel,
-		InvertChannel
-	};
-
-	static Glib::RefPtr<Gtk::ActionGroup> monitor_actions;
-	static void register_actions ();
-
-	static void action_proxy0 (enum MonitorActions);
-	static void action_proxy1 (enum ChannelActions, uint32_t);
+	Glib::RefPtr<Gtk::ActionGroup> monitor_actions;
+	Glib::RefPtr<Gtk::ActionGroup> solo_actions;
+	void register_actions ();
 
 	void cut_channel (uint32_t);
 	void dim_channel (uint32_t);
@@ -179,12 +162,13 @@ private:
 	void isolated_changed ();
 
 	PBD::ScopedConnection config_connection;
-	PBD::ScopedConnectionList control_connections;
-	PBD::ScopedConnectionList output_changed_connections;
+	PBD::ScopedConnectionList connections;
+	PBD::ScopedConnectionList route_connections;
 
 	bool _inhibit_solo_model_update;
 
 	void assign_controllables ();
+	void unassign_controllables ();
 
 	void port_connected_or_disconnected (boost::weak_ptr<ARDOUR::Port>, boost::weak_ptr<ARDOUR::Port>);
 
@@ -199,13 +183,17 @@ private:
 	uint32_t count_processors ();
 
 	void processors_changed (ARDOUR::RouteProcessorChange);
-	Glib::RefPtr<Gtk::Action> proctoggle;
+	Glib::RefPtr<Gtk::ToggleAction> proctoggle;
 	bool _ui_initialized;
 
-	static Gtkmm2ext::ActionMap myactions;
-	static Gtkmm2ext::Bindings* bindings;
+	Gtkmm2ext::Bindings* bindings;
 
-	static void load_bindings ();
+	void load_bindings ();
 	bool enter_handler (GdkEventCrossing*);
 	bool leave_handler (GdkEventCrossing*);
+
+	void toggle_use_monitor_section ();
+	void drop_route ();
 };
+
+#endif /* __gtk2_ardour_monitor_section_h__ */

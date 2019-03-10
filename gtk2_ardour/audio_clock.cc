@@ -36,6 +36,7 @@
 #include "ardour/session.h"
 #include "ardour/transport_master.h"
 #include "ardour/tempo.h"
+#include "ardour/transport_master_manager.h"
 #include "ardour/types.h"
 
 #include "ardour_ui.h"
@@ -126,6 +127,7 @@ AudioClock::AudioClock (const string& clock_name, bool transient, const string& 
 
 AudioClock::~AudioClock ()
 {
+	delete ops_menu;
 	delete foreground_attr;
 	delete editing_attr;
 }
@@ -509,7 +511,7 @@ AudioClock::end_edit (bool modify)
 			break;
 
 		case Seconds:
-			// no break
+			/* fall through */
 		case Samples:
 			if (edit_string.length() < 1) {
 				edit_string = pre_edit_string;
@@ -938,11 +940,9 @@ AudioClock::set_slave_info ()
 		return;
 	}
 
-	const SyncSource sync_src = Config->get_sync_source();
+	boost::shared_ptr<TransportMaster> tm = TransportMasterManager::instance().current();
 
 	if (_session->transport_master_is_external()) {
-
-		boost::shared_ptr<TransportMaster> tm = _session->transport_master();
 
 		switch (tm->type()) {
 		case Engine:
@@ -951,7 +951,7 @@ AudioClock::set_slave_info ()
 			break;
 		case MIDIClock:
 			if (tm) {
-				_left_btn.set_text (sync_source_to_string (tm->type(), true), true);
+				_left_btn.set_text (tm->display_name(), true);
 				_right_btn.set_text (tm->delta_string (), true);
 			} else {
 				_left_btn.set_text (_("--pending--"), true);
@@ -966,7 +966,7 @@ AudioClock::set_slave_info ()
 				if ((tcmaster = boost::dynamic_pointer_cast<TimecodeTransportMaster>(tm)) != 0) {
 					matching = (tcmaster->apparent_timecode_format() == _session->config.get_timecode_format());
 					_left_btn.set_text (string_compose ("%1<span face=\"monospace\" foreground=\"%3\">%2</span>",
-					                                    sync_source_to_string(tm->type(), true)[0],
+					                                    tm->display_name()[0],
 					                                    tcmaster->position_string (),
 					                                    matching ? "#66ff66" : "#ff3333"
 								), true);
@@ -979,7 +979,7 @@ AudioClock::set_slave_info ()
 			break;
 		}
 	} else {
-		_left_btn.set_text (string_compose ("%1/%2", _("INT"), sync_source_to_string (sync_src, true)), true);
+		_left_btn.set_text (string_compose ("%1/%2", _("INT"), tm->display_name()), true);
 		_right_btn.set_text ("", true);
 	}
 }

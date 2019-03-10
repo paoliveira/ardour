@@ -27,9 +27,10 @@
 #include "pbd/file_utils.h"
 #include "gui_thread.h"
 
+#include "ardour/filesystem_paths.h"
+
 #include "transcode_ffmpeg.h"
 #include "utils_videotl.h"
-#include "video_tool_paths.h"
 
 #include "pbd/i18n.h"
 
@@ -50,7 +51,7 @@ TranscodeFfmpeg::TranscodeFfmpeg (std::string f)
 	debug_enable = false;
 #endif
 
-	if (!ArdourVideoToolPaths::transcoder_exe(ffmpeg_exe, ffprobe_exe)) {
+	if (!ARDOUR::ArdourVideoToolPaths::transcoder_exe(ffmpeg_exe, ffprobe_exe)) {
 		warning << string_compose(
 				_(
 					"ffmpeg installation was not found on this system.\n"
@@ -97,7 +98,7 @@ TranscodeFfmpeg::probe ()
 	ffcmd = new ARDOUR::SystemExec(ffprobe_exe, argp);
 	ffcmd->ReadStdout.connect_same_thread (*this, boost::bind (&TranscodeFfmpeg::ffprobeparse, this, _1 ,_2));
 	ffcmd->Terminated.connect (*this, invalidator (*this), boost::bind (&TranscodeFfmpeg::ffexit, this), gui_context());
-	if (ffcmd->start(1)) {
+	if (ffcmd->start (SystemExec::IgnoreAndClose)) {
 		ffexit();
 		return false;
 	}
@@ -294,38 +295,6 @@ TranscodeFfmpeg::default_meta_data ()
 	return ffm;
 }
 
-char *
-TranscodeFfmpeg::format_metadata (std::string key, std::string value)
-{
-	size_t start_pos = 0;
-	std::string v1 = value;
-	while((start_pos = v1.find_first_not_of(
-			"abcdefghijklmnopqrstuvwxyz ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789(),.\"'",
-			start_pos)) != std::string::npos)
-	{
-		v1.replace(start_pos, 1, "_");
-		start_pos += 1;
-	}
-
-	start_pos = 0;
-	while((start_pos = v1.find("\"", start_pos)) != std::string::npos) {
-		v1.replace(start_pos, 1, "\\\"");
-		start_pos += 2;
-	}
-
-	size_t len = key.length() + v1.length() + 4;
-	char *mds = (char*) calloc(len, sizeof(char));
-#ifdef PLATFORM_WINDOWS
-	/* SystemExec::make_wargs() adds quotes around the complete argument
-	 * windows uses CreateProcess() with a parameter string
-	 * (and not an array list of separate arguments)
-	 */
-	snprintf(mds, len, "%s=%s", key.c_str(), v1.c_str());
-#else
-	snprintf(mds, len, "%s=\"%s\"", key.c_str(), v1.c_str());
-#endif
-	return mds;
-}
 
 bool
 TranscodeFfmpeg::encode (std::string outfile, std::string inf_a, std::string inf_v, TranscodeFfmpeg::FFSettings ffs, TranscodeFfmpeg::FFSettings meta, bool map)
@@ -353,7 +322,7 @@ TranscodeFfmpeg::encode (std::string outfile, std::string inf_a, std::string inf
 	}
 	for(TranscodeFfmpeg::FFSettings::const_iterator it = meta.begin(); it != meta.end(); ++it) {
 		argp[a++] = strdup("-metadata");
-		argp[a++] = format_metadata(it->first.c_str(), it->second.c_str());
+		argp[a++] = SystemExec::format_key_value_parameter (it->first.c_str(), it->second.c_str());
 	}
 
 	if (m_fps > 0) {
@@ -417,7 +386,7 @@ TranscodeFfmpeg::encode (std::string outfile, std::string inf_a, std::string inf
 	ffcmd = new ARDOUR::SystemExec(ffmpeg_exe, argp);
 	ffcmd->ReadStdout.connect_same_thread (*this, boost::bind (&TranscodeFfmpeg::ffmpegparse_v, this, _1 ,_2));
 	ffcmd->Terminated.connect (*this, invalidator (*this), boost::bind (&TranscodeFfmpeg::ffexit, this), gui_context());
-	if (ffcmd->start(2)) {
+	if (ffcmd->start (SystemExec::MergeWithStdin)) {
 		ffexit();
 		return false;
 	}
@@ -465,7 +434,7 @@ TranscodeFfmpeg::extract_audio (std::string outfile, ARDOUR::samplecnt_t /*sampl
 	ffcmd = new ARDOUR::SystemExec(ffmpeg_exe, argp);
 	ffcmd->ReadStdout.connect_same_thread (*this, boost::bind (&TranscodeFfmpeg::ffmpegparse_a, this, _1 ,_2));
 	ffcmd->Terminated.connect (*this, invalidator (*this), boost::bind (&TranscodeFfmpeg::ffexit, this), gui_context());
-	if (ffcmd->start(2)) {
+	if (ffcmd->start (SystemExec::MergeWithStdin)) {
 		ffexit();
 		return false;
 	}
@@ -525,7 +494,7 @@ TranscodeFfmpeg::transcode (std::string outfile, const int outw, const int outh,
 	ffcmd = new ARDOUR::SystemExec(ffmpeg_exe, argp);
 	ffcmd->ReadStdout.connect_same_thread (*this, boost::bind (&TranscodeFfmpeg::ffmpegparse_v, this, _1 ,_2));
 	ffcmd->Terminated.connect (*this, invalidator (*this), boost::bind (&TranscodeFfmpeg::ffexit, this), gui_context());
-	if (ffcmd->start(2)) {
+	if (ffcmd->start (SystemExec::MergeWithStdin)) {
 		ffexit();
 		return false;
 	}
@@ -598,7 +567,6 @@ TranscodeFfmpeg::ffmpegparse_v (std::string d, size_t /* s */)
 		  printf("ffmpeg: '%s'\n", d.c_str());
 		}
 #endif
-		Progress(0, 0); /* EMIT SIGNAL */
 		return;
 	}
 	ARDOUR::samplecnt_t f = atol(d.substr(6));

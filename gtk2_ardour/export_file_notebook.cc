@@ -252,6 +252,7 @@ ExportFileNotebook::FilePage::FilePage (Session * s, ManagerPtr profile_manager,
 	format_selector.FormatEdited.connect (sigc::mem_fun (*this, &ExportFileNotebook::FilePage::save_format_to_manager));
 	format_selector.FormatRemoved.connect (sigc::mem_fun (*profile_manager, &ExportProfileManager::remove_format_profile));
 	format_selector.NewFormat.connect (sigc::mem_fun (*profile_manager, &ExportProfileManager::get_new_format));
+	format_selector.FormatReverted.connect (sigc::mem_fun (*profile_manager, &ExportProfileManager::revert_format_profile));
 
 	format_selector.CriticalSelectionChanged.connect (
 		sigc::mem_fun (*this, &ExportFileNotebook::FilePage::critical_selection_changed));
@@ -259,8 +260,8 @@ ExportFileNotebook::FilePage::FilePage (Session * s, ManagerPtr profile_manager,
 		sigc::mem_fun (*this, &ExportFileNotebook::FilePage::critical_selection_changed));
 
 	soundcloud_upload_button.signal_toggled().connect (sigc::mem_fun (*parent, &ExportFileNotebook::update_soundcloud_upload));
-	soundcloud_upload_button.signal_toggled().connect (sigc::mem_fun (*this, &ExportFileNotebook::FilePage::soundcloud_upload_changed));
-	analysis_button.signal_toggled().connect (sigc::mem_fun (*this, &ExportFileNotebook::FilePage::analysis_changed));
+	soundcloud_button_connection = soundcloud_upload_button.signal_toggled().connect (sigc::mem_fun (*this, &ExportFileNotebook::FilePage::soundcloud_upload_changed));
+	analysis_button_connection = analysis_button.signal_toggled().connect (sigc::mem_fun (*this, &ExportFileNotebook::FilePage::analysis_changed));
 	/* Tab widget */
 
 	tab_close_button.add (*Gtk::manage (new Gtk::Image (::get_icon("close"))));
@@ -360,7 +361,15 @@ ExportFileNotebook::FilePage::critical_selection_changed ()
 {
 	update_tab_label();
 	update_example_filename();
+
+	soundcloud_button_connection.block ();
+	analysis_button_connection.block ();
+
 	update_analysis_button();
 	update_soundcloud_upload_button();
+
+	analysis_button_connection.unblock ();
+	soundcloud_button_connection.unblock ();
+
 	CriticalSelectionChanged();
 }

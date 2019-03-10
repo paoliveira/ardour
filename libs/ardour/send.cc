@@ -67,6 +67,8 @@ Send::name_and_id_new_send (Session& s, Role r, uint32_t& bitslot, bool ignore_b
 		return _("listen"); // no ports, no need for numbering
 	case Delivery::Send:
 		return string_compose (_("send %1"), (bitslot = s.next_send_id ()) + 1);
+	case Delivery::Foldback:
+		return string_compose (_("foldback %1"), (bitslot = s.next_aux_send_id ()) + 1);
 	default:
 		fatal << string_compose (_("programming error: send created using role %1"), enum_2_string (r)) << endmsg;
 		abort(); /*NOTREACHED*/
@@ -138,9 +140,6 @@ Send::signal_latency () const
 {
 	if (!_pending_active) {
 		 return 0;
-	}
-	if (_user_latency) {
-		return _user_latency;
 	}
 	if (_delay_out > _delay_in) {
 		return _delay_out - _delay_in;
@@ -295,7 +294,7 @@ Send::set_state (const XMLNode& node, int version)
 		*/
 
 		if ((prop = node.property ("bitslot")) == 0) {
-			if (_role == Delivery::Aux) {
+			if (_role == Delivery::Aux || _role == Delivery::Foldback) {
 				_bitslot = _session.next_aux_send_id ();
 			} else if (_role == Delivery::Send) {
 				_bitslot = _session.next_send_id ();
@@ -304,7 +303,7 @@ Send::set_state (const XMLNode& node, int version)
 				_bitslot = 0;
 			}
 		} else {
-			if (_role == Delivery::Aux) {
+			if (_role == Delivery::Aux || _role == Delivery::Foldback) {
 				_session.unmark_aux_send_id (_bitslot);
 				_bitslot = string_to<uint32_t>(prop->value());
 				_session.mark_aux_send_id (_bitslot);
@@ -449,7 +448,7 @@ Send::display_to_user () const
 {
 	/* we ignore Deliver::_display_to_user */
 
-	if (_role == Listen) {
+	if (_role == Listen || _role == Foldback) {
 		/* don't make the monitor/control/listen send visible */
 		return false;
 	}

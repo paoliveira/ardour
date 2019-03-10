@@ -63,6 +63,7 @@
 #include "ardour/session_playlists.h"
 #include "ardour/strip_silence.h"
 #include "ardour/transient_detector.h"
+#include "ardour/transport_master_manager.h"
 #include "ardour/transpose.h"
 #include "ardour/vca_manager.h"
 
@@ -109,6 +110,7 @@
 #include "transpose_dialog.h"
 #include "transform_dialog.h"
 #include "ui_config.h"
+#include "utils.h"
 #include "vca_time_axis.h"
 
 #include "pbd/i18n.h"
@@ -178,9 +180,6 @@ void
 Editor::split_regions_at (MusicSample where, RegionSelection& regions)
 {
 	bool frozen = false;
-
-	RegionSelection pre_selected_regions = selection->regions;
-	bool working_on_selection = !pre_selected_regions.empty();
 
 	list<boost::shared_ptr<Playlist> > used_playlists;
 	list<RouteTimeAxisView*> used_trackviews;
@@ -269,22 +268,23 @@ Editor::split_regions_at (MusicSample where, RegionSelection& regions)
 		EditorThaw(); /* Emit Signal */
 	}
 
-	if (working_on_selection) {
-		// IFF we were working on selected regions, try to reinstate the other region selections that existed before the freeze/thaw.
+	RegionSelectionAfterSplit rsas = Config->get_region_selection_after_split();
 
-		RegionSelectionAfterSplit rsas = Config->get_region_selection_after_split();
-		/* There are three classes of regions that we might want selected after
-		   splitting selected regions:
-		    - regions selected before the split operation, and unaffected by it
-		    - newly-created regions before the split
-		    - newly-created regions after the split
-		 */
-
-		if (rsas & Existing) {
-			// region selections that existed before the split.
-			selection->add (pre_selected_regions);
-		}
-
+	//if the user has "Clear Selection" as their post-split behavior, then clear the selection
+	if (!latest_regionviews.empty() && (rsas == None)) {
+		selection->clear_objects();
+		selection->clear_time();
+		//but leave track selection intact
+	}
+	
+	//if the user doesn't want to preserve the "Existing" selection, then clear the selection
+	if (!(rsas & Existing)) {
+		selection->clear_objects();
+		selection->clear_time();
+	}
+	
+	//if the user wants newly-created regions to be selected, then select them:
+	if (mouse_mode == MouseObject) {
 		for (RegionSelection::iterator ri = latest_regionviews.begin(); ri != latest_regionviews.end(); ri++) {
 			if ((*ri)->region()->position() < where.sample) {
 				// new regions created before the split
@@ -441,7 +441,7 @@ Editor::nudge_forward (bool next, bool force_playhead)
 						loc->set_end (max_samplepos, false, true, divisions);
 					}
 					if (loc->is_session_range()) {
-						_session->set_end_is_free (false);
+						_session->set_session_range_is_free (false);
 					}
 				}
 				if (!in_command) {
@@ -535,7 +535,7 @@ Editor::nudge_backward (bool next, bool force_playhead)
 						loc->set_end (loc->length(), false, true, get_grid_music_divisions(0));
 					}
 					if (loc->is_session_range()) {
-						_session->set_end_is_free (false);
+						_session->set_session_range_is_free (false);
 					}
 				}
 				if (!in_command) {
@@ -2151,7 +2151,7 @@ Editor::temporal_zoom_to_sample (bool coarser, samplepos_t sample)
 
 
 bool
-Editor::choose_new_marker_name(string &name) {
+Editor::choose_new_marker_name(string &name, bool is_range) {
 
 	if (!UIConfiguration::instance().get_name_new_markers()) {
 		/* don't prompt user for a new name */
@@ -2162,7 +2162,11 @@ Editor::choose_new_marker_name(string &name) {
 
 	dialog.set_prompt (_("New Name:"));
 
-	dialog.set_title (_("New Location Marker"));
+	if (is_range) {
+		dialog.set_title(_("New Range"));
+	} else {
+		dialog.set_title (_("New Location Marker"));
+	}
 
 	dialog.set_name ("MarkNameWindow");
 	dialog.set_size_request (250, -1);
@@ -2203,6 +2207,9 @@ Editor::add_location_from_selection ()
 	samplepos_t end = selection->time[clicked_selection].end;
 
 	_session->locations()->next_available_name(rangename,"selection");
+	if (!choose_new_marker_name(rangename, true)) {
+		return;
+	}
 	Location *location = new Location (*_session, start, end, rangename, Location::IsRangeMarker, get_grid_music_divisions(0));
 
 	begin_reversible_command (_("add marker"));
@@ -2259,6 +2266,8 @@ Editor::set_session_start_from_playhead ()
 
 		commit_reversible_command ();
 	}
+
+	_session->set_session_range_is_free (false);
 }
 
 void
@@ -2284,7 +2293,7 @@ Editor::set_session_end_from_playhead ()
 		commit_reversible_command ();
 	}
 
-	_session->set_end_is_free (false);
+	_session->set_session_range_is_free (false);
 }
 
 
@@ -2595,7 +2604,7 @@ Editor::transition_to_rolling (bool fwd)
 	}
 
 	if (_session->config.get_external_sync()) {
-		switch (Config->get_sync_source()) {
+		switch (TransportMasterManager::instance().current()->type()) {
 		case Engine:
 			break;
 		default:
@@ -3201,7 +3210,17 @@ Editor::separate_regions_between (const TimeSelection& ts)
 	}
 
 	if (in_command)	{
-//		selection->set (new_selection);
+
+		RangeSelectionAfterSplit rsas = Config->get_range_selection_after_split();
+
+		//if our config preference says to clear the selection, clear the Range selection
+		if (rsas == ClearSel) {
+			selection->clear_time();
+			//but leave track selection intact
+		} else if (rsas == ForceSel) {
+			//note: forcing the regions to be selected *might* force a tool-change to Object here
+			selection->set(new_selection);	
+		}
 
 		commit_reversible_command ();
 	}
@@ -6407,7 +6426,31 @@ Editor::split_region ()
 	//if no range was selected, try to find some regions to split
 	if (current_mouse_mode() == MouseObject || current_mouse_mode() == MouseRange ) {  //don't try this for Internal Edit, Stretch, Draw, etc.
 
-		RegionSelection rs = get_regions_from_selection_and_edit_point ();
+		RegionSelection rs;
+
+		//new behavior:  the Split action will prioritize the entered_regionview rather than selected regions.
+		//this fixes the unexpected case where you point at a region, but
+		//  * nothing happens OR
+		//  * some other region (maybe off-screen) is split.
+		//NOTE:  if the entered_regionview is /part of the selection/ then we should operate on the selection as usual
+		if (_edit_point == EditAtMouse && entered_regionview && !entered_regionview->selected()) {
+			rs.add (entered_regionview);
+		} else {
+			rs = selection->regions;   //might be empty
+		}
+
+		if (rs.empty()) {
+			TrackViewList tracks = selection->tracks;
+
+			if (!tracks.empty()) {
+				/* no region selected or entered, but some selected tracks:
+				 * act on all regions on the selected tracks at the edit point
+				 */
+				samplepos_t const where = get_preferred_edit_position (Editing::EDIT_IGNORE_NONE, false, false);
+				get_regions_at(rs, where, tracks);
+			}
+		}
+
 		const samplepos_t pos = get_preferred_edit_position();
 		const int32_t division = get_grid_music_divisions (0);
 		MusicSample where (pos, division);
@@ -6417,7 +6460,6 @@ Editor::split_region ()
 		}
 
 		split_regions_at (where, rs);
-
 	}
 }
 
@@ -6561,7 +6603,7 @@ Editor::set_session_extents_from_selection ()
 		commit_reversible_command ();
 	}
 
-	_session->set_end_is_free (false);
+	_session->set_session_range_is_free (false);
 }
 
 void
@@ -7416,6 +7458,10 @@ Editor::_remove_tracks ()
 	TrackSelection& ts (selection->tracks);
 
 	if (ts.empty()) {
+		return;
+	}
+
+	if (!ARDOUR_UI_UTILS::engine_is_running ()) {
 		return;
 	}
 

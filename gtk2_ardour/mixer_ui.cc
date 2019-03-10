@@ -103,7 +103,6 @@ Mixer_UI::Mixer_UI ()
 	, no_track_list_redisplay (false)
 	, in_group_row_change (false)
 	, track_menu (0)
-	, _monitor_section (0)
 	, _plugin_selector (0)
 	, _strip_width (UIConfiguration::instance().get_default_narrow_ms() ? Narrow : Wide)
 	, _spill_scroll_position (0)
@@ -111,13 +110,11 @@ Mixer_UI::Mixer_UI ()
 	, _in_group_rebuild_or_clear (false)
 	, _route_deletion_in_progress (false)
 	, _maximised (false)
-	, _show_mixer_list (true)
 	, _strip_selection_change_without_scroll (false)
-	, myactions (X_("mixer"))
 	, _selection (*this, *this)
 {
-	register_actions ();
 	load_bindings ();
+	register_actions ();
 	_content.set_data ("ardour-bindings", bindings);
 
 	PresentationInfo::Change.connect (*this, invalidator (*this), boost::bind (&Mixer_UI::presentation_info_changed, this, _1), gui_context());
@@ -231,7 +228,6 @@ Mixer_UI::Mixer_UI ()
 	favorite_plugins_display.set_headers_visible (true);
 	favorite_plugins_display.set_rules_hint (true);
 	favorite_plugins_display.set_can_focus (false);
-	favorite_plugins_display.set_tooltip_column (0);
 	favorite_plugins_display.add_object_drag (favorite_plugins_columns.plugin.index(), "PluginFavoritePtr");
 	favorite_plugins_display.set_drag_column (favorite_plugins_columns.name.index());
 	favorite_plugins_display.add_drop_targets (target_list);
@@ -240,6 +236,9 @@ Mixer_UI::Mixer_UI ()
 	favorite_plugins_display.signal_drop.connect (sigc::mem_fun (*this, &Mixer_UI::plugin_drop));
 	favorite_plugins_display.signal_row_expanded().connect (sigc::mem_fun (*this, &Mixer_UI::save_favorite_ui_state));
 	favorite_plugins_display.signal_row_collapsed().connect (sigc::mem_fun (*this, &Mixer_UI::save_favorite_ui_state));
+	if (UIConfiguration::instance().get_use_tooltips()) {
+		favorite_plugins_display.set_tooltip_column (0);
+	}
 	favorite_plugins_model->signal_row_has_child_toggled().connect (sigc::mem_fun (*this, &Mixer_UI::sync_treeview_favorite_ui_state));
 
 	favorite_plugins_scroller.add (favorite_plugins_display);
@@ -348,6 +347,11 @@ Mixer_UI::Mixer_UI ()
 	favorite_plugins_display.show();
 	add_button.show ();
 
+	XMLNode* mnode = ARDOUR_UI::instance()->tearoff_settings (X_("monitor-section"));
+	if (mnode) {
+		_monitor_section.tearoff().set_state (*mnode);
+	}
+
 	MixerStrip::CatchDeletion.connect (*this, invalidator (*this), boost::bind (&Mixer_UI::remove_strip, this, _1), gui_context());
 	VCAMasterStrip::CatchDeletion.connect (*this, invalidator (*this), boost::bind (&Mixer_UI::remove_master, this, _1), gui_context());
 
@@ -368,10 +372,8 @@ Mixer_UI::Mixer_UI ()
 
 Mixer_UI::~Mixer_UI ()
 {
-	if (_monitor_section) {
-		monitor_section_detached ();
-		delete _monitor_section;
-	}
+	monitor_section_detached ();
+
 	delete _plugin_selector;
 	delete track_menu;
 }
@@ -482,6 +484,12 @@ Mixer_UI::masters_scroller_button_release (GdkEventButton* ev)
 }
 
 void
+Mixer_UI::new_masters_created ()
+{
+	ActionManager::get_toggle_action ("Mixer", "ToggleVCAPane")->set_active (true);
+}
+
+void
 Mixer_UI::add_masters (VCAList& vlist)
 {
 	StripableList sl;
@@ -563,23 +571,14 @@ Mixer_UI::add_stripables (StripableList& slist)
 
 				if (route->is_monitor()) {
 
-					if (!_monitor_section) {
-						_monitor_section = new MonitorSection (_session);
+					out_packer.pack_end (_monitor_section.tearoff(), false, false);
+					_monitor_section.set_session (_session);
+					_monitor_section.tearoff().show_all ();
 
-						XMLNode* mnode = ARDOUR_UI::instance()->tearoff_settings (X_("monitor-section"));
-						if (mnode) {
-							_monitor_section->tearoff().set_state (*mnode);
-						}
-					}
+					_monitor_section.tearoff().Detach.connect (sigc::mem_fun(*this, &Mixer_UI::monitor_section_detached));
+					_monitor_section.tearoff().Attach.connect (sigc::mem_fun(*this, &Mixer_UI::monitor_section_attached));
 
-					out_packer.pack_end (_monitor_section->tearoff(), false, false);
-					_monitor_section->set_session (_session);
-					_monitor_section->tearoff().show_all ();
-
-					_monitor_section->tearoff().Detach.connect (sigc::mem_fun(*this, &Mixer_UI::monitor_section_detached));
-					_monitor_section->tearoff().Attach.connect (sigc::mem_fun(*this, &Mixer_UI::monitor_section_attached));
-
-					if (_monitor_section->tearoff().torn_off()) {
+					if (_monitor_section.tearoff().torn_off()) {
 						monitor_section_detached ();
 					} else {
 						monitor_section_attached ();
@@ -1034,16 +1033,13 @@ void
 Mixer_UI::set_session (Session* sess)
 {
 	SessionHandlePtr::set_session (sess);
+	_monitor_section.set_session (sess);
 
 	if (_plugin_selector) {
 		_plugin_selector->set_session (_session);
 	}
 
 	_group_tabs->set_session (sess);
-
-	if (_monitor_section) {
-		_monitor_section->set_session (_session);
-	}
 
 	if (!_session) {
 		_selection.clear ();
@@ -1069,6 +1065,7 @@ Mixer_UI::set_session (Session* sess)
 	_session->StateSaved.connect (_session_connections, invalidator (*this), boost::bind (&Mixer_UI::update_title, this), gui_context());
 
 	_session->vca_manager().VCAAdded.connect (_session_connections, invalidator (*this), boost::bind (&Mixer_UI::add_masters, this, _1), gui_context());
+	_session->vca_manager().VCACreated.connect (_session_connections, invalidator (*this), boost::bind (&Mixer_UI::new_masters_created, this), gui_context());
 
 	Config->ParameterChanged.connect (*this, invalidator (*this), boost::bind (&Mixer_UI::parameter_changed, this, _1), gui_context ());
 
@@ -1103,9 +1100,7 @@ Mixer_UI::session_going_away ()
 		delete (*i);
 	}
 
-	if (_monitor_section) {
-		_monitor_section->tearoff().hide_visible ();
-	}
+	_monitor_section.tearoff().hide_visible ();
 
 	monitor_section_detached ();
 
@@ -1524,24 +1519,25 @@ Mixer_UI::redisplay_track_list ()
 	/* update visibility of VCA assign buttons */
 
 	if (n_masters == 0) {
+		//show/hide the channelstrip VCA assign buttons on channelstrips:
 		UIConfiguration::instance().set_mixer_strip_visibility (VisibilityGroup::remove_element (UIConfiguration::instance().get_mixer_strip_visibility(), X_("VCA")));
-		vca_vpacker.hide ();
-		Glib::RefPtr<Action> act = ActionManager::get_action ("Common", "ToggleVCAPane");
+
+		Glib::RefPtr<Action> act = ActionManager::get_action ("Mixer", "ToggleVCAPane");
 		if (act) {
 			act->set_sensitive (false);
 		}
 
+		//remove the VCA packer, but don't change our prior setting for show/hide:
+		vca_vpacker.hide ();
 	} else {
+		//show/hide the channelstrip VCA assign buttons on channelstrips:
 		UIConfiguration::instance().set_mixer_strip_visibility (VisibilityGroup::add_element (UIConfiguration::instance().get_mixer_strip_visibility(), X_("VCA")));
 
-		Glib::RefPtr<Action> act = ActionManager::get_action ("Common", "ToggleVCAPane");
-		if (act) {
-			act->set_sensitive (true);
-			Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
-			showhide_vcas (tact->get_active());
-		} else {
-			vca_vpacker.show ();
-		}
+		Glib::RefPtr<ToggleAction> act = ActionManager::get_toggle_action ("Mixer", "ToggleVCAPane");
+		act->set_sensitive (true);
+
+		//if we were showing VCAs before, show them now:
+		showhide_vcas (act->get_active ());
 	}
 
 	_group_tabs->set_dirty ();
@@ -1600,18 +1596,7 @@ void
 Mixer_UI::initial_track_display ()
 {
 	StripableList sl;
-
-	boost::shared_ptr<RouteList> routes = _session->get_routes();
-
-	for (RouteList::iterator r = routes->begin(); r != routes->end(); ++r) {
-		sl.push_back (*r);
-	}
-
-	VCAList vcas = _session->vca_manager().vcas();
-
-	for (VCAList::iterator v = vcas.begin(); v != vcas.end(); ++v) {
-		sl.push_back (boost::dynamic_pointer_cast<Stripable> (*v));
-	}
+	_session->get_stripables (sl);
 
 	sl.sort (PresentationInfoMixerSorter());
 
@@ -1943,33 +1928,80 @@ Mixer_UI::route_group_property_changed (RouteGroup* group, const PropertyChange&
 }
 
 void
-Mixer_UI::show_mixer_list (bool yn)
+Mixer_UI::toggle_mixer_list ()
+{
+	Glib::RefPtr<ToggleAction> act = ActionManager::get_toggle_action ("Mixer", "ToggleMixerList");
+	showhide_mixer_list (act->get_active());
+}
+
+void
+Mixer_UI::showhide_mixer_list (bool yn)
 {
 	if (yn) {
 		list_vpacker.show ();
 	} else {
 		list_vpacker.hide ();
 	}
-
-	_show_mixer_list = yn;
 }
 
 void
-Mixer_UI::show_monitor_section (bool yn)
+Mixer_UI::toggle_monitor_section ()
 {
-	if (!monitor_section()) {
-		return;
-	}
-	if (monitor_section()->tearoff().torn_off()) {
+	Glib::RefPtr<ToggleAction> act = ActionManager::get_toggle_action ("Mixer", "ToggleMonitorSection");
+	showhide_monitor_section (act->get_active());
+}
+
+
+void
+Mixer_UI::showhide_monitor_section (bool yn)
+{
+	if (monitor_section().tearoff().torn_off()) {
 		return;
 	}
 
 	if (yn) {
-		monitor_section()->tearoff().show();
+		monitor_section().tearoff().show();
 	} else {
-		monitor_section()->tearoff().hide();
+		monitor_section().tearoff().hide();
 	}
 }
+
+void
+Mixer_UI::toggle_vcas ()
+{
+	Glib::RefPtr<ToggleAction> act = ActionManager::get_toggle_action ("Mixer", "ToggleVCAPane");
+	showhide_vcas (act->get_active());
+}
+
+void
+Mixer_UI::showhide_vcas (bool yn)
+{
+	if (yn) {
+		vca_vpacker.show();
+	} else {
+		vca_vpacker.hide();
+	}
+}
+
+#ifdef MIXBUS
+void
+Mixer_UI::toggle_mixbuses ()
+{
+	Glib::RefPtr<ToggleAction> act = ActionManager::get_toggle_action ("Mixer", "ToggleMixbusPane");
+	showhide_mixbuses (act->get_active());
+}
+
+void
+Mixer_UI::showhide_mixbuses (bool on)
+{
+	if (on) {
+		mb_vpacker.show();
+	} else {
+		mb_vpacker.hide();
+	}
+}
+#endif
+
 
 void
 Mixer_UI::route_group_name_edit (const std::string& path, const std::string& new_text)
@@ -2167,33 +2199,53 @@ Mixer_UI::set_state (const XMLNode& node, int version)
 
 	node.get_property ("show-mixer", _visible);
 
-	if (node.get_property ("maximised", yn)) {
-		Glib::RefPtr<Action> act = ActionManager::get_action (X_("Common"), X_("ToggleMaximalMixer"));
-		assert (act);
-		Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
-		bool fs = tact && tact->get_active();
+	yn = false;
+	node.get_property ("maximised", yn);
+	{
+		Glib::RefPtr<ToggleAction> act = ActionManager::get_toggle_action (X_("Common"), X_("ToggleMaximalMixer"));
+		bool fs = act && act->get_active();
 		if (yn ^ fs) {
 			ActionManager::do_action ("Common", "ToggleMaximalMixer");
 		}
 	}
 
-	if (node.get_property ("show-mixer-list", yn)) {
-		Glib::RefPtr<Action> act = ActionManager::get_action (X_("Common"), X_("ToggleMixerList"));
-		assert (act);
-		Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
-
+	yn = true;
+	node.get_property ("show-mixer-list", yn);
+	{
+		Glib::RefPtr<ToggleAction> act = ActionManager::get_toggle_action (X_("Mixer"), X_("ToggleMixerList"));
 		/* do it twice to force the change */
-		tact->set_active (!yn);
-		tact->set_active (yn);
+		act->set_active (!yn);
+		act->set_active (yn);
 	}
 
-	if (node.get_property ("monitor-section-visible", yn)) {
-		Glib::RefPtr<Action> act = ActionManager::get_action ("Common", "ToggleMonitorSection");
-		Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
+	yn = true;
+	node.get_property ("monitor-section-visible", yn);
+	{
+		Glib::RefPtr<ToggleAction> act = ActionManager::get_toggle_action (X_("Mixer"), X_("ToggleMonitorSection"));
 		/* do it twice to force the change */
-		tact->set_active (yn);
-		show_monitor_section (yn);
+		act->set_active (!yn);
+		act->set_active (yn);
 	}
+
+	yn = true;
+	node.get_property ("show-vca-pane", yn);
+	{
+		Glib::RefPtr<ToggleAction> act = ActionManager::get_toggle_action (X_("Mixer"), X_("ToggleVCAPane"));
+		/* do it twice to force the change */
+		act->set_active (!yn);
+		act->set_active (yn);
+	}
+
+#ifdef MIXBUS
+	yn = true;
+	node.get_property ("show-mixbus-pane", yn);
+	{
+		Glib::RefPtr<ToggleAction> act = ActionManager::get_toggle_action (X_("Mixer"), X_("ToggleMixbusPane"));
+		/* do it twice to force the change */
+		act->set_active (!yn);
+		act->set_active (yn);
+	}
+#endif
 
 	//check for the user's plugin_order file
 	XMLNode plugin_order_new(X_("PO"));
@@ -2281,13 +2333,21 @@ Mixer_UI::get_state ()
 
 	node->set_property ("narrow-strips", (_strip_width == Narrow));
 	node->set_property ("show-mixer", _visible);
-	node->set_property ("show-mixer-list", _show_mixer_list);
 	node->set_property ("maximised", _maximised);
 
-	Glib::RefPtr<Action> act = ActionManager::get_action ("Common", "ToggleMonitorSection");
-	Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
-	assert (tact);
-	node->set_property ("monitor-section-visible", tact->get_active ());
+	Glib::RefPtr<ToggleAction> act = ActionManager::get_toggle_action ("Mixer", "ToggleMixerList");
+	node->set_property ("show-mixer-list", act->get_active ());
+
+	act = ActionManager::get_toggle_action ("Mixer", "ToggleMonitorSection");
+	node->set_property ("monitor-section-visible", act->get_active ());
+
+	act = ActionManager::get_toggle_action ("Mixer", "ToggleVCAPane");
+	node->set_property ("show-vca-pane", act->get_active ());
+
+#ifdef MIXBUS
+	act = ActionManager::get_toggle_action ("Mixer", "ToggleMixbusPane");
+	node->set_property ("show-mixbus-pane", act->get_active ());
+#endif
 
 	return *node;
 }
@@ -2537,29 +2597,27 @@ Mixer_UI::set_axis_targets_for_operation ()
 void
 Mixer_UI::monitor_section_going_away ()
 {
-	if (_monitor_section) {
-		XMLNode* ui_node = Config->extra_xml(X_("UI"));
-		/* immediate state save.
-		 *
-		 * Tearoff settings are otherwise only stored during
-		 * save_ardour_state(). The mon-section may or may not
-		 * exist at that point.
-		 * */
-		if (ui_node) {
-			XMLNode* tearoff_node = ui_node->child (X_("Tearoffs"));
-			if (tearoff_node) {
-				tearoff_node->remove_nodes_and_delete (X_("monitor-section"));
-				XMLNode* t = new XMLNode (X_("monitor-section"));
-				_monitor_section->tearoff().add_state (*t);
-				tearoff_node->add_child_nocopy (*t);
-			}
+	XMLNode* ui_node = Config->extra_xml(X_("UI"));
+
+	/* immediate state save.
+	 *
+	 * Tearoff settings are otherwise only stored during
+	 * save_ardour_state(). The mon-section may or may not
+	 * exist at that point.
+	 */
+
+	if (ui_node) {
+		XMLNode* tearoff_node = ui_node->child (X_("Tearoffs"));
+		if (tearoff_node) {
+			tearoff_node->remove_nodes_and_delete (X_("monitor-section"));
+			XMLNode* t = new XMLNode (X_("monitor-section"));
+			_monitor_section.tearoff().add_state (*t);
+			tearoff_node->add_child_nocopy (*t);
 		}
-		monitor_section_detached ();
-		out_packer.remove (_monitor_section->tearoff());
-		_monitor_section->set_session (0);
-		delete _monitor_section;
-		_monitor_section = 0;
 	}
+
+	monitor_section_detached ();
+	out_packer.remove (_monitor_section.tearoff());
 }
 
 void
@@ -2615,16 +2673,15 @@ Mixer_UI::restore_mixer_space ()
 void
 Mixer_UI::monitor_section_attached ()
 {
-	Glib::RefPtr<Action> act = ActionManager::get_action ("Common", "ToggleMonitorSection");
-	Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
+	Glib::RefPtr<ToggleAction> act = ActionManager::get_toggle_action ("Mixer", "ToggleMonitorSection");
 	act->set_sensitive (true);
-	show_monitor_section (tact->get_active ());
+	showhide_monitor_section (act->get_active ());
 }
 
 void
 Mixer_UI::monitor_section_detached ()
 {
-	Glib::RefPtr<Action> act = ActionManager::get_action ("Common", "ToggleMonitorSection");
+	Glib::RefPtr<Action> act = ActionManager::get_action ("Mixer", "ToggleMonitorSection");
 	act->set_sensitive (false);
 }
 
@@ -2797,6 +2854,9 @@ Mixer_UI::sync_treeview_from_favorite_order ()
 
 		vector<ARDOUR::Plugin::PresetRecord> presets = (*i)->get_presets (true);
 		for (vector<ARDOUR::Plugin::PresetRecord>::const_iterator j = presets.begin(); j != presets.end(); ++j) {
+			if (!(*j).user) {
+				continue;
+			}
 			Gtk::TreeModel::Row child_row = *(favorite_plugins_model->append (newrow.children()));
 			child_row[favorite_plugins_columns.name] = (*j).label;
 			child_row[favorite_plugins_columns.plugin] = PluginPresetPtr (new PluginPreset(pip, &(*j)));
@@ -2814,7 +2874,7 @@ Mixer_UI::popup_note_context_menu (GdkEventButton *ev)
 {
 	using namespace Gtk::Menu_Helpers;
 
-	Gtk::Menu* m = manage (new Menu);
+	Gtk::Menu* m = ARDOUR_UI::instance()->shared_popup_menu ();
 	MenuList& items = m->items ();
 
 	if (_selection.axes.empty()) {
@@ -3074,49 +3134,51 @@ Mixer_UI::showing_spill_for (boost::shared_ptr<Stripable> s) const
 }
 
 void
-Mixer_UI::show_editor_window () const
-{
-	PublicEditor::instance().make_visible ();
-}
-
-void
 Mixer_UI::register_actions ()
 {
-	Glib::RefPtr<ActionGroup> group = myactions.create_action_group (X_("Mixer"));
+	Glib::RefPtr<ActionGroup> group = ActionManager::create_action_group (bindings, X_("Mixer"));
 
-	myactions.register_action (group, "show-editor", _("Show Editor"), sigc::mem_fun (*this, &Mixer_UI::show_editor_window));
-
-	myactions.register_action (group, "solo", _("Toggle Solo on Mixer-Selected Tracks/Busses"), sigc::mem_fun (*this, &Mixer_UI::solo_action));
-	myactions.register_action (group, "mute", _("Toggle Mute on Mixer-Selected Tracks/Busses"), sigc::mem_fun (*this, &Mixer_UI::mute_action));
-	myactions.register_action (group, "recenable", _("Toggle Rec-enable on Mixer-Selected Tracks/Busses"), sigc::mem_fun (*this, &Mixer_UI::rec_enable_action));
-	myactions.register_action (group, "increment-gain", _("Decrease Gain on Mixer-Selected Tracks/Busses"), sigc::mem_fun (*this, &Mixer_UI::step_gain_up_action));
-	myactions.register_action (group, "decrement-gain", _("Increase Gain on Mixer-Selected Tracks/Busses"), sigc::mem_fun (*this, &Mixer_UI::step_gain_down_action));
-	myactions.register_action (group, "unity-gain", _("Set Gain to 0dB on Mixer-Selected Tracks/Busses"), sigc::mem_fun (*this, &Mixer_UI::unity_gain_action));
+	ActionManager::register_action (group, "solo", _("Toggle Solo on Mixer-Selected Tracks/Busses"), sigc::mem_fun (*this, &Mixer_UI::solo_action));
+	ActionManager::register_action (group, "mute", _("Toggle Mute on Mixer-Selected Tracks/Busses"), sigc::mem_fun (*this, &Mixer_UI::mute_action));
+	ActionManager::register_action (group, "recenable", _("Toggle Rec-enable on Mixer-Selected Tracks/Busses"), sigc::mem_fun (*this, &Mixer_UI::rec_enable_action));
+	ActionManager::register_action (group, "increment-gain", _("Decrease Gain on Mixer-Selected Tracks/Busses"), sigc::mem_fun (*this, &Mixer_UI::step_gain_up_action));
+	ActionManager::register_action (group, "decrement-gain", _("Increase Gain on Mixer-Selected Tracks/Busses"), sigc::mem_fun (*this, &Mixer_UI::step_gain_down_action));
+	ActionManager::register_action (group, "unity-gain", _("Set Gain to 0dB on Mixer-Selected Tracks/Busses"), sigc::mem_fun (*this, &Mixer_UI::unity_gain_action));
 
 
-	myactions.register_action (group, "copy-processors", _("Copy Selected Processors"), sigc::mem_fun (*this, &Mixer_UI::copy_processors));
-	myactions.register_action (group, "cut-processors", _("Cut Selected Processors"), sigc::mem_fun (*this, &Mixer_UI::cut_processors));
-	myactions.register_action (group, "paste-processors", _("Paste Selected Processors"), sigc::mem_fun (*this, &Mixer_UI::paste_processors));
-	myactions.register_action (group, "delete-processors", _("Delete Selected Processors"), sigc::mem_fun (*this, &Mixer_UI::delete_processors));
-	myactions.register_action (group, "select-all-processors", _("Select All (visible) Processors"), sigc::mem_fun (*this, &Mixer_UI::select_all_processors));
-	myactions.register_action (group, "toggle-processors", _("Toggle Selected Processors"), sigc::mem_fun (*this, &Mixer_UI::toggle_processors));
-	myactions.register_action (group, "ab-plugins", _("Toggle Selected Plugins"), sigc::mem_fun (*this, &Mixer_UI::ab_plugins));
-	myactions.register_action (group, "select-none", _("Deselect all strips and processors"), sigc::mem_fun (*this, &Mixer_UI::select_none));
+	ActionManager::register_action (group, "copy-processors", _("Copy Selected Processors"), sigc::mem_fun (*this, &Mixer_UI::copy_processors));
+	ActionManager::register_action (group, "cut-processors", _("Cut Selected Processors"), sigc::mem_fun (*this, &Mixer_UI::cut_processors));
+	ActionManager::register_action (group, "paste-processors", _("Paste Selected Processors"), sigc::mem_fun (*this, &Mixer_UI::paste_processors));
+	ActionManager::register_action (group, "delete-processors", _("Delete Selected Processors"), sigc::mem_fun (*this, &Mixer_UI::delete_processors));
+	ActionManager::register_action (group, "select-all-processors", _("Select All (visible) Processors"), sigc::mem_fun (*this, &Mixer_UI::select_all_processors));
+	ActionManager::register_action (group, "toggle-processors", _("Toggle Selected Processors"), sigc::mem_fun (*this, &Mixer_UI::toggle_processors));
+	ActionManager::register_action (group, "ab-plugins", _("Toggle Selected Plugins"), sigc::mem_fun (*this, &Mixer_UI::ab_plugins));
+	ActionManager::register_action (group, "select-none", _("Deselect all strips and processors"), sigc::mem_fun (*this, &Mixer_UI::select_none));
 
-	myactions.register_action (group, "select-next-stripable", _("Select Next Mixer Strip"), sigc::mem_fun (*this, &Mixer_UI::select_next_strip));
-	myactions.register_action (group, "select-prev-stripable", _("Scroll Previous Mixer Strip"), sigc::mem_fun (*this, &Mixer_UI::select_prev_strip));
+	ActionManager::register_action (group, "select-next-stripable", _("Select Next Mixer Strip"), sigc::mem_fun (*this, &Mixer_UI::select_next_strip));
+	ActionManager::register_action (group, "select-prev-stripable", _("Scroll Previous Mixer Strip"), sigc::mem_fun (*this, &Mixer_UI::select_prev_strip));
 
-	myactions.register_action (group, "scroll-left", _("Scroll Mixer Window to the left"), sigc::mem_fun (*this, &Mixer_UI::scroll_left));
-	myactions.register_action (group, "scroll-right", _("Scroll Mixer Window to the right"), sigc::mem_fun (*this, &Mixer_UI::scroll_right));
+	ActionManager::register_action (group, "scroll-left", _("Scroll Mixer Window to the left"), sigc::mem_fun (*this, &Mixer_UI::scroll_left));
+	ActionManager::register_action (group, "scroll-right", _("Scroll Mixer Window to the right"), sigc::mem_fun (*this, &Mixer_UI::scroll_right));
 
-	myactions.register_action (group, "toggle-midi-input-active", _("Toggle MIDI Input Active for Mixer-Selected Tracks/Busses"),
+	ActionManager::register_action (group, "toggle-midi-input-active", _("Toggle MIDI Input Active for Mixer-Selected Tracks/Busses"),
 	                           sigc::bind (sigc::mem_fun (*this, &Mixer_UI::toggle_midi_input_active), false));
+
+	ActionManager::register_toggle_action (group, X_("ToggleMixerList"), _("Mixer: Show Mixer List"), sigc::mem_fun (*this, &Mixer_UI::toggle_mixer_list));
+
+	ActionManager::register_toggle_action (group, X_("ToggleVCAPane"), _("Mixer: Show VCAs"), sigc::mem_fun (*this, &Mixer_UI::toggle_vcas));
+
+#ifdef MIXBUS
+	ActionManager::register_toggle_action (group, X_("ToggleMixbusPane"), _("Mixer: Show Mixbusses"), sigc::mem_fun (*this, &Mixer_UI::toggle_mixbuses));
+#endif
+
+	ActionManager::register_toggle_action (group, X_("ToggleMonitorSection"), _("Mixer: Show Monitor Section"), sigc::mem_fun (*this, &Mixer_UI::toggle_monitor_section));
 }
 
 void
 Mixer_UI::load_bindings ()
 {
-	bindings = Bindings::get_bindings (X_("Mixer"), myactions);
+	bindings = Bindings::get_bindings (X_("Mixer"));
 }
 
 template<class T> void

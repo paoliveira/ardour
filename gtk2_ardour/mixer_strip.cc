@@ -28,6 +28,7 @@
 #include "pbd/enumwriter.h"
 #include "pbd/replace_all.h"
 #include "pbd/stacktrace.h"
+#include "pbd/unwind.h"
 
 #include "ardour/amp.h"
 #include "ardour/audio_track.h"
@@ -59,6 +60,7 @@
 #include "widgets/tooltips.h"
 
 #include "ardour_window.h"
+#include "context_menu_helper.h"
 #include "enums_convert.h"
 #include "mixer_strip.h"
 #include "mixer_ui.h"
@@ -581,8 +583,9 @@ MixerStrip::set_route (boost::shared_ptr<Route> rt)
 		solo_iso_table.set_sensitive(false);
 		control_slave_ui.set_sensitive(false);
 		if (monitor_section_button == 0) {
-			Glib::RefPtr<Action> act = ActionManager::get_action ("Common", "ToggleMonitorSection");
+			Glib::RefPtr<Action> act = ActionManager::get_action ("Mixer", "ToggleMonitorSection");
 			_session->MonitorChanged.connect (route_connections, invalidator (*this), boost::bind (&MixerStrip::monitor_changed, this), gui_context());
+			_session->MonitorBusAddedOrRemoved.connect (route_connections, invalidator (*this), boost::bind (&MixerStrip::monitor_section_added_or_removed, this), gui_context());
 
 			monitor_section_button = manage (new ArdourButton);
 			monitor_changed ();
@@ -591,8 +594,8 @@ MixerStrip::set_route (boost::shared_ptr<Route> rt)
 			mute_solo_table.attach (*monitor_section_button, 1, 2, 0, 1);
 			monitor_section_button->show();
 			monitor_section_button->unset_flags (Gtk::CAN_FOCUS);
+			monitor_section_added_or_removed ();
 		}
-		parameter_changed ("use-monitor-bus");
 	} else {
 		bottom_button_table.attach (group_button, 1, 2, 0, 1);
 		mute_solo_table.attach (*mute_button, 0, 1, 0, 1);
@@ -873,9 +876,7 @@ gint
 MixerStrip::output_press (GdkEventButton *ev)
 {
 	using namespace Menu_Helpers;
-	if (!_session->engine().connected()) {
-		MessageDialog msg (_("Not connected to audio engine - no I/O changes are possible"));
-		msg.run ();
+	if (!ARDOUR_UI_UTILS::engine_is_running ()) {
 		return true;
 	}
 
@@ -910,8 +911,7 @@ MixerStrip::output_press (GdkEventButton *ev)
 		}
 
 		/* then other routes inputs */
-		boost::shared_ptr<ARDOUR::RouteList> routes = _session->get_routes ();
-		RouteList copy = *routes;
+		RouteList copy = _session->get_routelist ();
 		copy.sort (RouteCompareByName ());
 		for (ARDOUR::RouteList::const_iterator i = copy.begin(); i != copy.end(); ++i) {
 			maybe_add_bundle_to_output_menu ((*i)->input()->bundle(), current, intended_type);
@@ -990,9 +990,7 @@ MixerStrip::input_press (GdkEventButton *ev)
 	input_menu.set_name ("ArdourContextMenu");
 	citems.clear();
 
-	if (!_session->engine().connected()) {
-		MessageDialog msg (_("Not connected to audio engine - no I/O changes are possible"));
-		msg.run ();
+	if (!ARDOUR_UI_UTILS::engine_is_running ()) {
 		return true;
 	}
 
@@ -2120,6 +2118,27 @@ MixerStrip::monitor_changed ()
 	}
 }
 
+void
+MixerStrip::monitor_section_added_or_removed ()
+{
+	assert (monitor_section_button);
+	if (mute_button->get_parent()) {
+		mute_button->get_parent()->remove(*mute_button);
+	}
+	if (monitor_section_button->get_parent()) {
+		monitor_section_button->get_parent()->remove(*monitor_section_button);
+	}
+	if (_session && _session->monitor_out ()) {
+		mute_solo_table.attach (*mute_button, 0, 1, 0, 1);
+		mute_solo_table.attach (*monitor_section_button, 1, 2, 0, 1);
+		mute_button->show();
+		monitor_section_button->show();
+	} else {
+		mute_solo_table.attach (*mute_button, 0, 2, 0, 1);
+		mute_button->show();
+	}
+}
+
 /** Called when the metering point has changed */
 void
 MixerStrip::meter_changed ()
@@ -2399,24 +2418,6 @@ MixerStrip::parameter_changed (string p)
 	} else if (p == "track-name-number") {
 		name_changed ();
 		update_track_number_visibility();
-	} else if (p == "use-monitor-bus") {
-		if (monitor_section_button) {
-			if (mute_button->get_parent()) {
-				mute_button->get_parent()->remove(*mute_button);
-			}
-			if (monitor_section_button->get_parent()) {
-				monitor_section_button->get_parent()->remove(*monitor_section_button);
-			}
-			if (Config->get_use_monitor_bus ()) {
-				mute_solo_table.attach (*mute_button, 0, 1, 0, 1);
-				mute_solo_table.attach (*monitor_section_button, 1, 2, 0, 1);
-				mute_button->show();
-				monitor_section_button->show();
-			} else {
-				mute_solo_table.attach (*mute_button, 0, 2, 0, 1);
-				mute_button->show();
-			}
-		}
 	}
 }
 
@@ -2520,12 +2521,12 @@ MixerStrip::popup_level_meter_menu (GdkEventButton* ev)
 {
 	using namespace Gtk::Menu_Helpers;
 
-	Gtk::Menu* m = manage (new Menu);
+	Gtk::Menu* m = ARDOUR_UI_UTILS::shared_popup_menu ();
 	MenuList& items = m->items ();
 
 	RadioMenuItem::Group group;
 
-	_suspend_menu_callbacks = true;
+	PBD::Unwinder<bool> (_suspend_menu_callbacks, true);
 	add_level_meter_item_point (items, group, _("Input"), MeterInput);
 	add_level_meter_item_point (items, group, _("Pre Fader"), MeterPreFader);
 	add_level_meter_item_point (items, group, _("Post Fader"), MeterPostFader);
@@ -2534,7 +2535,6 @@ MixerStrip::popup_level_meter_menu (GdkEventButton* ev)
 
 	if (gpm.meter_channels().n_audio() == 0) {
 		m->popup (ev->button, ev->time);
-		_suspend_menu_callbacks = false;
 		return;
 	}
 
@@ -2581,7 +2581,6 @@ MixerStrip::popup_level_meter_menu (GdkEventButton* ev)
 				sigc::bind (SetMeterTypeMulti, _strip_type, _route->route_group(), cmt)));
 
 	m->popup (ev->button, ev->time);
-	_suspend_menu_callbacks = false;
 }
 
 void

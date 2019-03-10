@@ -101,12 +101,6 @@ public:
 	 */
 	virtual const std::string& my_name() const = 0;
 
-	/** Return true if the underlying mechanism/API is still available
-	 * for us to utilize. return false if some or all of the AudioBackend
-	 * API can no longer be effectively used.
-	 */
-	virtual bool available() const = 0;
-
 	/** Return the maximum size of a port name
 	*/
 	virtual uint32_t port_name_size() const = 0;
@@ -119,6 +113,11 @@ public:
 	 * does not exist, return an empty string.
 	 */
 	virtual std::string get_port_name (PortHandle) const = 0;
+
+	/** Return the flags of the port referred to by @param port. If the port
+	 * does not exist, return PortFlags (0)
+	 */
+	virtual PortFlags get_port_flags (PortHandle) const = 0;
 
 	/** Return the port-property value and type for a given key.
 	 * (eg query a human readable port name)

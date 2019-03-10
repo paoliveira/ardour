@@ -106,13 +106,23 @@ class LIBARDOUR_API AudioEngine : public PortManager, public SessionHandlePtr
 	bool           in_process_thread ();
 	uint32_t       process_thread_count ();
 
+	/* internal backends
+	 * -20 : main thread
+	 * -21 : additional I/O threads e.g. MIDI
+	 * -22 : client/process threads
+	 *
+	 * search for
+	 * - pbd_realtime_pthread_create
+	 * - pbd_set_thread_priority
+	 */
+	virtual int    client_real_time_priority () { return -22; }
+
 	int            backend_reset_requested();
 	void           request_backend_reset();
 	void           request_device_list_update();
 	void           launch_device_control_app();
 
 	bool           is_realtime() const;
-	bool           connected() const;
 
 	// for the user which hold state_lock to check if reset operation is pending
 	bool           is_reset_requested() const { return g_atomic_int_get(const_cast<gint*>(&_hw_reset_request_count)); }
@@ -186,7 +196,7 @@ class LIBARDOUR_API AudioEngine : public PortManager, public SessionHandlePtr
 	   started and stopped
 	*/
 
-	PBD::Signal0<void> Running;
+	PBD::Signal1<void,uint32_t> Running;
 	PBD::Signal0<void> Stopped;
 
 	/* these two are emitted when a device reset is initiated/finished
@@ -296,6 +306,7 @@ class LIBARDOUR_API AudioEngine : public PortManager, public SessionHandlePtr
 	Glib::Threads::Cond        _hw_devicelist_update_condition;
 	Glib::Threads::Mutex       _devicelist_update_lock;
 	gint                       _stop_hw_devicelist_processing;
+	uint32_t                   _start_cnt;
 
 	void start_hw_event_processing();
 	void stop_hw_event_processing();

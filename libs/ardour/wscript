@@ -58,6 +58,7 @@ libardour_sources = [
         'config_text.cc',
         'control_group.cc',
         'control_protocol_manager.cc',
+        'convolver.cc',
         'cycle_timer.cc',
         'data_type.cc',
         'default_click.cc',
@@ -103,6 +104,7 @@ libardour_sources = [
         'iec1ppmdsp.cc',
         'iec2ppmdsp.cc',
         'import.cc',
+        'import_pt.cc',
         'instrument_info.cc',
         'internal_return.cc',
         'internal_send.cc',
@@ -111,6 +113,7 @@ libardour_sources = [
         'io_processor.cc',
         'kmeterdsp.cc',
         'ladspa_plugin.cc',
+        'latent.cc',
         'legatize.cc',
         'location.cc',
         'location_importer.cc',
@@ -159,7 +162,6 @@ libardour_sources = [
         'panner_manager.cc',
         'panner_shell.cc',
         'parameter_descriptor.cc',
-        'pcm_utils.cc',
         'phase_control.cc',
         'playlist.cc',
         'playlist_factory.cc',
@@ -254,6 +256,7 @@ libardour_sources = [
         'utils.cc',
         'vca.cc',
         'vca_manager.cc',
+        'video_tools_paths.cc',
         'vumeterdsp.cc',
         'worker.cc'
 ]
@@ -296,30 +299,23 @@ def configure(conf):
     autowaf.check_pkg(conf, 'sigc++-2.0', uselib_store='SIGCPP',
                       atleast_version='2.0')
 
-    if Options.options.lv2:
-        autowaf.check_pkg(conf, 'lv2', uselib_store='LV2',
-                          atleast_version='1.0.0', mandatory=True)
-        autowaf.check_pkg(conf, 'lv2', uselib_store='LV2_1_2_0',
-                          atleast_version='1.2.0', mandatory=False)
-        autowaf.check_pkg(conf, 'lv2', uselib_store='LV2_1_10_0',
-                          atleast_version='1.10.0', mandatory=False)
-        autowaf.check_pkg(conf, 'serd-0', uselib_store='SERD',
-                          atleast_version='0.14.0', mandatory=True)
-        autowaf.check_pkg(conf, 'sord-0', uselib_store='SORD',
-                          atleast_version='0.8.0', mandatory=True)
-        autowaf.check_pkg(conf, 'sratom-0', uselib_store='SRATOM',
-                          atleast_version='0.2.0', mandatory=True)
-        autowaf.check_pkg(conf, 'lilv-0', uselib_store='LILV',
-                          atleast_version='0.14.0', mandatory=True)
-        autowaf.check_pkg(conf, 'lilv-0', uselib_store='LILV_0_16_0',
-                          atleast_version='0.16.0', mandatory=False)
-        autowaf.check_pkg(conf, 'lilv-0', uselib_store='LILV_0_19_2',
-                          atleast_version='0.19.2', mandatory=False)
-        autowaf.check_pkg(conf, 'lilv-0', uselib_store='LILV_0_21_3',
-                          atleast_version='0.21.3', mandatory=False)
-        autowaf.check_pkg(conf, 'suil-0', uselib_store='SUIL',
-                          atleast_version='0.6.0', mandatory=False)
-        conf.define ('LV2_SUPPORT', 1)
+    autowaf.check_pkg(conf, 'lv2', uselib_store='LV2',
+                      atleast_version='1.0.0', mandatory=True)
+    autowaf.check_pkg(conf, 'lv2', uselib_store='LV2_1_2_0',
+                      atleast_version='1.2.0', mandatory=False)
+    autowaf.check_pkg(conf, 'lv2', uselib_store='LV2_1_10_0',
+                      atleast_version='1.10.0', mandatory=False)
+    autowaf.check_pkg(conf, 'serd-0', uselib_store='SERD',
+                      atleast_version='0.14.0', mandatory=True)
+    autowaf.check_pkg(conf, 'sord-0', uselib_store='SORD',
+                      atleast_version='0.8.0', mandatory=True)
+    autowaf.check_pkg(conf, 'sratom-0', uselib_store='SRATOM',
+                      atleast_version='0.2.0', mandatory=True)
+    autowaf.check_pkg(conf, 'lilv-0', uselib_store='LILV',
+                      atleast_version='0.24.2', mandatory=False)
+    autowaf.check_pkg(conf, 'suil-0', uselib_store='SUIL',
+                      atleast_version='0.6.0', mandatory=False)
+    conf.define ('LV2_SUPPORT', 1)
 
     # non-standard LV2 extention -- TODO: add option to disable??
     if conf.is_defined ('HAVE_LV2_1_10_0'):
@@ -399,14 +395,16 @@ def build(bld):
                         'libaudiographer',
                         'libtemporal',
                         'liblua',
+                        'libptformat',
                         'zita-resampler',
+                        'zita-convolver',
                         ]
     if bld.env['build_target'] != 'mingw':
         obj.uselib += ['DL']
     if bld.is_defined('USE_EXTERNAL_LIBS'):
         obj.uselib.extend(['VAMPSDK', 'LIBLTC', 'LIBFLUIDSYNTH'])
     else:
-        obj.use.extend(['librubberband', 'libltc_includes', 'libltc', 'libfluidsynth_includes', 'libfluidsynth'])
+        obj.use.extend(['librubberband', 'libltc_includes', 'libltc', 'libfluidsynth_includes', 'libfluidsynth', 'libptformat'])
 
     obj.vnum         = LIBARDOUR_LIB_VERSION
     obj.install_path = bld.env['LIBDIR']

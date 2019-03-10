@@ -1594,9 +1594,6 @@ class VideoTimelineOptions : public OptionEditorMiniPage
 			_video_server_docroot_entry.signal_activate().connect (sigc::mem_fun(*this, &VideoTimelineOptions::server_docroot_changed));
 			_custom_xjadeo_path.signal_changed().connect (sigc::mem_fun (*this, &VideoTimelineOptions::custom_xjadeo_path_changed));
 			_xjadeo_browse_button.signal_clicked ().connect (sigc::mem_fun (*this, &VideoTimelineOptions::xjadeo_browse_clicked));
-
-			// xjadeo-path is a UIConfig parameter
-			UIConfiguration::instance().ParameterChanged.connect (sigc::mem_fun (*this, &VideoTimelineOptions::parameter_changed));
 		}
 
 		void server_url_changed ()
@@ -1629,13 +1626,13 @@ class VideoTimelineOptions : public OptionEditorMiniPage
 
 		void custom_xjadeo_path_changed ()
 		{
-			UIConfiguration::instance().set_xjadeo_binary (_custom_xjadeo_path.get_text());
+			_rc_config->set_xjadeo_binary (_custom_xjadeo_path.get_text());
 		}
 
 		void xjadeo_browse_clicked ()
 		{
 			Gtk::FileChooserDialog dialog(_("Set Video Monitor Executable"), Gtk::FILE_CHOOSER_ACTION_OPEN);
-			dialog.set_filename (UIConfiguration::instance().get_xjadeo_binary());
+			dialog.set_filename (_rc_config->get_xjadeo_binary());
 			dialog.add_button(Gtk::Stock::CANCEL, Gtk::RESPONSE_CANCEL);
 			dialog.add_button(Gtk::Stock::OK, Gtk::RESPONSE_OK);
 			if (dialog.run () == Gtk::RESPONSE_OK) {
@@ -1646,7 +1643,7 @@ class VideoTimelineOptions : public OptionEditorMiniPage
 #endif
 							Glib::file_test (filename, Glib::FILE_TEST_EXISTS|Glib::FILE_TEST_IS_EXECUTABLE)
 							)) {
-					UIConfiguration::instance().set_xjadeo_binary (filename);
+					_rc_config->set_xjadeo_binary (filename);
 				}
 			}
 		}
@@ -1669,7 +1666,7 @@ class VideoTimelineOptions : public OptionEditorMiniPage
 				_video_server_docroot_entry.set_sensitive(x);
 				_video_server_url_entry.set_sensitive(x);
 			} else if (p == "xjadeo-binary") {
-				_custom_xjadeo_path.set_text (UIConfiguration::instance().get_xjadeo_binary());
+				_custom_xjadeo_path.set_text (_rc_config->get_xjadeo_binary());
 			}
 		}
 
@@ -1826,7 +1823,7 @@ private:
 class MidiPortOptions : public OptionEditorMiniPage, public sigc::trackable
 {
 	public:
-		MidiPortOptions() {
+		MidiPortOptions() : refill_id (-1) {
 
 			setup_midi_port_view (midi_output_view, false);
 			setup_midi_port_view (midi_input_view, true);
@@ -1856,13 +1853,15 @@ class MidiPortOptions : public OptionEditorMiniPage, public sigc::trackable
 			midi_output_view.show ();
 			midi_input_view.show ();
 
-			table.signal_show().connect (sigc::mem_fun (*this, &MidiPortOptions::on_show));
+			table.signal_map().connect (sigc::mem_fun (*this, &MidiPortOptions::on_map));
+			table.signal_unmap().connect (sigc::mem_fun (*this, &MidiPortOptions::on_unmap));
 		}
 
 		void parameter_changed (string const&) {}
 		void set_state_from_config() {}
 
-		void on_show () {
+		void on_map () {
+
 			refill ();
 
 			AudioEngine::instance()->PortRegisteredOrUnregistered.connect (connections,
@@ -1879,6 +1878,10 @@ class MidiPortOptions : public OptionEditorMiniPage, public sigc::trackable
 					gui_context());
 		}
 
+		void on_unmap () {
+			connections.drop_connections ();
+		}
+
 		void refill () {
 
 			if (refill_midi_ports (true, midi_input_view)) {
@@ -1891,6 +1894,8 @@ class MidiPortOptions : public OptionEditorMiniPage, public sigc::trackable
 			} else {
 				output_label.hide ();
 			}
+
+			refill_id = -1;
 		}
 
 	private:
@@ -1904,7 +1909,8 @@ class MidiPortOptions : public OptionEditorMiniPage, public sigc::trackable
 				add (music_data);
 				add (control_data);
 				add (selection);
-				add (name);
+				add (fullname);
+				add (shortname);
 				add (filler);
 			}
 
@@ -1912,7 +1918,8 @@ class MidiPortOptions : public OptionEditorMiniPage, public sigc::trackable
 			Gtk::TreeModelColumn<bool> music_data;
 			Gtk::TreeModelColumn<bool> control_data;
 			Gtk::TreeModelColumn<bool> selection;
-			Gtk::TreeModelColumn<std::string> name;
+			Gtk::TreeModelColumn<std::string> fullname;
+			Gtk::TreeModelColumn<std::string> shortname;
 			Gtk::TreeModelColumn<std::string> filler;
 		};
 
@@ -1921,6 +1928,7 @@ class MidiPortOptions : public OptionEditorMiniPage, public sigc::trackable
 		Gtk::TreeView midi_output_view;
 		Gtk::Label input_label;
 		Gtk::Label output_label;
+		int refill_id;
 
 		void setup_midi_port_view (Gtk::TreeView&, bool with_selection);
 		bool refill_midi_ports (bool for_input, Gtk::TreeView&);
@@ -1940,7 +1948,7 @@ MidiPortOptions::setup_midi_port_view (Gtk::TreeView& view, bool with_selection)
 	TreeViewColumn* col;
 	Gtk::Label* l;
 
-	pretty_name_column = view.append_column_editable (_("Name (click to edit)"), midi_port_columns.pretty_name) - 1;
+	pretty_name_column = view.append_column_editable (_("Name (click twice to edit)"), midi_port_columns.pretty_name) - 1;
 
 	col = manage (new TreeViewColumn ("", midi_port_columns.music_data));
 	col->set_alignment (ALIGN_CENTER);
@@ -1990,8 +1998,8 @@ MidiPortOptions::setup_midi_port_view (Gtk::TreeView& view, bool with_selection)
 		toggle_cell->signal_toggled().connect (sigc::bind (sigc::mem_fun (*this, &MidiPortOptions::midi_selection_column_toggled), &view));
 	}
 
-	view.get_selection()->set_mode (SELECTION_NONE);
-	view.set_tooltip_column (4); /* port "real" name */
+	view.get_selection()->set_mode (SELECTION_SINGLE);
+	view.set_tooltip_column (5); /* port short name */
 	view.get_column(0)->set_resizable (true);
 	view.get_column(0)->set_expand (true);
 }
@@ -2020,8 +2028,7 @@ MidiPortOptions::refill_midi_ports (bool for_input, Gtk::TreeView& view)
 
 		PortManager::MidiPortInformation mpi (AudioEngine::instance()->midi_port_information (*s));
 
-		if (mpi.pretty_name.empty()) {
-			/* vanished since get_known_midi_ports() */
+		if (!mpi.exists) {
 			continue;
 		}
 
@@ -2035,7 +2042,8 @@ MidiPortOptions::refill_midi_ports (bool for_input, Gtk::TreeView& view)
 		row[midi_port_columns.music_data] = mpi.properties & MidiPortMusic;
 		row[midi_port_columns.control_data] = mpi.properties & MidiPortControl;
 		row[midi_port_columns.selection] = mpi.properties & MidiPortSelection;
-		row[midi_port_columns.name] = *s;
+		row[midi_port_columns.fullname] = *s;
+		row[midi_port_columns.shortname] = AudioEngine::instance()->short_port_name_from_port_name (*s);
 	}
 
 	view.set_model (model);
@@ -2057,9 +2065,9 @@ MidiPortOptions::midi_music_column_toggled (string const & path, TreeView* view)
 	/* don't reset model - wait for MidiPortInfoChanged signal */
 
 	if (new_value) {
-		ARDOUR::AudioEngine::instance()->add_midi_port_flags ((*iter)[midi_port_columns.name], MidiPortMusic);
+		ARDOUR::AudioEngine::instance()->add_midi_port_flags ((*iter)[midi_port_columns.fullname], MidiPortMusic);
 	} else {
-		ARDOUR::AudioEngine::instance()->remove_midi_port_flags ((*iter)[midi_port_columns.name], MidiPortMusic);
+		ARDOUR::AudioEngine::instance()->remove_midi_port_flags ((*iter)[midi_port_columns.fullname], MidiPortMusic);
 	}
 }
 
@@ -2077,9 +2085,9 @@ MidiPortOptions::midi_control_column_toggled (string const & path, TreeView* vie
 	/* don't reset model - wait for MidiPortInfoChanged signal */
 
 	if (new_value) {
-		ARDOUR::AudioEngine::instance()->add_midi_port_flags ((*iter)[midi_port_columns.name], MidiPortControl);
+		ARDOUR::AudioEngine::instance()->add_midi_port_flags ((*iter)[midi_port_columns.fullname], MidiPortControl);
 	} else {
-		ARDOUR::AudioEngine::instance()->remove_midi_port_flags ((*iter)[midi_port_columns.name], MidiPortControl);
+		ARDOUR::AudioEngine::instance()->remove_midi_port_flags ((*iter)[midi_port_columns.fullname], MidiPortControl);
 	}
 }
 
@@ -2097,9 +2105,9 @@ MidiPortOptions::midi_selection_column_toggled (string const & path, TreeView* v
 	/* don't reset model - wait for MidiSelectionPortsChanged signal */
 
 	if (new_value) {
-		ARDOUR::AudioEngine::instance()->add_midi_port_flags ((*iter)[midi_port_columns.name], MidiPortSelection);
+		ARDOUR::AudioEngine::instance()->add_midi_port_flags ((*iter)[midi_port_columns.fullname], MidiPortSelection);
 	} else {
-		ARDOUR::AudioEngine::instance()->remove_midi_port_flags ((*iter)[midi_port_columns.name], MidiPortSelection);
+		ARDOUR::AudioEngine::instance()->remove_midi_port_flags ((*iter)[midi_port_columns.fullname], MidiPortSelection);
 	}
 }
 
@@ -2112,7 +2120,7 @@ MidiPortOptions::pretty_name_edit (std::string const & path, string const & new_
 		return;
 	}
 
-	AudioEngine::instance()->set_midi_port_pretty_name ((*iter)[midi_port_columns.name], new_text);
+	AudioEngine::instance()->set_port_pretty_name ((*iter)[midi_port_columns.fullname], new_text);
 }
 
 /*============*/
@@ -2463,21 +2471,34 @@ RCOptionEditor::RCOptionEditor ()
 	lm->add (Manual, _("manual layering"));
 	add_option (_("Editor"), lm);
 
+	add_option (_("Editor"), new OptionEditorHeading (_("Split/Separate")));
+
+	ComboOption<RangeSelectionAfterSplit> *rras = new ComboOption<RangeSelectionAfterSplit> (
+		    "range-selection-after-separate",
+		    _("After a Separate operation, in Range mode"),
+		    sigc::mem_fun (*_rc_config, &RCConfiguration::get_range_selection_after_split),
+		    sigc::mem_fun (*_rc_config, &RCConfiguration::set_range_selection_after_split));
+
+	rras->add(ClearSel, _("Clear the Range Selection"));
+	rras->add(PreserveSel, _("Preserve the Range Selection"));
+	rras->add(ForceSel, _("Force-Select the regions under the range. (this might cause a tool change)"));
+	add_option (_("Editor"), rras);
+
 	ComboOption<RegionSelectionAfterSplit> *rsas = new ComboOption<RegionSelectionAfterSplit> (
 		    "region-selection-after-split",
-		    _("After splitting selected regions, select"),
+		    _("After a Split operation, in Object mode"),
 		    sigc::mem_fun (*_rc_config, &RCConfiguration::get_region_selection_after_split),
 		    sigc::mem_fun (*_rc_config, &RCConfiguration::set_region_selection_after_split));
 
 	// TODO: decide which of these modes are really useful
-	rsas->add(None, _("no regions"));
-	// rsas->add(NewlyCreatedLeft, _("newly-created regions before the split"));
-	// rsas->add(NewlyCreatedRight, _("newly-created regions after the split"));
-	rsas->add(NewlyCreatedBoth, _("newly-created regions"));
+	rsas->add(None, _("Clear the Selected Regions"));
+	rsas->add(NewlyCreatedLeft, _("Select only the newly-created regions BEFORE the split point"));
+	rsas->add(NewlyCreatedRight, _("Select only the newly-created regions AFTER the split point"));
+	rsas->add(NewlyCreatedBoth, _("Select the newly-created regions"));
 	// rsas->add(Existing, _("unmodified regions in the existing selection"));
 	// rsas->add(ExistingNewlyCreatedLeft, _("existing selection and newly-created regions before the split"));
 	// rsas->add(ExistingNewlyCreatedRight, _("existing selection and newly-created regions after the split"));
-	rsas->add(ExistingNewlyCreatedBoth, _("existing selection and newly-created regions"));
+	rsas->add(ExistingNewlyCreatedBoth, _("Preserve the existing selection, AND select all newly-created regions"));
 
 	add_option (_("Editor"), rsas);
 
@@ -2736,13 +2757,17 @@ RCOptionEditor::RCOptionEditor ()
 
 		add_option (_("Signal Flow"), new OptionEditorHeading (_("Track and Bus Connections")));
 
-		add_option (_("Signal Flow"),
-				new BoolOption (
+		bo = new BoolOption (
 					"auto-connect-standard-busses",
-					_("Auto-connect master/monitor busses"),
+					_("Auto-connect main output (master or monitor) bus to physical ports"),
 					sigc::mem_fun (*_rc_config, &RCConfiguration::get_auto_connect_standard_busses),
 					sigc::mem_fun (*_rc_config, &RCConfiguration::set_auto_connect_standard_busses)
-					));
+					);
+		add_option (_("Signal Flow"), bo);
+		Gtkmm2ext::UI::instance()->set_tip (bo->tip_widget(),
+			_("<b>When enabled</b> the main output bus is auto-connected to the first N physical ports. "
+				"If the session has a monitor-section, the monitor-bus output is conneced the the hardware playback ports, "
+				"otherwise the master-bus output is directly used for playback."));
 
 		ComboOption<AutoConnectOption>* iac = new ComboOption<AutoConnectOption> (
 				"input-auto-connect",
@@ -2890,33 +2915,6 @@ RCOptionEditor::RCOptionEditor ()
 		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_sound_midi_notes),
 		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_sound_midi_notes)
 		     ));
-
-	ComboOption<std::string>* audition_synth = new ComboOption<std::string> (
-		"midi-audition-synth-uri",
-		_("MIDI Audition Synth (LV2)"),
-		sigc::mem_fun (*_rc_config, &RCConfiguration::get_midi_audition_synth_uri),
-		sigc::mem_fun (*_rc_config, &RCConfiguration::set_midi_audition_synth_uri)
-		);
-
-	audition_synth->add(X_(""), _("None"));
-	PluginInfoList all_plugs;
-	PluginManager& manager (PluginManager::instance());
-#ifdef LV2_SUPPORT
-	all_plugs.insert (all_plugs.end(), manager.lv2_plugin_info().begin(), manager.lv2_plugin_info().end());
-
-	for (PluginInfoList::const_iterator i = all_plugs.begin(); i != all_plugs.end(); ++i) {
-		if (manager.get_status (*i) == PluginManager::Hidden) continue;
-		if (!(*i)->is_instrument()) continue;
-		if ((*i)->type != ARDOUR::LV2) continue;
-		if ((*i)->name.length() > 46) {
-			audition_synth->add((*i)->unique_id, (*i)->name.substr (0, 44) + "...");
-		} else {
-			audition_synth->add((*i)->unique_id, (*i)->name);
-		}
-	}
-#endif
-
-	add_option (_("MIDI"), audition_synth);
 
 	/* Click */
 
@@ -3229,22 +3227,6 @@ RCOptionEditor::RCOptionEditor ()
 
 	add_option (_("Sync"), _sync_framerate);
 
-	add_option (_("Sync/LTC"), new OptionEditorHeading (_("Linear Timecode (LTC) Reader")));
-
-	_ltc_port = new ComboStringOption (
-		"ltc-source-port",
-		_("LTC incoming port"),
-		sigc::mem_fun (*_rc_config, &RCConfiguration::get_ltc_source_port),
-		sigc::mem_fun (*_rc_config, &RCConfiguration::set_ltc_source_port)
-		);
-
-	vector<string> physical_inputs;
-	physical_inputs.push_back (_("None"));
-	AudioEngine::instance()->get_physical_inputs (DataType::AUDIO, physical_inputs);
-	_ltc_port->set_popdown_strings (physical_inputs);
-
-	add_option (_("Sync/LTC"), _ltc_port);
-
 	add_option (_("Sync/LTC"), new OptionEditorHeading (_("Linear Timecode (LTC) Generator")));
 
 	add_option (_("Sync/LTC"),
@@ -3277,7 +3259,6 @@ RCOptionEditor::RCOptionEditor ()
 		 _("Specify the Peak Volume of the generated LTC signal in dBFS. A good value is  0dBu ^= -18dBFS in an EBU calibrated system"));
 
 	add_option (_("Sync/LTC"), _ltc_volume_slider);
-
 
 	add_option (_("Sync/MIDI"), new OptionEditorHeading (_("MIDI Beat Clock (Mclk) Generator")));
 
@@ -3332,7 +3313,7 @@ RCOptionEditor::RCOptionEditor ()
 		     _("Inbound MMC device ID"),
 		     sigc::mem_fun (*_rc_config, &RCConfiguration::get_mmc_receive_device_id),
 		     sigc::mem_fun (*_rc_config, &RCConfiguration::set_mmc_receive_device_id),
-		     0, 128, 1, 10
+		     0, 127, 1, 10
 		     ));
 
 	add_option (_("Sync/MIDI"),
@@ -3341,7 +3322,7 @@ RCOptionEditor::RCOptionEditor ()
 		     _("Outbound MMC device ID"),
 		     sigc::mem_fun (*_rc_config, &RCConfiguration::get_mmc_send_device_id),
 		     sigc::mem_fun (*_rc_config, &RCConfiguration::set_mmc_send_device_id),
-		     0, 128, 1, 10
+		     0, 127, 1, 10
 		     ));
 
 
@@ -3407,6 +3388,23 @@ RCOptionEditor::RCOptionEditor ()
 	add_option (_("Plugins"), bo);
 	Gtkmm2ext::UI::instance()->set_tip (bo->tip_widget(),
 					    _("<b>When enabled</b> plugins will be activated when they are added to tracks/busses. When disabled plugins will be left inactive when they are added to tracks/busses"));
+
+	ComboOption<uint32_t>* lna = new ComboOption<uint32_t> (
+		     "limit-n-automatables",
+		     _("Limit automatable parameters per plugin"),
+		     sigc::mem_fun (*_rc_config, &RCConfiguration::get_limit_n_automatables),
+		     sigc::mem_fun (*_rc_config, &RCConfiguration::set_limit_n_automatables)
+		     );
+	lna->add (0, _("Unlimited"));
+	lna->add (64,  _("64 parameters"));
+	lna->add (128, _("128 parameters"));
+	lna->add (256, _("256 parameters"));
+	lna->add (512, _("512 parameters"));
+	lna->add (999, _("999 parameters"));
+	add_option (_("Plugins"), lna);
+	Gtkmm2ext::UI::instance()->set_tip (lna->tip_widget(),
+					    _("Some Plugins expose an unreasonable amount of control-inputs. This option limits the number of parameters that can are listed as automatable without restricting the number of total controls.\n\nThis reduces lag in the GUI and shortens excessively long drop-down lists for plugins with a large number of control ports.\n\nNote: This only affects newly added plugins and is applied to plugin on session-reload. Already automated parameters are retained."));
+
 
 #if (defined WINDOWS_VST_SUPPORT || defined MACVST_SUPPORT || defined LXVST_SUPPORT)
 	add_option (_("Plugins/VST"), new OptionEditorHeading (_("VST")));
@@ -3804,6 +3802,19 @@ RCOptionEditor::RCOptionEditor ()
 		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_default_narrow_ms)
 		     ));
 
+	ComboOption<uint32_t>* mic = new ComboOption<uint32_t> (
+		     "max-inline-controls",
+		     _("Limit inline-mixer-strip controls per plugin"),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::get_max_inline_controls),
+		     sigc::mem_fun (UIConfiguration::instance(), &UIConfiguration::set_max_inline_controls)
+		     );
+	mic->add (0, _("Unlimited"));
+	mic->add (16,  _("16 parameters"));
+	mic->add (32,  _("32 parameters"));
+	mic->add (64,  _("64 parameters"));
+	mic->add (128, _("128 parameters"));
+	add_option (_("Appearance/Mixer"), mic);
+
 	add_option (_("Appearance/Mixer"), new OptionEditorBlank ());
 
 	add_option (_("Appearance/Toolbar"), new OptionEditorHeading (_("Main Transport Toolbar Items")));
@@ -3998,7 +4009,6 @@ These settings will only take effect after %1 is restarted.\n\
 	//trigger some parameter-changed messages which affect widget-visibility or -sensitivity
 	parameter_changed ("send-ltc");
 	parameter_changed ("sync-source");
-	parameter_changed ("use-monitor-bus");
 	parameter_changed ("open-gui-after-adding-plugin");
 
 	XMLNode* node = ARDOUR_UI::instance()->preferences_settings();
@@ -4028,7 +4038,7 @@ RCOptionEditor::parameter_changed (string const & p)
 		bool const s = Config->get_use_monitor_bus ();
 		if (!s) {
 			/* we can't use this if we don't have a monitor bus */
-			Config->set_solo_control_is_listen_control (false);
+			Config->set_solo_control_is_listen_control (false); // XXX
 		}
 		_solo_control_is_listen_control->set_sensitive (s);
 		_listen_position->set_sensitive (s);

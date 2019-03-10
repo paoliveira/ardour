@@ -49,8 +49,8 @@ public:
 	void run (BufferSet& /*bufs*/, samplepos_t /*start_sample*/, samplepos_t /*end_sample*/, double speed, pframes_t /*nframes*/, bool /*result_required*/);
 	void realtime_handle_transport_stopped ();
 	void realtime_locate ();
-	int overwrite_existing_buffers ();
-	void set_pending_overwrite (bool yn);
+	bool overwrite_existing_buffers ();
+	void set_pending_overwrite ();
 
 	int set_state (const XMLNode&, int version);
 
@@ -63,7 +63,7 @@ public:
 	/* called by the Butler in a non-realtime context */
 
 	int do_refill () {
-		return refill (_mixdown_buffer, _gain_buffer, 0);
+		return refill (_sum_buffer, _mixdown_buffer, _gain_buffer, 0);
 	}
 
 	/** For non-butler contexts (allocates temporary working buffers)
@@ -76,7 +76,7 @@ public:
 		return _do_refill_with_alloc (partial_fill);
 	}
 
-	bool pending_overwrite () const { return _pending_overwrite; }
+	bool pending_overwrite () const;
 
 	// Working buffers for do_refill (butler thread)
 	static void allocate_working_buffers();
@@ -84,8 +84,8 @@ public:
 
 	void adjust_buffering ();
 
-	int can_internal_playback_seek (samplecnt_t distance);
-	int internal_playback_seek (samplecnt_t distance);
+	bool can_internal_playback_seek (sampleoffset_t distance);
+	void internal_playback_seek (sampleoffset_t distance);
 	int seek (samplepos_t sample, bool complete_refill = false);
 
 	static PBD::Signal0<void> Underrun;
@@ -93,9 +93,7 @@ public:
 	void playlist_modified ();
 	void reset_tracker ();
 
-	bool declick_in_progress () const {
-		return _declick_gain != 0; // declick-out
-	}
+	bool declick_in_progress () const;
 
 	static void set_midi_readahead_samples (samplecnt_t samples_ahead) { midi_readahead = samples_ahead; }
 
@@ -125,18 +123,34 @@ protected:
 
 	int add_channel_to (boost::shared_ptr<ChannelList>, uint32_t how_many);
 
+	class DeclickAmp
+	{
+		public:
+			DeclickAmp (samplecnt_t sample_rate);
+
+			void apply_gain (AudioBuffer& buf, samplecnt_t n_samples, const float target);
+
+			float gain () const { return _g; }
+			void set_gain (float g) { _g = g; }
+
+		private:
+			float _a;
+			float _l;
+			float _g;
+	};
+
 private:
 	/** The number of samples by which this diskstream's output should be delayed
 	    with respect to the transport sample.  This is used for latency compensation.
 	*/
 	samplepos_t   overwrite_sample;
-	off_t         overwrite_offset;
-	bool          _pending_overwrite;
+	mutable gint  _pending_overwrite;
 	bool          overwrite_queued;
 	IOChange      input_change_pending;
 	samplepos_t   file_sample[DataType::num_types];
 
-	gain_t        _declick_gain;
+	DeclickAmp     _declick_amp;
+	sampleoffset_t _declick_offs;
 
 	int _do_refill_with_alloc (bool partial_fill);
 
@@ -144,16 +158,20 @@ private:
 	static samplecnt_t midi_readahead;
 	static bool       _no_disk_output;
 
-	int audio_read (Sample* buf, Sample* mixdown_buffer, float* gain_buffer,
+	int audio_read (PBD::PlaybackBuffer<Sample>*,
+	                Sample* sum_buffer,
+	                Sample* mixdown_buffer,
+	                float*  gain_buffer,
 	                samplepos_t& start, samplecnt_t cnt,
 	                int channel, bool reversed);
 	int midi_read (samplepos_t& start, samplecnt_t cnt, bool reversed);
 
+	static Sample* _sum_buffer;
 	static Sample* _mixdown_buffer;
 	static gain_t* _gain_buffer;
 
-	int refill (Sample* mixdown_buffer, float* gain_buffer, samplecnt_t fill_level);
-	int refill_audio (Sample *mixdown_buffer, float *gain_buffer, samplecnt_t fill_level);
+	int refill (Sample* sum_buffer, Sample* mixdown_buffer, float* gain_buffer, samplecnt_t fill_level);
+	int refill_audio (Sample* sum_buffer, Sample *mixdown_buffer, float *gain_buffer, samplecnt_t fill_level);
 	int refill_midi ();
 
 	sampleoffset_t calculate_playback_distance (pframes_t);

@@ -25,7 +25,6 @@
 #include "canvas/ruler.h"
 #include "canvas/types.h"
 #include "canvas/debug.h"
-#include "canvas/utils.h"
 #include "canvas/canvas.h"
 
 using namespace std;
@@ -103,13 +102,13 @@ Ruler::render (Rect const & area, Cairo::RefPtr<Cairo::Context> cr) const
 	}
 
 	Rect self (item_to_window (get()));
-	boost::optional<Rect> i = self.intersection (area);
+	Rect i = self.intersection (area);
 
 	if (!i) {
 		return;
 	}
 
-	Rect intersection (i.get());
+	Rect intersection (i);
 
 	Distance height = self.height();
 
@@ -162,19 +161,19 @@ Ruler::render (Rect const & area, Cairo::RefPtr<Cairo::Context> cr) const
 		}
 
 		switch (m->style) {
-		case Mark::Major:
-                        if (_divide_height >= 0) {
-                                cr->rel_line_to (0, -_divide_height);
-                        } else {
-                                cr->rel_line_to (0, -height);
-                        }
-			break;
-		case Mark::Minor:
-			cr->rel_line_to (0, -height/3.0);
-			break;
-		case Mark::Micro:
-			cr->rel_line_to (0, -height/5.0);
-			break;
+			case Mark::Major:
+				if (_divide_height >= 0) {
+					cr->rel_line_to (0, -_divide_height);
+				} else {
+					cr->rel_line_to (0, -height);
+				}
+				break;
+			case Mark::Minor:
+				cr->rel_line_to (0, -height/3.0);
+				break;
+			case Mark::Micro:
+				cr->rel_line_to (0, -height/5.0);
+				break;
 		}
 		cr->stroke ();
 
@@ -186,31 +185,31 @@ Ruler::render (Rect const & area, Cairo::RefPtr<Cairo::Context> cr) const
 			layout->set_text (m->label);
 			logical = layout->get_pixel_logical_extents ();
 
-                        if (_divide_height >= 0) {
-                                cr->move_to (pos.x + 2.0, self.y0 + _divide_height + logical.get_y() + 2.0); /* 2 pixel padding below divider */
-                        } else {
-                                cr->move_to (pos.x + 2.0, self.y0 + logical.get_y());
-                        }
+			if (_divide_height >= 0) {
+				cr->move_to (pos.x + 2.0, self.y0 + _divide_height + logical.get_y() + 2.0); /* 2 pixel padding below divider */
+			} else {
+				cr->move_to (pos.x + 2.0, self.y0 + logical.get_y() + .5 * (height - logical.get_height()));
+			}
 			layout->show_in_cairo_context (cr);
 		}
 	}
 
-        if (_divide_height >= 0.0) {
+	if (_divide_height >= 0.0) {
 
-                cr->set_line_width (1.0);
+		cr->set_line_width (1.0);
 
-                set_source_rgba (cr, _divider_color_top);
-                cr->move_to (self.x0, self.y0 + _divide_height-1.0+0.5);
-                cr->line_to (self.x1, self.y0 + _divide_height-1.0+0.5);
-                cr->stroke ();
+		Gtkmm2ext::set_source_rgba (cr, _divider_color_top);
+		cr->move_to (self.x0, self.y0 + _divide_height-1.0+0.5);
+		cr->line_to (self.x1, self.y0 + _divide_height-1.0+0.5);
+		cr->stroke ();
 
-                set_source_rgba (cr, _divider_color_bottom);
-                cr->move_to (self.x0, self.y0 + _divide_height+0.5);
-                cr->line_to (self.x1, self.y0 + _divide_height+0.5);
-                cr->stroke ();
+		Gtkmm2ext::set_source_rgba (cr, _divider_color_bottom);
+		cr->move_to (self.x0, self.y0 + _divide_height+0.5);
+		cr->line_to (self.x1, self.y0 + _divide_height+0.5);
+		cr->stroke ();
 
 
-        }
+	}
 
 	/* done! */
 }
@@ -222,7 +221,7 @@ Ruler::set_divide_height (double h)
 }
 
 void
-Ruler::set_divide_colors (Color t, Color b)
+Ruler::set_divide_colors (Gtkmm2ext::Color t, Gtkmm2ext::Color b)
 {
         _divider_color_bottom = b;
         _divider_color_top = t;

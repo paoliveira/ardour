@@ -33,6 +33,7 @@
 #include "ardour/cycles.h"
 #include "ardour/latent.h"
 #include "ardour/libardour_visibility.h"
+#include "ardour/midi_ring_buffer.h"
 #include "ardour/midi_state_tracker.h"
 #include "ardour/parameter_descriptor.h"
 #include "ardour/types.h"
@@ -51,6 +52,7 @@ class PluginInsert;
 class Plugin;
 class PluginInfo;
 class AutomationControl;
+class SessionObject;
 
 typedef boost::shared_ptr<Plugin> PluginPtr;
 typedef boost::shared_ptr<PluginInfo> PluginInfoPtr;
@@ -65,7 +67,7 @@ typedef std::set<uint32_t> PluginOutputConfiguration;
  *
  * Plugins are not used directly in Ardour but always wrapped by a PluginInsert.
  */
-class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public Latent
+class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public HasLatency
 {
   public:
 	Plugin (ARDOUR::AudioEngine&, ARDOUR::Session&);
@@ -102,6 +104,7 @@ class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public Latent
 
 	virtual int get_parameter_descriptor (uint32_t which, ParameterDescriptor&) const = 0;
 	virtual uint32_t nth_parameter (uint32_t which, bool& ok) const = 0;
+	virtual std::string parameter_label (uint32_t which) const;
 	virtual void activate () = 0;
 	virtual void deactivate () = 0;
 	virtual void flush () { deactivate(); activate(); }
@@ -111,9 +114,9 @@ class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public Latent
 	virtual bool inplace_broken() const { return false; }
 
 	virtual int connect_and_run (BufferSet& bufs,
-			framepos_t start, framepos_t end, double speed,
-			ChanMapping in, ChanMapping out,
-			pframes_t nframes, framecnt_t offset);
+			samplepos_t start, samplepos_t end, double speed,
+			ChanMapping const& in, ChanMapping const& out,
+			pframes_t nframes, samplecnt_t offset);
 
 	virtual std::set<Evoral::Parameter> automatable() const = 0;
 	virtual std::string describe_parameter (Evoral::Parameter) = 0;
@@ -132,13 +135,20 @@ class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public Latent
 		IOPortDescription (const std::string& n)
 			: name (n)
 			, is_sidechain (false)
+			, group_name (n)
+			, group_channel (0)
 		{}
 		IOPortDescription (const IOPortDescription &other)
 			: name (other.name)
 			, is_sidechain (other.is_sidechain)
+			, group_name (other.group_name)
+			, group_channel (other.group_channel)
 		{}
 		std::string name;
 		bool is_sidechain;
+
+		std::string group_name;
+		uint32_t group_channel;
 	};
 
 	virtual IOPortDescription describe_io_port (DataType dt, bool input, uint32_t id) const;
@@ -149,6 +159,8 @@ class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public Latent
 	virtual boost::shared_ptr<ScalePoints> get_scale_points(uint32_t /*port_index*/) const {
 		return boost::shared_ptr<ScalePoints>();
 	}
+
+	bool write_immediate_event (size_t size, const uint8_t* buf);
 
 	void realtime_handle_transport_stopped ();
 	void realtime_locate ();
@@ -162,12 +174,24 @@ class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public Latent
 	} Display_Image_Surface;
 
 	virtual bool has_inline_display () { return false; }
+	virtual bool inline_display_in_gui () { return false; }
 	virtual Display_Image_Surface* render_inline_display (uint32_t, uint32_t) { return NULL; }
 	PBD::Signal0<void> QueueDraw;
 
+	virtual bool has_midnam () { return false; }
+	virtual bool read_midnam () { return false; }
+	virtual std::string midnam_model () { return ""; }
+	PBD::Signal0<void> UpdateMidnam;
+	PBD::Signal0<void> UpdatedMidnam;
+
+	virtual bool knows_bank_patch () { return false; }
+	virtual uint32_t bank_patch (uint8_t chn) { return UINT32_MAX; }
+	PBD::Signal1<void, uint8_t> BankPatchChange;
+
 	struct PresetRecord {
 	    PresetRecord () : valid (false) {}
-	    PresetRecord (const std::string& u, const std::string& l, bool s = true) : uri (u), label (l), user (s), valid (true)  {}
+	    PresetRecord (const std::string& u, const std::string& l, bool s = true, const std::string& d = "")
+				: uri (u), label (l), description (d), user (s), valid (true)  {}
 
 	    bool operator!= (PresetRecord const & a) const {
 		    return uri != a.uri || label != a.label;
@@ -175,6 +199,7 @@ class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public Latent
 
 	    std::string uri;
 	    std::string label;
+	    std::string description;
 	    bool user;
 	    bool valid;
 	};
@@ -226,7 +251,7 @@ class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public Latent
 	}
 
 	/** the max possible latency a plugin will have */
-	virtual framecnt_t max_latency () const { return 0; } // TODO = 0, require implementation
+	virtual samplecnt_t max_latency () const { return 0; } // TODO = 0, require implementation
 
 	/** Emitted when a preset is added or removed, respectively */
 	PBD::Signal0<void> PresetAdded;
@@ -242,6 +267,9 @@ class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public Latent
 	 *  changed the settings with respect to any loaded preset.
 	 */
 	PBD::Signal0<void> PresetDirty;
+
+	/** Emitted for preset-load to set a control-port */
+	PBD::Signal2<void, uint32_t, float> PresetPortSetValue;
 
 	virtual bool has_editor () const = 0;
 
@@ -261,6 +289,11 @@ class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public Latent
 
 	PluginInfoPtr get_info() const { return _info; }
 	virtual void set_info (const PluginInfoPtr inf);
+
+	virtual void set_owner (SessionObject* o) { _owner = o; }
+	SessionObject* owner() const { return _owner; }
+
+	void use_for_impulse_analysis () { _for_impulse_analysis = true; }
 
 	ARDOUR::AudioEngine& engine() const { return _engine; }
 	ARDOUR::Session& session() const { return _session; }
@@ -306,6 +339,10 @@ class LIBARDOUR_API Plugin : public PBD::StatefulDestructible, public Latent
 	PBD::Signal1<void,uint32_t> StartTouch;
 	PBD::Signal1<void,uint32_t> EndTouch;
 
+	samplecnt_t signal_latency () const {
+		return plugin_latency ();
+	}
+
 protected:
 
 	friend class PluginInsert;
@@ -314,7 +351,7 @@ protected:
 	/* Called when a parameter of the plugin is changed outside of this
 	 * host's control (typical via a plugin's own GUI/editor)
 	 */
-	void parameter_changed_externally (uint32_t which, float val);
+	virtual void parameter_changed_externally (uint32_t which, float val);
 
 	/* should be overridden by plugin API specific derived types to
 	 * actually implement changing the parameter. The derived type should
@@ -329,18 +366,21 @@ protected:
 	/** Do the actual removal of a preset of the provided name */
 	virtual void do_remove_preset (std::string) = 0;
 
-	ARDOUR::AudioEngine&     _engine;
-	ARDOUR::Session&         _session;
-	PluginInfoPtr            _info;
-	uint32_t                 _cycles;
+	ARDOUR::AudioEngine& _engine;
+	ARDOUR::Session&     _session;
+	PluginInfoPtr        _info;
+	uint32_t             _cycles;
+	SessionObject*       _owner;
+	bool                 _for_impulse_analysis;
+
 	std::map<std::string, PresetRecord> _presets;
 
 private:
 
+	virtual samplecnt_t plugin_latency () const = 0;
+
 	/** Fill _presets with our presets */
 	virtual void find_presets () = 0;
-
-	void update_presets (std::string src_unique_id, Plugin* src );
 
 	/** Add state to an existing XMLNode */
 	virtual void add_state (XMLNode *) const = 0;
@@ -354,6 +394,8 @@ private:
 
 	PBD::ScopedConnection _preset_connection;
 
+	MidiRingBuffer<samplepos_t> _immediate_events;
+
 	void resolve_midi ();
 };
 
@@ -365,10 +407,11 @@ struct PluginPreset {
 		: _pip (pip)
 	{
 		if (preset) {
-			_preset.uri    = preset->uri;
-			_preset.label  = preset->label;
-			_preset.user   = preset->user;
-			_preset.valid  = preset->valid;
+			_preset.uri         = preset->uri;
+			_preset.label       = preset->label;
+			_preset.user        = preset->user;
+			_preset.description = preset->description;
+			_preset.valid       = preset->valid;
 		}
 	}
 };
@@ -394,9 +437,16 @@ class LIBARDOUR_API PluginInfo {
 	std::string unique_id;
 
 	virtual PluginPtr load (Session& session) = 0;
-	virtual bool is_instrument() const;
-	virtual bool needs_midi_input() const { return is_instrument (); }
-	virtual bool in_category (const std::string &) const { return false; }
+
+	/* NOTE: it is possible for a plugin to be an effect AND an instrument.
+	 * override these funcs as necessary to support that.
+	 */
+	virtual bool is_effect () const;
+	virtual bool is_instrument () const;
+	virtual bool is_utility () const;  //this includes things like "generators" and "midi filters"
+	virtual bool is_analyzer () const;
+
+	virtual bool needs_midi_input() const;
 
 	virtual std::vector<Plugin::PresetRecord> get_presets (bool user_only) const = 0;
 

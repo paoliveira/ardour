@@ -26,26 +26,29 @@
 
 #include "ardour/stripable.h"
 
-struct OrderKeys {
+/* This is used to keep numerical tree-order in sync
+ * with Stripable ordering (mixer_ui.cc editor_routes.cc)
+ */
+
+struct TreeOrderKey {
     uint32_t old_display_order;
-    uint32_t new_display_order;
+		boost::shared_ptr<ARDOUR::Stripable> stripable;
 
-	OrderKeys (uint32_t ok, uint32_t nk)
+	TreeOrderKey (uint32_t ok, boost::shared_ptr<ARDOUR::Stripable> s)
 		: old_display_order (ok)
-		, new_display_order (nk) {}
+		, stripable (s)
+	{}
 };
 
-typedef std::vector<OrderKeys> OrderingKeys;
+typedef std::vector<TreeOrderKey> TreeOrderKeys;
 
-struct SortByNewDisplayOrder {
-    bool operator() (const OrderKeys& a, const OrderKeys& b) {
-	    return a.new_display_order < b.new_display_order;
-    }
-};
-
-struct StripablePresentationInfoSorter {
-	bool operator() (boost::shared_ptr<ARDOUR::Stripable> a, boost::shared_ptr<ARDOUR::Stripable> b) {
-		return a->presentation_info().order () < b->presentation_info().order ();
+struct TreeOrderKeySorter
+{
+	bool operator() (const TreeOrderKey& ok_a, const TreeOrderKey& ok_b)
+	{
+		boost::shared_ptr<ARDOUR::Stripable> const& a = ok_a.stripable;
+		boost::shared_ptr<ARDOUR::Stripable> const& b = ok_b.stripable;
+		return ARDOUR::Stripable::Sorter () (a, b);
 	}
 };
 

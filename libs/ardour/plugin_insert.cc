@@ -25,7 +25,7 @@
 
 #include "pbd/failed_constructor.h"
 #include "pbd/xml++.h"
-#include "pbd/convert.h"
+#include "pbd/types_convert.h"
 
 #include "ardour/audio_buffer.h"
 #include "ardour/automation_list.h"
@@ -50,6 +50,10 @@
 #include "ardour/lxvst_plugin.h"
 #endif
 
+#ifdef MACVST_SUPPORT
+#include "ardour/mac_vst_plugin.h"
+#endif
+
 #ifdef AUDIOUNIT_SUPPORT
 #include "ardour/audio_unit.h"
 #endif
@@ -70,8 +74,8 @@ PluginInsert::PluginInsert (Session& s, boost::shared_ptr<Plugin> plug)
 	, _sc_playback_latency (0)
 	, _sc_capture_latency (0)
 	, _plugin_signal_latency (0)
-	, _signal_analysis_collected_nframes(0)
-	, _signal_analysis_collect_nframes_max(0)
+	, _signal_analysis_collect_nsamples (0)
+	, _signal_analysis_collect_nsamples_max (0)
 	, _configured (false)
 	, _no_inplace (false)
 	, _strict_io (false)
@@ -79,6 +83,7 @@ PluginInsert::PluginInsert (Session& s, boost::shared_ptr<Plugin> plug)
 	, _maps_from_state (false)
 	, _latency_changed (false)
 	, _bypass_port (UINT32_MAX)
+	, _stat_reset (0)
 {
 	/* the first is the master */
 
@@ -94,6 +99,9 @@ PluginInsert::PluginInsert (Session& s, boost::shared_ptr<Plugin> plug)
 
 PluginInsert::~PluginInsert ()
 {
+	for (CtrlOutMap::const_iterator i = _control_outputs.begin(); i != _control_outputs.end(); ++i) {
+		boost::dynamic_pointer_cast<ReadOnlyControl>(i->second)->drop_references ();
+	}
 }
 
 void
@@ -198,10 +206,12 @@ PluginInsert::add_sidechain (uint32_t n_audio, uint32_t n_midi)
 		return false;
 	}
 	std::ostringstream n;
-	if (n_audio > 0 || n_midi > 0) {
-		n << "Sidechain " << Session::next_name_id ();
-	} else {
+	if (n_audio == 0 && n_midi == 0) {
 		n << "TO BE RESET FROM XML";
+	} else if (owner()) {
+		n << "SC " << owner()->name() << "/" << name() << " " << Session::next_name_id ();
+	} else {
+		n << "tobeRenamed";
 	}
 	SideChain *sc = new SideChain (_session, n.str ());
 	_sidechain = boost::shared_ptr<SideChain> (sc);
@@ -230,21 +240,22 @@ PluginInsert::del_sidechain ()
 }
 
 void
-PluginInsert::set_sidechain_latency (uint32_t capture, uint32_t playback)
+PluginInsert::update_sidechain_name ()
 {
-	if (_sidechain &&
-			(_sc_playback_latency != playback || _sc_capture_latency != capture)) {
-		_sc_capture_latency = capture;
-		_sc_playback_latency = playback;
-		LatencyRange pl; pl.min = pl.max = playback;
-		LatencyRange cl; cl.min = cl.max = capture;
-		DEBUG_TRACE (DEBUG::Latency, string_compose ("%1: capture %2 playback; %3\n", _sidechain->name (), capture, playback));
-		PortSet& ps (_sidechain->input ()->ports ());
-		for (PortSet::iterator p = ps.begin(); p != ps.end(); ++p) {
-			p->set_private_latency_range (pl, true);
-			p->set_private_latency_range (cl, false);
-		}
+	if (!_sidechain) {
+		return;
 	}
+
+	std::ostringstream n;
+
+	n << "SC ";
+	if (owner()) {
+		n << owner()->name() << "/";
+	}
+
+	n << name() << " " << Session::next_name_id ();
+
+	_sidechain->set_name (n.str());
 }
 
 void
@@ -257,7 +268,7 @@ PluginInsert::control_list_automation_state_changed (Evoral::Parameter which, Au
 			= boost::dynamic_pointer_cast<AutomationControl>(control (which));
 
 	if (c && s != Off) {
-		_plugins[0]->set_parameter (which.id(), c->list()->eval (_session.transport_frame()));
+		_plugins[0]->set_parameter (which.id(), c->list()->eval (_session.transport_sample()));
 	}
 }
 
@@ -388,19 +399,16 @@ PluginInsert::has_no_audio_inputs() const
 	return _plugins[0]->get_info()->n_inputs.n_audio() == 0;
 }
 
-framecnt_t
+samplecnt_t
 PluginInsert::plugin_latency () const {
 	return _plugins.front()->signal_latency ();
 }
 
 bool
-PluginInsert::needs_midi_input() const
+PluginInsert::is_instrument() const
 {
 	PluginInfoPtr pip = _plugins[0]->get_info();
-	if (pip->needs_midi_input ()) {
-		return true;
-	}
-	return pip->n_inputs.n_midi() != 0 && pip->n_outputs.n_audio() != 0;
+	return (pip->is_instrument ());
 }
 
 bool
@@ -426,7 +434,14 @@ PluginInsert::has_output_presets (ChanCount in, ChanCount out)
 			return false;
 		}
 	}
-	if (!needs_midi_input ()) {
+
+	if (ppc.size () == 1 && ppc.find (0) != ppc.end () && !_plugins[0]->get_info ()->reconfigurable_io ()) {
+		// some midi-sequencer (e.g. QMidiArp) or other midi-out plugin
+		// pretending to be an "Instrument"
+		return false;
+	}
+
+	if (!is_instrument ()) {
 			return false;
 	}
 	return true;
@@ -440,23 +455,27 @@ PluginInsert::create_automatable_parameters ()
 	boost::shared_ptr<Plugin> plugin = _plugins.front();
 	set<Evoral::Parameter> a = _plugins.front()->automatable ();
 
+	const uint32_t limit_automatables = Config->get_limit_n_automatables ();
+
 	for (uint32_t i = 0; i < plugin->parameter_count(); ++i) {
-		if (!plugin->parameter_is_control (i) || !plugin->parameter_is_input (i)) {
+		if (!plugin->parameter_is_control (i)) {
 			continue;
 		}
-		Evoral::Parameter param (PluginAutomation, 0, i);
 
 		ParameterDescriptor desc;
 		plugin->get_parameter_descriptor(i, desc);
 
+		if (!plugin->parameter_is_input (i)) {
+			_control_outputs[i] = boost::shared_ptr<ReadOnlyControl> (new ReadOnlyControl (plugin, desc, i));
+			continue;
+		}
+		Evoral::Parameter param (PluginAutomation, 0, i);
+
 		const bool automatable = a.find(param) != a.end();
 
-		if (automatable) {
-			can_automate (param);
-		}
 		boost::shared_ptr<AutomationList> list(new AutomationList(param, desc));
 		boost::shared_ptr<AutomationControl> c (new PluginControl(this, param, desc, list));
-		if (!automatable) {
+		if (!automatable || (limit_automatables > 0 && i > limit_automatables)) {
 			c->set_flags (Controllable::Flag ((int)c->flags() | Controllable::NotAutomatable));
 		}
 		add_control (c);
@@ -473,11 +492,30 @@ PluginInsert::create_automatable_parameters ()
 			if (Variant::type_is_numeric(desc.datatype)) {
 				list = boost::shared_ptr<AutomationList>(new AutomationList(param, desc));
 			}
-			add_control (boost::shared_ptr<AutomationControl> (new PluginPropertyControl(this, param, desc, list)));
+			boost::shared_ptr<AutomationControl> c (new PluginPropertyControl(this, param, desc, list));
+			if (!Variant::type_is_numeric(desc.datatype)) {
+				c->set_flags (Controllable::Flag ((int)c->flags() | Controllable::NotAutomatable));
+			}
+			add_control (c);
 		}
 	}
 
 	_bypass_port = plugin->designated_bypass_port ();
+
+	/* special case VST effSetBypass */
+	if (_bypass_port == UINT32_MAX -1) {
+		// emulate VST Bypass
+		Evoral::Parameter param (PluginAutomation, 0, _bypass_port);
+		ParameterDescriptor desc;
+		desc.label = _("Plugin Enable");
+		desc.toggled  = true;
+		desc.normal = 1;
+		desc.lower  = 0;
+		desc.upper  = 1;
+		boost::shared_ptr<AutomationList> list(new AutomationList(param, desc));
+		boost::shared_ptr<AutomationControl> c (new PluginControl(this, param, desc, list));
+		add_control (c);
+	}
 
 	if (_bypass_port != UINT32_MAX) {
 		boost::shared_ptr<AutomationControl> ac = automation_control (Evoral::Parameter (PluginAutomation, 0, _bypass_port));
@@ -486,7 +524,9 @@ PluginInsert::create_automatable_parameters ()
 			ac->Changed.connect_same_thread (*this, boost::bind (&PluginInsert::enable_changed, this));
 		}
 	}
+	plugin->PresetPortSetValue.connect_same_thread (*this, boost::bind (&PluginInsert::preset_load_set_value, this, _1, _2));
 }
+
 /** Called when something outside of this host has modified a plugin
  * parameter. Responsible for propagating the change to two places:
  *
@@ -534,6 +574,10 @@ PluginInsert::parameter_changed_externally (uint32_t which, float val)
 			(*i)->set_parameter (which, val);
 		}
 	}
+	boost::shared_ptr<Plugin> iasp = _impulseAnalysisPlugin.lock();
+	if (iasp) {
+		iasp->set_parameter (which, val);
+	}
 }
 
 int
@@ -549,8 +593,56 @@ PluginInsert::set_block_size (pframes_t nframes)
 }
 
 void
+PluginInsert::automation_run (samplepos_t start, pframes_t nframes, bool only_active)
+{
+	// XXX does not work when rolling backwards
+	if (_loop_location && nframes > 0) {
+		const samplepos_t loop_start = _loop_location->start ();
+		const samplepos_t loop_end   = _loop_location->end ();
+		const samplecnt_t looplen    = loop_end - loop_start;
+
+		samplecnt_t remain = nframes;
+		samplepos_t start_pos = start;
+
+		while (remain > 0) {
+			if (start_pos >= loop_end) {
+				sampleoffset_t start_off = (start_pos - loop_start) % looplen;
+				start_pos = loop_start + start_off;
+			}
+			samplecnt_t move = std::min ((samplecnt_t)nframes, loop_end - start_pos);
+
+			Automatable::automation_run (start_pos, move, only_active);
+			remain -= move;
+			start_pos += move;
+		}
+		return;
+	}
+	Automatable::automation_run (start, nframes, only_active);
+}
+
+bool
+PluginInsert::find_next_event (double now, double end, Evoral::ControlEvent& next_event, bool only_active) const
+{
+	bool rv = Automatable::find_next_event (now, end, next_event, only_active);
+
+	if (_loop_location && now < end) {
+		if (rv) {
+			end = ceil (next_event.when);
+		}
+		const samplepos_t loop_end = _loop_location->end ();
+		assert (now < loop_end); // due to map_loop_range ()
+		if (end > loop_end) {
+			next_event.when = loop_end;
+			rv = true;
+		}
+	}
+	return rv;
+}
+
+void
 PluginInsert::activate ()
 {
+	_timing_stats.reset ();
 	for (Plugins::iterator i = _plugins.begin(); i != _plugins.end(); ++i) {
 		(*i)->activate ();
 	}
@@ -563,8 +655,10 @@ PluginInsert::activate ()
 	if (!owner ()) {
 		return;
 	}
-	if (_plugin_signal_latency != signal_latency ()) {
-		_plugin_signal_latency = signal_latency ();
+
+	const samplecnt_t l = effective_latency ();
+	if (_plugin_signal_latency != l) {
+		_plugin_signal_latency = l;
 		latency_changed ();
 	}
 }
@@ -572,13 +666,21 @@ PluginInsert::activate ()
 void
 PluginInsert::deactivate ()
 {
+#ifdef MIXBUS
+	if (is_nonbypassable ()) {
+		return;
+	}
+#endif
+	_timing_stats.reset ();
 	Processor::deactivate ();
 
 	for (Plugins::iterator i = _plugins.begin(); i != _plugins.end(); ++i) {
 		(*i)->deactivate ();
 	}
-	if (_plugin_signal_latency != signal_latency ()) {
-		_plugin_signal_latency = signal_latency ();
+
+	const samplecnt_t l = effective_latency ();
+	if (_plugin_signal_latency != l) {
+		_plugin_signal_latency = l;
 		latency_changed ();
 	}
 }
@@ -605,7 +707,27 @@ PluginInsert::enable (bool yn)
 			activate ();
 		}
 		boost::shared_ptr<AutomationControl> ac = automation_control (Evoral::Parameter (PluginAutomation, 0, _bypass_port));
-		ac->set_value (yn ? 1.0 : 0.0, Controllable::NoGroup);
+		const double val = yn ? 1.0 : 0.0;
+		ac->set_value (val, Controllable::NoGroup);
+
+#ifdef ALLOW_VST_BYPASS_TO_FAIL // yet unused, see also vst_plugin.cc
+		/* special case VST.. bypass may fail */
+		if (_bypass_port == UINT32_MAX - 1) {
+			/* check if bypass worked */
+			if (ac->get_value () != val) {
+				warning << _("PluginInsert: VST Bypass failed, falling back to host bypass.") << endmsg;
+				// set plugin to enabled (not-byassed)
+				ac->set_value (1.0, Controllable::NoGroup);
+				// ..and use host-provided hard-bypass
+				if (yn) {
+					activate ();
+				} else {
+					deactivate ();
+				}
+				return;
+			}
+		}
+#endif
 		ActiveChanged ();
 	}
 }
@@ -645,8 +767,37 @@ PluginInsert::bypassable_changed ()
 	BypassableChanged ();
 }
 
+bool
+PluginInsert::write_immediate_event (size_t size, const uint8_t* buf)
+{
+	bool rv = true;
+	for (Plugins::iterator i = _plugins.begin(); i != _plugins.end(); ++i) {
+		if (!(*i)->write_immediate_event (size, buf)) {
+			rv = false;
+		}
+	}
+	return rv;
+}
+
 void
-PluginInsert::inplace_silence_unconnected (BufferSet& bufs, const PinMappings& out_map, framecnt_t nframes, framecnt_t offset) const
+PluginInsert::preset_load_set_value (uint32_t p, float v)
+{
+	boost::shared_ptr<AutomationControl> ac = automation_control (Evoral::Parameter(PluginAutomation, 0, p));
+	if (!ac) {
+		return;
+	}
+
+	if (ac->automation_state() & Play) {
+		return;
+	}
+
+	start_touch (p);
+	ac->set_value (v, Controllable::NoGroup);
+	end_touch (p);
+}
+
+void
+PluginInsert::inplace_silence_unconnected (BufferSet& bufs, const PinMappings& out_map, samplecnt_t nframes, samplecnt_t offset) const
 {
 	// TODO optimize: store "unconnected" in a fixed set.
 	// it only changes on reconfiguration.
@@ -679,16 +830,16 @@ PluginInsert::inplace_silence_unconnected (BufferSet& bufs, const PinMappings& o
 }
 
 void
-PluginInsert::connect_and_run (BufferSet& bufs, framepos_t start, framepos_t end, double speed, pframes_t nframes, framecnt_t offset, bool with_auto)
+PluginInsert::connect_and_run (BufferSet& bufs, samplepos_t start, samplepos_t end, double speed, pframes_t nframes, samplecnt_t offset, bool with_auto)
 {
-	// TODO: atomically copy maps & _no_inplace
-	PinMappings in_map (_in_map);
-	PinMappings out_map (_out_map);
-	ChanMapping thru_map (_thru_map);
-	if (_mapping_changed) { // ToDo use a counters, increment until match.
+	if (_mapping_changed) { // ToDo use a counter, increment until match
 		_no_inplace = check_inplace ();
 		_mapping_changed = false;
 	}
+	// TODO: atomically copy maps & _no_inplace
+	PinMappings in_map (_in_map); // TODO Split case below overrides, use const& in_map
+	PinMappings const& out_map (_out_map);
+	ChanMapping const& thru_map (_thru_map);
 
 	if (_latency_changed) {
 		/* delaylines are configured with the max possible latency (as reported by the plugin)
@@ -717,11 +868,11 @@ PluginInsert::connect_and_run (BufferSet& bufs, framepos_t start, framepos_t end
 				continue;
 			}
 			bool valid;
-			uint32_t first_idx = in_map[0].get (*t, 0, &valid);
+			uint32_t first_idx = in_map.p(0).get (*t, 0, &valid);
 			assert (valid && first_idx == 0); // check_inplace ensures this
 			/* copy the first stream's buffer contents to the others */
 			for (uint32_t i = 1; i < natural_input_streams ().get (*t); ++i) {
-				uint32_t idx = in_map[0].get (*t, i, &valid);
+				uint32_t idx = in_map.p(0).get (*t, i, &valid);
 				if (valid) {
 					assert (idx == 0);
 					bufs.get (*t, i).read_from (bufs.get (*t, first_idx), nframes, offset, offset);
@@ -736,59 +887,36 @@ PluginInsert::connect_and_run (BufferSet& bufs, framepos_t start, framepos_t end
 	bufs.set_count(ChanCount::max(bufs.count(), _configured_out));
 
 	if (with_auto) {
-
-		uint32_t n = 0;
-
-		for (Controls::iterator li = controls().begin(); li != controls().end(); ++li, ++n) {
-
-			boost::shared_ptr<AutomationControl> c
-				= boost::dynamic_pointer_cast<AutomationControl>(li->second);
-
-			if (c->list() && c->automation_playback()) {
+		boost::shared_ptr<ControlList> cl = _automated_controls.reader ();
+		for (ControlList::const_iterator ci = cl->begin(); ci != cl->end(); ++ci) {
+			AutomationControl& c = *(ci->get());
+			boost::shared_ptr<const Evoral::ControlList> clist (c.list());
+			/* we still need to check for Touch and Latch */
+			if (clist && (static_cast<AutomationList const&> (*clist)).automation_playback ()) {
 				bool valid;
-
-				const float val = c->list()->rt_safe_eval (start, valid);
-
+				const float val = c.list()->rt_safe_eval (start, valid);
 				if (valid) {
-					/* This is the ONLY place where we are
-					 *  allowed to call
-					 *  AutomationControl::set_value_unchecked(). We
-					 *  know that the control is in
-					 *  automation playback mode, so no
-					 *  check on writable() is required
-					 *  (which must be done in AutomationControl::set_value()
-					 *
-					 */
-					c->set_value_unchecked(val);
+					c.set_value_unchecked(val);
 				}
-
 			}
 		}
 	}
 
-	/* Calculate if, and how many frames we need to collect for analysis */
-	framecnt_t collect_signal_nframes = (_signal_analysis_collect_nframes_max -
-					     _signal_analysis_collected_nframes);
-	if (nframes < collect_signal_nframes) { // we might not get all frames now
-		collect_signal_nframes = nframes;
-	}
+	if (_signal_analysis_collect_nsamples_max > 0) {
+		if (_signal_analysis_collect_nsamples < _signal_analysis_collect_nsamples_max) {
+			samplecnt_t ns = std::min ((samplecnt_t) nframes, _signal_analysis_collect_nsamples_max - _signal_analysis_collect_nsamples);
+			_signal_analysis_inputs.set_count (ChanCount (DataType::AUDIO, input_streams().n_audio()));
 
-	if (collect_signal_nframes > 0) {
-		// collect input
-		//std::cerr << "collect input, bufs " << bufs.count().n_audio() << " count,  " << bufs.available().n_audio() << " available" << std::endl;
-		//std::cerr << "               streams " << internal_input_streams().n_audio() << std::endl;
-		//std::cerr << "filling buffer with " << collect_signal_nframes << " frames at " << _signal_analysis_collected_nframes << std::endl;
-
-		_signal_analysis_inputs.set_count(input_streams());
-
-		for (uint32_t i = 0; i < input_streams().n_audio(); ++i) {
-			_signal_analysis_inputs.get_audio(i).read_from (
-				bufs.get_audio(i),
-				collect_signal_nframes,
-				_signal_analysis_collected_nframes); // offset is for target buffer
+			for (uint32_t i = 0; i < input_streams().n_audio(); ++i) {
+				_signal_analysis_inputs.get_audio(i).read_from (
+						bufs.get_audio(i),
+						ns,
+						_signal_analysis_collect_nsamples);
+			}
 		}
-
+		_signal_analysis_collect_nsamples += nframes;
 	}
+
 #ifdef MIXBUS
 	if (is_channelstrip ()) {
 		if (_configured_in.n_audio() > 0) {
@@ -816,7 +944,7 @@ PluginInsert::connect_and_run (BufferSet& bufs, framepos_t start, framepos_t end
 			for (DataType::iterator t = DataType::begin(); t != DataType::end(); ++t) {
 				for (uint32_t out = 0; out < natural_output_streams().get (*t); ++out) {
 					bool valid;
-					uint32_t out_idx = out_map[pc].get (*t, out, &valid);
+					uint32_t out_idx = out_map.p(pc).get (*t, out, &valid);
 					if (valid) {
 						used_outputs.set (*t, out_idx, 1); // mark as used
 					}
@@ -848,14 +976,14 @@ PluginInsert::connect_and_run (BufferSet& bufs, framepos_t start, framepos_t end
 		for (Plugins::iterator i = _plugins.begin(); i != _plugins.end(); ++i, ++pc) {
 
 			ARDOUR::ChanMapping i_in_map (natural_input_streams());
-			ARDOUR::ChanMapping i_out_map (out_map[pc]);
+			ARDOUR::ChanMapping i_out_map (out_map.p(pc));
 			ARDOUR::ChanCount mapped;
 
 			/* map inputs sequentially */
 			for (DataType::iterator t = DataType::begin(); t != DataType::end(); ++t) {
 				for (uint32_t in = 0; in < natural_input_streams().get (*t); ++in) {
 					bool valid;
-					uint32_t in_idx = in_map[pc].get (*t, in, &valid);
+					uint32_t in_idx = in_map.p(pc).get (*t, in, &valid);
 					uint32_t m = mapped.get (*t);
 					if (valid) {
 						inplace_bufs.get (*t, m).read_from (bufs.get (*t, in_idx), nframes, offset, offset);
@@ -901,7 +1029,7 @@ PluginInsert::connect_and_run (BufferSet& bufs, framepos_t start, framepos_t end
 		/* in-place processing */
 		uint32_t pc = 0;
 		for (Plugins::iterator i = _plugins.begin(); i != _plugins.end(); ++i, ++pc) {
-			if ((*i)->connect_and_run(bufs, start, end, speed, in_map[pc], out_map[pc], nframes, offset)) {
+			if ((*i)->connect_and_run(bufs, start, end, speed, in_map.p(pc), out_map.p(pc), nframes, offset)) {
 				deactivate ();
 			}
 		}
@@ -909,35 +1037,36 @@ PluginInsert::connect_and_run (BufferSet& bufs, framepos_t start, framepos_t end
 		inplace_silence_unconnected (bufs, _out_map, nframes, offset);
 	}
 
-	if (collect_signal_nframes > 0) {
-		// collect output
-		//std::cerr << "       output, bufs " << bufs.count().n_audio() << " count,  " << bufs.available().n_audio() << " available" << std::endl;
-		//std::cerr << "               streams " << internal_output_streams().n_audio() << std::endl;
+	const samplecnt_t l = effective_latency ();
+	if (_plugin_signal_latency != l) {
+		_plugin_signal_latency = l;
+		_signal_analysis_collect_nsamples = 0;
+		latency_changed ();
+	}
 
-		_signal_analysis_outputs.set_count(output_streams());
+	if (_signal_analysis_collect_nsamples > l) {
+		assert (_signal_analysis_collect_nsamples_max > 0);
+		assert (_signal_analysis_collect_nsamples >= nframes);
+		samplecnt_t sample_pos = _signal_analysis_collect_nsamples - nframes;
+
+		samplecnt_t dst_off = sample_pos >= l ? sample_pos - l : 0;
+		samplecnt_t src_off = sample_pos >= l ? 0 : l - sample_pos;
+		samplecnt_t n_copy = std::min ((samplecnt_t)nframes, _signal_analysis_collect_nsamples - l);
+		n_copy = std::min (n_copy, _signal_analysis_collect_nsamples_max - dst_off);
+
+		_signal_analysis_outputs.set_count (ChanCount (DataType::AUDIO, output_streams().n_audio()));
 
 		for (uint32_t i = 0; i < output_streams().n_audio(); ++i) {
 			_signal_analysis_outputs.get_audio(i).read_from(
-				bufs.get_audio(i),
-				collect_signal_nframes,
-				_signal_analysis_collected_nframes); // offset is for target buffer
+				bufs.get_audio(i), n_copy, dst_off, src_off);
 		}
 
-		_signal_analysis_collected_nframes += collect_signal_nframes;
-		assert(_signal_analysis_collected_nframes <= _signal_analysis_collect_nframes_max);
+		if (dst_off + n_copy == _signal_analysis_collect_nsamples_max) {
+			_signal_analysis_collect_nsamples_max = 0;
+			_signal_analysis_collect_nsamples     = 0;
 
-		if (_signal_analysis_collected_nframes == _signal_analysis_collect_nframes_max) {
-			_signal_analysis_collect_nframes_max = 0;
-			_signal_analysis_collected_nframes   = 0;
-
-			AnalysisDataGathered(&_signal_analysis_inputs,
-					     &_signal_analysis_outputs);
+			AnalysisDataGathered (&_signal_analysis_inputs, &_signal_analysis_outputs);
 		}
-	}
-
-	if (_plugin_signal_latency != signal_latency ()) {
-		_plugin_signal_latency = signal_latency ();
-		latency_changed ();
 	}
 }
 
@@ -947,14 +1076,13 @@ PluginInsert::bypass (BufferSet& bufs, pframes_t nframes)
 	/* bypass the plugin(s) not the whole processor.
 	 * -> use mappings just like connect_and_run
 	 */
-
-	// TODO: atomically copy maps & _no_inplace
-	const ChanMapping in_map (no_sc_input_map ());
-	const ChanMapping out_map (output_map ());
 	if (_mapping_changed) {
 		_no_inplace = check_inplace ();
 		_mapping_changed = false;
 	}
+	// TODO: atomically copy maps & _no_inplace
+	ChanMapping const& in_map (no_sc_input_map ());
+	ChanMapping const& out_map (output_map ());
 
 	bufs.set_count(ChanCount::max(bufs.count(), _configured_internal));
 	bufs.set_count(ChanCount::max(bufs.count(), _configured_out));
@@ -1053,50 +1181,75 @@ PluginInsert::bypass (BufferSet& bufs, pframes_t nframes)
 }
 
 void
-PluginInsert::silence (framecnt_t nframes, framepos_t start_frame)
+PluginInsert::silence (samplecnt_t nframes, samplepos_t start_sample)
 {
+	automation_run (start_sample, nframes, true); // evaluate automation only
+
 	if (!active ()) {
+		// XXX delaybuffers need to be offset by nframes
 		return;
 	}
 
 	_delaybuffers.flush ();
 
-	ChanMapping in_map (natural_input_streams ());
-	ChanMapping out_map (natural_output_streams ());
+	const ChanMapping in_map (natural_input_streams ());
+	const ChanMapping out_map (natural_output_streams ());
 	ChanCount maxbuf = ChanCount::max (natural_input_streams (), natural_output_streams());
 #ifdef MIXBUS
 	if (is_channelstrip ()) {
 		if (_configured_in.n_audio() > 0) {
-			_plugins.front()->connect_and_run (_session.get_scratch_buffers (maxbuf, true), start_frame, start_frame + nframes, 1.0, in_map, out_map, nframes, 0);
+			_plugins.front()->connect_and_run (_session.get_scratch_buffers (maxbuf, true), start_sample, start_sample + nframes, 1.0, in_map, out_map, nframes, 0);
 		}
 	} else
 #endif
 	for (Plugins::iterator i = _plugins.begin(); i != _plugins.end(); ++i) {
-		(*i)->connect_and_run (_session.get_scratch_buffers (maxbuf, true), start_frame, start_frame + nframes, 1.0, in_map, out_map, nframes, 0);
+		(*i)->connect_and_run (_session.get_scratch_buffers (maxbuf, true), start_sample, start_sample + nframes, 1.0, in_map, out_map, nframes, 0);
 	}
 }
 
 void
-PluginInsert::run (BufferSet& bufs, framepos_t start_frame, framepos_t end_frame, double speed, pframes_t nframes, bool)
+PluginInsert::run (BufferSet& bufs, samplepos_t start_sample, samplepos_t end_sample, double speed, pframes_t nframes, bool)
 {
 	if (_sidechain) {
 		// collect sidechain input for complete cycle (!)
 		// TODO we need delaylines here for latency compensation
-		_sidechain->run (bufs, start_frame, end_frame, speed, nframes, true);
+		_sidechain->run (bufs, start_sample, end_sample, speed, nframes, true);
+	}
+
+	if (g_atomic_int_compare_and_exchange (&_stat_reset, 1, 0)) {
+		_timing_stats.reset ();
 	}
 
 	if (_pending_active) {
+#if defined MIXBUS && defined NDEBUG
+		if (!is_channelstrip ()) {
+			_timing_stats.start ();
+		}
+#else
+		_timing_stats.start ();
+#endif
 		/* run as normal if we are active or moving from inactive to active */
 
 		if (_session.transport_rolling() || _session.bounce_processing()) {
-			automation_run (bufs, start_frame, end_frame, speed, nframes);
+			automate_and_run (bufs, start_sample, end_sample, speed, nframes);
 		} else {
 			Glib::Threads::Mutex::Lock lm (control_lock(), Glib::Threads::TRY_LOCK);
-			connect_and_run (bufs, start_frame, end_frame, speed, nframes, 0, lm.locked());
+			connect_and_run (bufs, start_sample, end_sample, speed, nframes, 0, lm.locked());
 		}
+#if defined MIXBUS && defined NDEBUG
+		if (!is_channelstrip ()) {
+			_timing_stats.update ();
+		}
+#else
+		_timing_stats.update ();
+#endif
 
 	} else {
+		_timing_stats.reset ();
+		// XXX should call ::silence() to run plugin(s) for consistent load.
+		// We'll need to change this anyway when bypass can be automated
 		bypass (bufs, nframes);
+		automation_run (start_sample, nframes, true); // evaluate automation only
 		_delaybuffers.flush ();
 	}
 
@@ -1108,10 +1261,10 @@ PluginInsert::run (BufferSet& bufs, framepos_t start_frame, framepos_t end_frame
 }
 
 void
-PluginInsert::automation_run (BufferSet& bufs, framepos_t start, framepos_t end, double speed, pframes_t nframes)
+PluginInsert::automate_and_run (BufferSet& bufs, samplepos_t start, samplepos_t end, double speed, pframes_t nframes)
 {
 	Evoral::ControlEvent next_event (0, 0.0f);
-	framecnt_t offset = 0;
+	samplecnt_t offset = 0;
 
 	Glib::Threads::Mutex::Lock lm (control_lock(), Glib::Threads::TRY_LOCK);
 
@@ -1119,6 +1272,9 @@ PluginInsert::automation_run (BufferSet& bufs, framepos_t start, framepos_t end,
 		connect_and_run (bufs, start, end, speed, nframes, offset, false);
 		return;
 	}
+
+	/* map start back into loop-range, adjust end */
+	map_loop_range (start, end);
 
 	if (!find_next_event (start, end, next_event) || _plugins.front()->requires_fixed_sized_buffers()) {
 
@@ -1130,13 +1286,15 @@ PluginInsert::automation_run (BufferSet& bufs, framepos_t start, framepos_t end,
 
 	while (nframes) {
 
-		framecnt_t cnt = min (((framecnt_t) ceil (next_event.when) - start), (framecnt_t) nframes);
+		samplecnt_t cnt = min (((samplecnt_t) ceil (next_event.when) - start), (samplecnt_t) nframes);
 
 		connect_and_run (bufs, start, start + cnt, speed, cnt, offset, true); // XXX (start + cnt) * speed
 
 		nframes -= cnt;
 		offset += cnt;
 		start += cnt;
+
+		map_loop_range (start, end);
 
 		if (!find_next_event (start, end, next_event)) {
 			break;
@@ -1242,6 +1400,9 @@ PluginInsert::plugin_factory (boost::shared_ptr<Plugin> other)
 #ifdef LXVST_SUPPORT
 	boost::shared_ptr<LXVSTPlugin> lxvp;
 #endif
+#ifdef MACVST_SUPPORT
+	boost::shared_ptr<MacVSTPlugin> mvp;
+#endif
 #ifdef AUDIOUNIT_SUPPORT
 	boost::shared_ptr<AUPlugin> ap;
 #endif
@@ -1261,6 +1422,10 @@ PluginInsert::plugin_factory (boost::shared_ptr<Plugin> other)
 #ifdef LXVST_SUPPORT
 	} else if ((lxvp = boost::dynamic_pointer_cast<LXVSTPlugin> (other)) != 0) {
 		return boost::shared_ptr<Plugin> (new LXVSTPlugin (*lxvp));
+#endif
+#ifdef MACVST_SUPPORT
+	} else if ((mvp = boost::dynamic_pointer_cast<MacVSTPlugin> (other)) != 0) {
+		return boost::shared_ptr<Plugin> (new MacVSTPlugin (*mvp));
 #endif
 #ifdef AUDIOUNIT_SUPPORT
 	} else if ((ap = boost::dynamic_pointer_cast<AUPlugin> (other)) != 0) {
@@ -1364,6 +1529,9 @@ PluginInsert::no_sc_input_map () const
 			}
 		}
 	}
+	if (has_midi_thru ()) {
+		rv.set (DataType::MIDI, 0, 0);
+	}
 	return rv;
 }
 
@@ -1408,12 +1576,34 @@ PluginInsert::has_midi_thru () const
 	return false;
 }
 
-#ifdef MIXBUS
 bool
-PluginInsert::is_channelstrip () const {
+PluginInsert::is_channelstrip () const
+{
+#ifdef MIXBUS
 	return _plugins.front()->is_channelstrip();
-}
+#else
+	return false;
 #endif
+}
+
+bool
+PluginInsert::is_nonbypassable () const
+{
+#ifdef MIXBUS
+	return _plugins.front()->is_nonbypassable ();
+#else
+	return false;
+#endif
+}
+
+bool
+PluginInsert::show_on_ctrl_surface () const
+{
+	if (is_channelstrip () || !is_nonbypassable ()) {
+		return false;
+	}
+	return true;
+}
 
 bool
 PluginInsert::check_inplace ()
@@ -1483,7 +1673,7 @@ PluginInsert::check_inplace ()
 		 *
 		 * but allows     in-port 1 -> sink-pin 2  ||  source-pin 2 -> out port 1
 		 */
-		ChanMapping in_map (input_map ());
+		ChanMapping const& in_map (input_map ());
 		const ChanMapping::Mappings out_m (output_map ().mappings ());
 		for (ChanMapping::Mappings::const_iterator t = out_m.begin (); t != out_m.end () && inplace_ok; ++t) {
 			for (ChanMapping::TypeMapping::const_iterator c = (*t).second.begin (); c != (*t).second.end () ; ++c) {
@@ -1805,11 +1995,9 @@ PluginInsert::configure_io (ChanCount in, ChanCount out)
 			&& _in_map.size() == _out_map.size()
 			&& _in_map.size() == get_count ()
 		 ) {
-		assert (_maps_from_state == false);
 		/* If the configuration has not changed, keep the mapping */
 		mapping_changed = sanitize_maps ();
 	} else if (_match.custom_cfg && _configured) {
-		assert (_maps_from_state == false);
 		/* don't touch the map in manual mode */
 		mapping_changed = sanitize_maps ();
 	} else {
@@ -1903,15 +2091,20 @@ PluginInsert::configure_io (ChanCount in, ChanCount out)
 	_delaybuffers.configure (_configured_out, _plugins.front ()->max_latency ());
 	_latency_changed = true;
 
-	// we don't know the analysis window size, so we must work with the
-	// current buffer size here. each request for data fills in these
-	// buffers and the analyser makes sure it gets enough data for the
-	// analysis window
-	session().ensure_buffer_set (_signal_analysis_inputs, in);
-	_signal_analysis_inputs.set_count (in);
+	/* we don't know the analysis window size, so we must work with the
+	 * current buffer size here. each request for data fills in these
+	 * buffers and the analyser makes sure it gets enough data for the
+	 * analysis window. We also only analyze audio, so we can ignore
+	 * MIDI buffers.
+	 */
+	ChanCount cc_analysis_in (DataType::AUDIO, in.n_audio());
+	ChanCount cc_analysis_out (DataType::AUDIO, out.n_audio());
 
-	session().ensure_buffer_set (_signal_analysis_outputs, out);
-	_signal_analysis_outputs.set_count (out);
+	session().ensure_buffer_set (_signal_analysis_inputs, cc_analysis_in);
+	_signal_analysis_inputs.set_count (cc_analysis_in);
+
+	session().ensure_buffer_set (_signal_analysis_outputs, cc_analysis_out);
+	_signal_analysis_outputs.set_count (cc_analysis_out);
 
 	// std::cerr << "set counts to i" << in.n_audio() << "/o" << out.n_audio() << std::endl;
 
@@ -1994,7 +2187,7 @@ PluginInsert::internal_can_support_io_configuration (ChanCount const & inx, Chan
 		m.strict_io = true;
 
 		/* special case MIDI instruments */
-		if (needs_midi_input ()) {
+		if (is_instrument ()) {
 			// output = midi-bypass + at most master-out channels.
 			ChanCount max_out (DataType::AUDIO, 2); // TODO use master-out
 			max_out.set (DataType::MIDI, out.get(DataType::MIDI));
@@ -2258,19 +2451,13 @@ PluginInsert::automatic_can_support_io_configuration (ChanCount const & inx, Cha
 
 
 XMLNode&
-PluginInsert::get_state ()
+PluginInsert::state ()
 {
-	return state (true);
-}
+	XMLNode& node = Processor::state ();
 
-XMLNode&
-PluginInsert::state (bool full)
-{
-	XMLNode& node = Processor::state (full);
-
-	node.add_property("type", _plugins[0]->state_node_name());
-	node.add_property("unique-id", _plugins[0]->unique_id());
-	node.add_property("count", string_compose("%1", _plugins.size()));
+	node.set_property("type", _plugins[0]->state_node_name());
+	node.set_property("unique-id", _plugins[0]->unique_id());
+	node.set_property("count", (uint32_t)_plugins.size());
 
 	/* remember actual i/o configuration (for later placeholder
 	 * in case the plugin goes missing) */
@@ -2280,7 +2467,7 @@ PluginInsert::state (bool full)
 	node.add_child_nocopy (* _preset_out.state (X_("PresetOutput")));
 
 	/* save custom i/o config */
-	node.add_property("custom", _custom_cfg ? "yes" : "no");
+	node.set_property("custom", _custom_cfg);
 	for (uint32_t pc = 0; pc < get_count(); ++pc) {
 		char tmp[128];
 		snprintf (tmp, sizeof(tmp), "InputMap-%d", pc);
@@ -2291,7 +2478,7 @@ PluginInsert::state (bool full)
 	node.add_child_nocopy (* _thru_map.state ("ThruMap"));
 
 	if (_sidechain) {
-		node.add_child_nocopy (_sidechain->state (full));
+		node.add_child_nocopy (_sidechain->get_state ());
 	}
 
 	_plugins[0]->set_insert_id(this->id());
@@ -2316,19 +2503,19 @@ PluginInsert::set_control_ids (const XMLNode& node, int version)
 
 	for (iter = nlist.begin(); iter != nlist.end(); ++iter) {
 		if ((*iter)->name() == Controllable::xml_node_name) {
-			XMLProperty const * prop;
 
 			uint32_t p = (uint32_t)-1;
 #ifdef LV2_SUPPORT
-			if ((prop = (*iter)->property (X_("symbol"))) != 0) {
+			std::string str;
+			if ((*iter)->get_property (X_("symbol"), str)) {
 				boost::shared_ptr<LV2Plugin> lv2plugin = boost::dynamic_pointer_cast<LV2Plugin> (_plugins[0]);
 				if (lv2plugin) {
-					p = lv2plugin->port_index(prop->value().c_str());
+					p = lv2plugin->port_index(str.c_str());
 				}
 			}
 #endif
-			if (p == (uint32_t)-1 && (prop = (*iter)->property (X_("parameter"))) != 0) {
-				p = atoi (prop->value());
+			if (p == (uint32_t)-1) {
+				(*iter)->get_property (X_("parameter"), p);
 			}
 
 			if (p != (uint32_t)-1) {
@@ -2357,40 +2544,38 @@ PluginInsert::set_state(const XMLNode& node, int version)
 	XMLNodeList nlist = node.children();
 	XMLNodeIterator niter;
 	XMLPropertyList plist;
-	XMLProperty const * prop;
 	ARDOUR::PluginType type;
 
-	if ((prop = node.property ("type")) == 0) {
+	std::string str;
+	if (!node.get_property ("type", str)) {
 		error << _("XML node describing plugin is missing the `type' field") << endmsg;
 		return -1;
 	}
 
-	if (prop->value() == X_("ladspa") || prop->value() == X_("Ladspa")) { /* handle old school sessions */
+	if (str == X_("ladspa") || str == X_("Ladspa")) { /* handle old school sessions */
 		type = ARDOUR::LADSPA;
-	} else if (prop->value() == X_("lv2")) {
+	} else if (str == X_("lv2")) {
 		type = ARDOUR::LV2;
-	} else if (prop->value() == X_("windows-vst")) {
+	} else if (str == X_("windows-vst")) {
 		type = ARDOUR::Windows_VST;
-	} else if (prop->value() == X_("lxvst")) {
+	} else if (str == X_("lxvst")) {
 		type = ARDOUR::LXVST;
-	} else if (prop->value() == X_("audiounit")) {
+	} else if (str == X_("mac-vst")) {
+		type = ARDOUR::MacVST;
+	} else if (str == X_("audiounit")) {
 		type = ARDOUR::AudioUnit;
-	} else if (prop->value() == X_("luaproc")) {
+	} else if (str == X_("luaproc")) {
 		type = ARDOUR::Lua;
 	} else {
-		error << string_compose (_("unknown plugin type %1 in plugin insert state"),
-				  prop->value())
-		      << endmsg;
+		error << string_compose (_("unknown plugin type %1 in plugin insert state"), str) << endmsg;
 		return -1;
 	}
 
-	prop = node.property ("unique-id");
+	XMLProperty const * prop = node.property ("unique-id");
 
 	if (prop == 0) {
 #ifdef WINDOWS_VST_SUPPORT
-		/* older sessions contain VST plugins with only an "id" field.
-		 */
-
+		/* older sessions contain VST plugins with only an "id" field.  */
 		if (type == ARDOUR::Windows_VST) {
 			prop = node.property ("id");
 		}
@@ -2398,11 +2583,11 @@ PluginInsert::set_state(const XMLNode& node, int version)
 
 #ifdef LXVST_SUPPORT
 		/*There shouldn't be any older sessions with linuxVST support.. but anyway..*/
-
 		if (type == ARDOUR::LXVST) {
 			prop = node.property ("id");
 		}
 #endif
+
 		/* recheck  */
 
 		if (prop == 0) {
@@ -2412,20 +2597,31 @@ PluginInsert::set_state(const XMLNode& node, int version)
 	}
 
 	boost::shared_ptr<Plugin> plugin = find_plugin (_session, prop->value(), type);
+	bool any_vst = false;
 
-	/* treat linux and windows VST plugins equivalent if they have the same uniqueID
+	/* treat VST plugins equivalent if they have the same uniqueID
 	 * allow to move sessions windows <> linux */
 #ifdef LXVST_SUPPORT
-	if (plugin == 0 && type == ARDOUR::Windows_VST) {
+	if (plugin == 0 && (type == ARDOUR::Windows_VST || type == ARDOUR::MacVST)) {
 		type = ARDOUR::LXVST;
 		plugin = find_plugin (_session, prop->value(), type);
+		if (plugin) { any_vst = true; }
 	}
 #endif
 
 #ifdef WINDOWS_VST_SUPPORT
-	if (plugin == 0 && type == ARDOUR::LXVST) {
+	if (plugin == 0 && (type == ARDOUR::LXVST || type == ARDOUR::MacVST)) {
 		type = ARDOUR::Windows_VST;
 		plugin = find_plugin (_session, prop->value(), type);
+		if (plugin) { any_vst = true; }
+	}
+#endif
+
+#ifdef MACVST_SUPPORT
+	if (plugin == 0 && (type == ARDOUR::Windows_VST || type == ARDOUR::LXVST)) {
+		type = ARDOUR::MacVST;
+		plugin = find_plugin (_session, prop->value(), type);
+		if (plugin) { any_vst = true; }
 	}
 #endif
 
@@ -2472,9 +2668,7 @@ PluginInsert::set_state(const XMLNode& node, int version)
 		set_control_ids (node, version);
 	}
 
-	if ((prop = node.property ("count")) != 0) {
-		sscanf (prop->value().c_str(), "%u", &count);
-	}
+	node.get_property ("count", count);
 
 	if (_plugins.size() != count) {
 		for (uint32_t n = 1; n < count; ++n) {
@@ -2487,9 +2681,7 @@ PluginInsert::set_state(const XMLNode& node, int version)
 	PBD::ID new_id = this->id();
 	PBD::ID old_id = this->id();
 
-	if ((prop = node.property ("id")) != 0) {
-		old_id = prop->value ();
-	}
+	node.get_property ("id", old_id);
 
 	for (niter = nlist.begin(); niter != nlist.end(); ++niter) {
 
@@ -2497,7 +2689,9 @@ PluginInsert::set_state(const XMLNode& node, int version)
 		   and set all plugins to the same state.
 		*/
 
-		if ((*niter)->name() == plugin->state_node_name()) {
+		if (   ((*niter)->name() == plugin->state_node_name())
+		    || (any_vst && ((*niter)->name() == "lxvst" || (*niter)->name() == "windows-vst" || (*niter)->name() == "mac-vst"))
+		   ) {
 
 			for (Plugins::iterator i = _plugins.begin(); i != _plugins.end(); ++i) {
 				/* Plugin state can include external files which are named after the ID.
@@ -2523,6 +2717,14 @@ PluginInsert::set_state(const XMLNode& node, int version)
 				}
 			}
 
+			/* when copying plugin state, notify UI */
+			for (Controls::const_iterator li = controls().begin(); li != controls().end(); ++li) {
+				boost::shared_ptr<PBD::Controllable> c = boost::dynamic_pointer_cast<PBD::Controllable> (li->second);
+				if (c) {
+					c->Changed (false, Controllable::NoGroup); /* EMIT SIGNAL */
+				}
+			}
+
 			break;
 		}
 	}
@@ -2544,9 +2746,7 @@ PluginInsert::set_state(const XMLNode& node, int version)
 		set_parameter_state_2X (node, version);
 	}
 
-	if ((prop = node.property (X_("custom"))) != 0) {
-		_custom_cfg = string_is_affirmative (prop->value());
-	}
+	node.get_property (X_("custom"), _custom_cfg);
 
 	uint32_t in_maps = 0;
 	uint32_t out_maps = 0;
@@ -2586,9 +2786,17 @@ PluginInsert::set_state(const XMLNode& node, int version)
 		// sidechain is a Processor (IO)
 		if ((*i)->name () ==  Processor::state_node_name) {
 			if (!_sidechain) {
-				add_sidechain (0);
+				if (regenerate_xml_or_string_ids ()) {
+					add_sidechain_from_xml (**i, version);
+				} else {
+					add_sidechain (0);
+				}
 			}
-			_sidechain->set_state (**i, version);
+			if (!regenerate_xml_or_string_ids ()) {
+				_sidechain->set_state (**i, version);
+			} else {
+				update_sidechain_name ();
+			}
 		}
 	}
 
@@ -2618,6 +2826,15 @@ PluginInsert::update_id (PBD::ID id)
 }
 
 void
+PluginInsert::set_owner (SessionObject* o)
+{
+	Processor::set_owner (o);
+	for (Plugins::iterator i = _plugins.begin(); i != _plugins.end(); ++i) {
+		(*i)->set_owner (o);
+	}
+}
+
+void
 PluginInsert::set_state_dir (const std::string& d)
 {
 	// state() only saves the state of the first plugin
@@ -2639,10 +2856,8 @@ PluginInsert::set_parameter_state_2X (const XMLNode& node, int version)
 		}
 
 		XMLNodeList cnodes;
-		XMLProperty const * cprop;
 		XMLNodeConstIterator iter;
 		XMLNode *child;
-		const char *port;
 		uint32_t port_id;
 
 		cnodes = (*niter)->children ("port");
@@ -2651,14 +2866,10 @@ PluginInsert::set_parameter_state_2X (const XMLNode& node, int version)
 
 			child = *iter;
 
-			if ((cprop = child->property("number")) != 0) {
-				port = cprop->value().c_str();
-			} else {
+			if (!child->get_property("number", port_id)) {
 				warning << _("PluginInsert: Auto: no ladspa port number") << endmsg;
 				continue;
 			}
-
-			sscanf (port, "%" PRIu32, &port_id);
 
 			if (port_id >= _plugins[0]->parameter_count()) {
 				warning << _("PluginInsert: Auto: port id out of range") << endmsg;
@@ -2671,30 +2882,6 @@ PluginInsert::set_parameter_state_2X (const XMLNode& node, int version)
 			if (c && c->alist()) {
 				if (!child->children().empty()) {
 					c->alist()->set_state (*child->children().front(), version);
-
-					/* In some cases 2.X saves lists with min_yval and max_yval
-					   being FLT_MIN and FLT_MAX respectively.  This causes problems
-					   in A3 because these min/max values are used to compute
-					   where GUI control points should be drawn.  If we see such
-					   values, `correct' them to the min/max of the appropriate
-					   parameter.
-					*/
-
-					float min_y = c->alist()->get_min_y ();
-					float max_y = c->alist()->get_max_y ();
-
-					ParameterDescriptor desc;
-					_plugins.front()->get_parameter_descriptor (port_id, desc);
-
-					if (min_y == FLT_MIN) {
-						min_y = desc.lower;
-					}
-
-					if (max_y == FLT_MAX) {
-						max_y = desc.upper;
-					}
-
-					c->alist()->set_yrange (min_y, max_y);
 				}
 			} else {
 				error << string_compose (_("PluginInsert: automatable control %1 not found - ignored"), port_id) << endmsg;
@@ -2707,6 +2894,16 @@ PluginInsert::set_parameter_state_2X (const XMLNode& node, int version)
 	}
 }
 
+boost::shared_ptr<ReadOnlyControl>
+PluginInsert::control_output (uint32_t num) const
+{
+	CtrlOutMap::const_iterator i = _control_outputs.find (num);
+	if (i == _control_outputs.end ()) {
+		return boost::shared_ptr<ReadOnlyControl> ();
+	} else {
+		return (*i).second;
+	}
+}
 
 string
 PluginInsert::describe_parameter (Evoral::Parameter param)
@@ -2722,17 +2919,13 @@ PluginInsert::describe_parameter (Evoral::Parameter param)
 	return Automatable::describe_parameter(param);
 }
 
-ARDOUR::framecnt_t
+ARDOUR::samplecnt_t
 PluginInsert::signal_latency() const
 {
 	if (!_pending_active) {
 		return 0;
 	}
-	if (_user_latency) {
-		return _user_latency;
-	}
-
-	return _plugins[0]->signal_latency ();
+	return plugin_latency ();
 }
 
 ARDOUR::PluginType
@@ -2749,7 +2942,6 @@ PluginInsert::PluginControl::PluginControl (PluginInsert*                     p,
 	, _plugin (p)
 {
 	if (alist()) {
-		alist()->reset_default (desc.normal);
 		if (desc.toggled) {
 			list->set_interpolation(Evoral::ControlList::Discrete);
 		}
@@ -2784,15 +2976,12 @@ PluginInsert::PluginControl::catch_up_with_external_value (double user_val)
 XMLNode&
 PluginInsert::PluginControl::get_state ()
 {
-	stringstream ss;
-
 	XMLNode& node (AutomationControl::get_state());
-	ss << parameter().id();
-	node.add_property (X_("parameter"), ss.str());
+	node.set_property (X_("parameter"), parameter().id());
 #ifdef LV2_SUPPORT
 	boost::shared_ptr<LV2Plugin> lv2plugin = boost::dynamic_pointer_cast<LV2Plugin> (_plugin->_plugins[0]);
 	if (lv2plugin) {
-		node.add_property (X_("symbol"), lv2plugin->port_symbol (parameter().id()));
+		node.set_property (X_("symbol"), lv2plugin->port_symbol (parameter().id()));
 	}
 #endif
 
@@ -2819,10 +3008,6 @@ PluginInsert::PluginPropertyControl::PluginPropertyControl (PluginInsert*       
 	: AutomationControl (p->session(), param, desc, list)
 	, _plugin (p)
 {
-	if (alist()) {
-		alist()->set_yrange (desc.lower, desc.upper);
-		alist()->reset_default (desc.normal);
-	}
 }
 
 void
@@ -2849,11 +3034,8 @@ PluginInsert::PluginPropertyControl::actually_set_value (double user_val, Contro
 XMLNode&
 PluginInsert::PluginPropertyControl::get_state ()
 {
-	stringstream ss;
-
 	XMLNode& node (AutomationControl::get_state());
-	ss << parameter().id();
-	node.add_property (X_("property"), ss.str());
+	node.set_property (X_("property"), parameter().id());
 	node.remove_property (X_("value"));
 
 	return node;
@@ -2874,6 +3056,7 @@ PluginInsert::get_impulse_analysis_plugin()
 		// during init() -- most notably block_size..
 		// not great.
 		ret = plugin_factory(_plugins[0]);
+		ret->use_for_impulse_analysis ();
 		ChanCount out (internal_output_streams ());
 		if (ret->get_info ()->reconfigurable_io ()) {
 			// populate get_info ()->n_inputs and ->n_outputs
@@ -2882,6 +3065,7 @@ PluginInsert::get_impulse_analysis_plugin()
 			assert (out == internal_output_streams ());
 		}
 		ret->configure_io (internal_input_streams (), out);
+		ret->set_owner (_owner);
 		_impulseAnalysisPlugin = ret;
 	} else {
 		ret = _impulseAnalysisPlugin.lock();
@@ -2891,15 +3075,23 @@ PluginInsert::get_impulse_analysis_plugin()
 }
 
 void
-PluginInsert::collect_signal_for_analysis (framecnt_t nframes)
+PluginInsert::collect_signal_for_analysis (samplecnt_t nframes)
 {
+	if (_signal_analysis_collect_nsamples_max != 0
+			|| _signal_analysis_collect_nsamples  != 0) {
+		return;
+	}
+
 	// called from outside the audio thread, so this should be safe
 	// only do audio as analysis is (currently) only for audio plugins
 	_signal_analysis_inputs.ensure_buffers (DataType::AUDIO, input_streams().n_audio(),  nframes);
 	_signal_analysis_outputs.ensure_buffers (DataType::AUDIO, output_streams().n_audio(), nframes);
 
-	_signal_analysis_collected_nframes   = 0;
-	_signal_analysis_collect_nframes_max = nframes;
+	/* these however should not be set while processing,
+	 * however in the given order, this should be fine.
+	 */
+	_signal_analysis_collect_nsamples     = 0;
+	_signal_analysis_collect_nsamples_max = nframes;
 }
 
 /** Add a plugin to our list */
@@ -2907,6 +3099,7 @@ void
 PluginInsert::add_plugin (boost::shared_ptr<Plugin> plugin)
 {
 	plugin->set_insert_id (this->id());
+	plugin->set_owner (_owner);
 
 	if (_plugins.empty()) {
 		/* first (and probably only) plugin instance - connect to relevant signals */
@@ -2927,7 +3120,7 @@ PluginInsert::add_plugin (boost::shared_ptr<Plugin> plugin)
 			}
 		}
 	}
-#if (defined WINDOWS_VST_SUPPORT || defined LXVST_SUPPORT)
+#if (defined WINDOWS_VST_SUPPORT || defined LXVST_SUPPORT || defined MACVST_SUPPORT)
 	boost::shared_ptr<VSTPlugin> vst = boost::dynamic_pointer_cast<VSTPlugin> (plugin);
 	if (vst) {
 		vst->set_insert (this, _plugins.size ());
@@ -2935,6 +3128,42 @@ PluginInsert::add_plugin (boost::shared_ptr<Plugin> plugin)
 #endif
 
 	_plugins.push_back (plugin);
+}
+
+void
+PluginInsert::add_sidechain_from_xml (const XMLNode& node, int version)
+{
+	if (version < 3000) {
+		return;
+	}
+
+	XMLNodeList nlist = node.children();
+
+	if (nlist.size() == 0) {
+		return;
+	}
+
+	uint32_t audio = 0;
+	uint32_t midi = 0;
+
+	XMLNodeConstIterator it = nlist.front()->children().begin();
+	for ( ; it != nlist.front()->children().end(); ++ it) {
+		if ((*it)->name() == "Port") {
+			DataType type(DataType::NIL);
+			(*it)->get_property ("type", type);
+			if (type == DataType::AUDIO) {
+				++audio;
+			} else if (type == DataType::MIDI) {
+				++midi;
+			}
+		}
+	}
+
+	ChanCount in_cc = ChanCount();
+	in_cc.set (DataType::AUDIO, audio);
+	in_cc.set (DataType::MIDI, midi);
+
+	add_sidechain (audio, midi);
 }
 
 bool
@@ -2946,6 +3175,12 @@ PluginInsert::load_preset (ARDOUR::Plugin::PresetRecord pr)
 			ok = false;
 		}
 	}
+
+	boost::shared_ptr<Plugin> iasp = _impulseAnalysisPlugin.lock();
+	if (iasp) {
+		iasp->load_preset (pr);
+	}
+
 	return ok;
 }
 
@@ -2978,7 +3213,10 @@ PluginInsert::latency_changed ()
 {
 	// this is called in RT context, LatencyChanged is emitted after run()
 	_latency_changed = true;
-	// XXX This also needs a proper API not an owner() hack.
+	LatencyChanged (); /* EMIT SIGNAL */
+	// XXX This needs a proper API not an owner() hack:
+	// TODO Route should subscribe to LatencyChanged() and forward it
+	// to the session as processor_latency_changed.
 	assert (owner ());
 	static_cast<Route*>(owner ())->processor_latency_changed (); /* EMIT SIGNAL */
 }
@@ -2986,19 +3224,47 @@ PluginInsert::latency_changed ()
 void
 PluginInsert::start_touch (uint32_t param_id)
 {
-        boost::shared_ptr<AutomationControl> ac = automation_control (Evoral::Parameter (PluginAutomation, 0, param_id));
-        if (ac) {
-                ac->start_touch (session().audible_frame());
-        }
+	boost::shared_ptr<AutomationControl> ac = automation_control (Evoral::Parameter (PluginAutomation, 0, param_id));
+	if (ac) {
+		// ToDo subtract _plugin_signal_latency  from audible_sample() when rolling, assert > 0
+		ac->start_touch (session().audible_sample());
+	}
 }
 
 void
 PluginInsert::end_touch (uint32_t param_id)
 {
-        boost::shared_ptr<AutomationControl> ac = automation_control (Evoral::Parameter (PluginAutomation, 0, param_id));
-        if (ac) {
-                ac->stop_touch (true, session().audible_frame());
-        }
+	boost::shared_ptr<AutomationControl> ac = automation_control (Evoral::Parameter (PluginAutomation, 0, param_id));
+	if (ac) {
+		// ToDo subtract _plugin_signal_latency  from audible_sample() when rolling, assert > 0
+		ac->stop_touch (session().audible_sample());
+	}
+}
+
+bool
+PluginInsert::provides_stats () const
+{
+#if defined MIXBUS && defined NDEBUG
+	if (is_channelstrip () || !display_to_user ()) {
+		return false;
+	}
+#endif
+	return true;
+}
+
+bool
+PluginInsert::get_stats (uint64_t& min, uint64_t& max, double& avg, double& dev) const
+{
+	/* TODO: consider taking a try/lock: Don't run concurrently with
+	 * TimingStats::update, TimingStats::reset.
+	 */
+	return _timing_stats.get_stats (min, max, avg, dev);
+}
+
+void
+PluginInsert::clear_stats ()
+{
+	g_atomic_int_set (&_stat_reset, 1);
 }
 
 std::ostream& operator<<(std::ostream& o, const ARDOUR::PluginInsert::Match& m)

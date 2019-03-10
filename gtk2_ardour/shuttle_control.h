@@ -21,21 +21,23 @@
 
 #include <gtkmm/drawingarea.h>
 
-#include "gtkmm2ext/binding_proxy.h"
+#include "pbd/controllable.h"
+
+#include "ardour/session_handle.h"
+#include "ardour/types.h"
+
 #include "gtkmm2ext/cairo_widget.h"
 
-#include "pbd/controllable.h"
-#include "ardour/session_handle.h"
+#include "widgets/ardour_button.h"
+#include "widgets/binding_proxy.h"
 
 namespace Gtk {
 	class Menu;
 }
 
-#include "ardour/types.h"
-
 class ShuttleControl : public CairoWidget, public ARDOUR::SessionHandlePtr
 {
-  public:
+public:
 	ShuttleControl ();
 	~ShuttleControl ();
 
@@ -49,8 +51,8 @@ class ShuttleControl : public CairoWidget, public ARDOUR::SessionHandlePtr
 		void set_value (double, PBD::Controllable::GroupControlDisposition group_override);
 		double get_value (void) const;
 
-                double lower() const { return -1.0; }
-                double upper() const { return  1.0; }
+		double lower() const { return -1.0; }
+		double upper() const { return  1.0; }
 
 		ShuttleControl& sc;
 	};
@@ -58,7 +60,9 @@ class ShuttleControl : public CairoWidget, public ARDOUR::SessionHandlePtr
 	boost::shared_ptr<ShuttleControllable> controllable() const { return _controllable; }
 	void set_colors ();
 
-  protected:
+	ArdourWidgets::ArdourButton* info_button () { return &_info_button; }
+
+protected:
 	bool _hovering;
 	float  shuttle_max_speed;
 	float  last_speed_displayed;
@@ -71,19 +75,12 @@ class ShuttleControl : public CairoWidget, public ARDOUR::SessionHandlePtr
 	cairo_pattern_t* shine_pattern;
 	ARDOUR::microseconds_t last_shuttle_request;
 	PBD::ScopedConnection parameter_connection;
-	Gtk::Menu*        shuttle_unit_menu;
-	Gtk::Menu*        shuttle_style_menu;
-	Gtk::Menu*        shuttle_context_menu;
-	BindingProxy      binding_proxy;
-	Glib::RefPtr<Pango::Layout> left_text;
-	Glib::RefPtr<Pango::Layout> right_text;
-	Pango::AttrList text_attributes;
-	Pango::AttrColor* text_color;
+	ArdourWidgets::ArdourButton _info_button;
+	Gtk::Menu*                  shuttle_context_menu;
+	ArdourWidgets::BindingProxy binding_proxy;
 	float bg_r, bg_g, bg_b;
 	void build_shuttle_context_menu ();
-	void show_shuttle_context_menu ();
 	void shuttle_style_changed();
-	void shuttle_unit_clicked ();
 	void set_shuttle_max_speed (float);
 	void reset_speed ();
 
@@ -94,13 +91,13 @@ class ShuttleControl : public CairoWidget, public ARDOUR::SessionHandlePtr
 	bool on_scroll_event (GdkEventScroll*);
 	bool on_motion_notify_event(GdkEventMotion*);
 
-	void render (cairo_t *, cairo_rectangle_t*);
+	void render (Cairo::RefPtr<Cairo::Context> const&, cairo_rectangle_t*);
 
 	void on_size_allocate (Gtk::Allocation&);
 	bool on_query_tooltip (int, int, bool, const Glib::RefPtr<Gtk::Tooltip>&);
 
-        gint mouse_shuttle (double x, bool force);
-        void use_shuttle_fract (bool force, bool zero_ok = false);
+	gint mouse_shuttle (double x, bool force);
+	void use_shuttle_fract (bool force, bool zero_ok = false);
 	void parameter_changed (std::string);
 
 	void set_shuttle_units (ARDOUR::ShuttleUnits);

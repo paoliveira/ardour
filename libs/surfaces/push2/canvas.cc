@@ -17,17 +17,22 @@
 
 */
 
+#include <vector>
+
 #include <cairomm/region.h>
 #include <cairomm/surface.h>
 #include <cairomm/context.h>
 
 #include "pbd/compose.h"
+#include "pbd/error.h"
 
 #include "ardour/debug.h"
 
 #include "canvas.h"
 #include "layout.h"
 #include "push2.h"
+
+#include "pbd/i18n.h"
 
 #ifdef __APPLE__
 #define Rect ArdourCanvas::Rect
@@ -43,26 +48,26 @@ Push2Canvas::Push2Canvas (Push2& pr, int c, int r)
 	: p2 (pr)
 	, _cols (c)
 	, _rows (r)
-	, frame_buffer (Cairo::ImageSurface::create (Cairo::FORMAT_ARGB32, _cols, _rows))
+	, sample_buffer (Cairo::ImageSurface::create (Cairo::FORMAT_ARGB32, _cols, _rows))
 {
-	context = Cairo::Context::create (frame_buffer);
+	context = Cairo::Context::create (sample_buffer);
 	expose_region = Cairo::Region::create ();
 
-	device_frame_buffer = new uint16_t[pixel_area()];
-	memset (device_frame_buffer, 0, sizeof (uint16_t) * pixel_area());
+	device_sample_buffer = new uint16_t[pixel_area()];
+	memset (device_sample_buffer, 0, sizeof (uint16_t) * pixel_area());
 
-	frame_header[0] = 0xef;
-	frame_header[1] = 0xcd;
-	frame_header[2] = 0xab;
-	frame_header[3] = 0x89;
+	sample_header[0] = 0xef;
+	sample_header[1] = 0xcd;
+	sample_header[2] = 0xab;
+	sample_header[3] = 0x89;
 
-	memset (&frame_header[4], 0, 12);
+	memset (&sample_header[4], 0, 12);
 }
 
 Push2Canvas::~Push2Canvas ()
 {
-	delete [] device_frame_buffer;
-	device_frame_buffer = 0;
+	delete [] device_sample_buffer;
+	device_sample_buffer = 0;
 }
 
 bool
@@ -71,15 +76,15 @@ Push2Canvas::vblank ()
 	/* re-render dirty areas, if any */
 
 	if (expose ()) {
-		/* something rendered, update device_frame_buffer */
-		blit_to_device_frame_buffer ();
+		/* something rendered, update device_sample_buffer */
+		blit_to_device_sample_buffer ();
 
 #undef RENDER_LAYOUTS
 #ifdef RENDER_LAYOUTS
 		if (p2.current_layout()) {
 			std::string s = p2.current_layout()->name();
 			s += ".png";
-			frame_buffer->write_to_png (s);
+			sample_buffer->write_to_png (s);
 		}
 #endif
 	}
@@ -90,11 +95,11 @@ Push2Canvas::vblank ()
 
 	/* transfer to device */
 
-	if ((err = libusb_bulk_transfer (p2.usb_handle(), 0x01, frame_header, sizeof (frame_header), &transferred, timeout_msecs))) {
+	if ((err = libusb_bulk_transfer (p2.usb_handle(), 0x01, sample_header, sizeof (sample_header), &transferred, timeout_msecs))) {
 		return false;
 	}
 
-	if ((err = libusb_bulk_transfer (p2.usb_handle(), 0x01, (uint8_t*) device_frame_buffer, 2 * pixel_area (), &transferred, timeout_msecs))) {
+	if ((err = libusb_bulk_transfer (p2.usb_handle(), 0x01, (uint8_t*) device_sample_buffer, 2 * pixel_area (), &transferred, timeout_msecs))) {
 		return false;
 	}
 
@@ -166,24 +171,24 @@ Push2Canvas::expose ()
 	return true;
 }
 
-/** render host-side frame buffer (a Cairo ImageSurface) to the current
- * device-side frame buffer. The device frame buffer will be pushed to the
+/** render host-side sample buffer (a Cairo ImageSurface) to the current
+ * device-side sample buffer. The device sample buffer will be pushed to the
  * device on the next call to vblank()
  */
 
 int
-Push2Canvas::blit_to_device_frame_buffer ()
+Push2Canvas::blit_to_device_sample_buffer ()
 {
 	/* ensure that all drawing has been done before we fetch pixel data */
 
-	frame_buffer->flush ();
+	sample_buffer->flush ();
 
 	const int stride = 3840; /* bytes per row for Cairo::FORMAT_ARGB32 */
-	const uint8_t* data = frame_buffer->get_data ();
+	const uint8_t* data = sample_buffer->get_data ();
 
-	/* fill frame buffer (320kB) */
+	/* fill sample buffer (320kB) */
 
-	uint16_t* fb = (uint16_t*) device_frame_buffer;
+	uint16_t* fb = (uint16_t*) device_sample_buffer;
 
 	for (int row = 0; row < _rows; ++row) {
 
@@ -232,4 +237,27 @@ Push2Canvas::visible_area () const
 {
 	/* may need to get more sophisticated once we do scrolling */
 	return Rect (0, 0, 960, 160);
+}
+
+Glib::RefPtr<Pango::Context>
+Push2Canvas::get_pango_context ()
+{
+	if (!pango_context) {
+		PangoFontMap* map = pango_cairo_font_map_get_default ();
+		if (!map) {
+			error << _("Default Cairo font map is null!") << endmsg;
+			return Glib::RefPtr<Pango::Context> ();
+		}
+
+		PangoContext* context = pango_font_map_create_context (map);
+
+		if (!context) {
+			error << _("cannot create new PangoContext from cairo font map") << endmsg;
+			return Glib::RefPtr<Pango::Context> ();
+		}
+
+		pango_context = Glib::wrap (context);
+	}
+
+	return pango_context;
 }

@@ -24,8 +24,11 @@
 #include <boost/shared_ptr.hpp>
 #include <vamp-hostsdk/Plugin.h>
 
+#include "evoral/Note.hpp"
+
 #include "ardour/libardour_visibility.h"
 
+#include "ardour/midi_model.h"
 #include "ardour/processor.h"
 #include "ardour/session.h"
 
@@ -62,6 +65,10 @@ namespace ARDOUR { namespace LuaAPI {
 	 */
 	boost::shared_ptr<ARDOUR::Processor> new_luaproc (ARDOUR::Session *s, const std::string& p);
 
+	/** return a PluginInfoList (all plugin)
+	 */
+	std::list<boost::shared_ptr<ARDOUR::PluginInfo> > list_plugins ();
+
 	/** search a Plugin
 	 *
 	 * @param id Plugin Name, ID or URI
@@ -96,6 +103,15 @@ namespace ARDOUR { namespace LuaAPI {
 	 * @returns value
 	 */
 	float get_processor_param (boost::shared_ptr<Processor> proc, uint32_t which, bool &ok);
+
+	/** reset a processor to its default values (only works for plugins )
+	 *
+	 * This is a wrapper which looks up the Processor by plugin-insert.
+	 *
+	 * @param proc Plugin-Insert
+	 * @returns true on success, false when the processor is not a plugin
+	 */
+	bool reset_processor_to_default (boost::shared_ptr<Processor> proc);
 
 	/** set a plugin control-input parameter value
 	 *
@@ -155,12 +171,59 @@ namespace ARDOUR { namespace LuaAPI {
 	 */
 	int hsla_to_rgba (lua_State *lua);
 
-	/* Creates a filename from a series of elements using the correct separator for filenames.
+	/**
+	 * A convenience function to expand RGBA parameters from an integer
+	 *
+	 * convert a Canvas::Color (uint32_t 0xRRGGBBAA) into
+	 * double RGBA values which can be passed as parameters to
+	 * Cairo::Context::set_source_rgba
+	 *
+	 * Example:
+	 * @code
+	 * local r, g, b, a = ARDOUR.LuaAPI.color_to_rgba (0x88aa44ff)
+	 * cairo_ctx:set_source_rgba (ARDOUR.LuaAPI.color_to_rgba (0x11336699)
+	 * @endcode
+	 * @returns 4 parameters: red, green, blue, alpha (in range 0..1)
+	 */
+	int color_to_rgba (lua_State *lua);
+
+	/**
+	 */
+	std::string ascii_dtostr (const double d);
+
+	/**
+	 * Creates a filename from a series of elements using the correct separator for filenames.
 	 *
 	 * No attempt is made to force the resulting filename to be an absolute path.
 	 * If the first element is a relative path, the result will be a relative path.
 	 */
 	int build_filename (lua_State *lua);
+
+	/**
+	 * Generic conversion from audio sample count to timecode.
+	 * (TimecodeType, sample-rate, sample-pos)
+	 */
+	int sample_to_timecode (lua_State *L);
+
+	/**
+	 * Generic conversion from timecode to audio sample count.
+	 * (TimecodeType, sample-rate, hh, mm, ss, ff)
+	 */
+	int timecode_to_sample (lua_State *L);
+
+	/**
+	 * Use current session settings to convert
+	 * audio-sample count into hh, mm, ss, ff
+	 * timecode (this include session pull up/down).
+	 */
+	int sample_to_timecode_lua (lua_State *L);
+
+	/**
+	 * Use current session settings to convert
+	 * timecode (hh, mm, ss, ff) to audio-sample
+	 * count (this include session pull up/down).
+	 */
+	int timecode_to_sample_lua (lua_State *L);
 
 	class Vamp {
 	/** Vamp Plugin Interface
@@ -203,8 +266,10 @@ namespace ARDOUR { namespace LuaAPI {
 
 			/** initialize the plugin for use with analyze().
 			 *
-			 * This is equivalent to plugin():initialise (1, 512, 1024)
+			 * This is equivalent to plugin():initialise (1, ssiz, bsiz)
 			 * and prepares a plugin for analyze.
+			 * (by preferred step and block sizes are used. if the plugin
+			 * does not specify them or they're larger than 8K, both are set to 1024)
 			 *
 			 * Manual initialization is only required to set plugin-parameters
 			 * which depend on prior initialization of the plugin.
@@ -235,11 +300,17 @@ namespace ARDOUR { namespace LuaAPI {
 		private:
 			::Vamp::Plugin* _plugin;
 			float           _sample_rate;
-			framecnt_t      _bufsize;
-			framecnt_t      _stepsize;
+			samplecnt_t      _bufsize;
+			samplecnt_t      _stepsize;
 			bool            _initialized;
 
 	};
+
+	boost::shared_ptr<Evoral::Note<Temporal::Beats> >
+		new_noteptr (uint8_t, Temporal::Beats, Temporal::Beats, uint8_t, uint8_t);
+
+	std::list<boost::shared_ptr< Evoral::Note<Temporal::Beats> > >
+		note_list (boost::shared_ptr<ARDOUR::MidiModel>);
 
 } } /* namespace */
 

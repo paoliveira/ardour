@@ -22,13 +22,17 @@
 #include "ardour/plugin_insert.h"
 #include "ardour/route.h"
 
-#include "ardour_dropdown.h"
+#include "widgets/ardour_button.h"
+#include "widgets/ardour_dropdown.h"
+
 #include "ardour_dialog.h"
 
 class PluginSetupDialog : public ArdourDialog
 {
 public:
 	PluginSetupDialog (boost::shared_ptr<ARDOUR::Route>, boost::shared_ptr<ARDOUR::PluginInsert>, ARDOUR::Route::PluginSetupOptions);
+
+	bool fan_out () const { return _fan_out.get_active () && _fan_out.get_sensitive (); }
 
 private:
 	void setup_output_presets ();
@@ -37,14 +41,16 @@ private:
 
 	void select_output_preset (uint32_t n_audio);
 	void apply_mapping ();
+	void toggle_fan_out ();
 
 	std::string preset_label (uint32_t) const;
 
 	boost::shared_ptr<ARDOUR::Route> _route;
 	boost::shared_ptr<ARDOUR::PluginInsert> _pi;
 
-	ArdourDropdown _out_presets;
-	ArdourButton _keep_mapping;
+	ArdourWidgets::ArdourDropdown _out_presets;
+	ArdourWidgets::ArdourButton _keep_mapping;
+	ArdourWidgets::ArdourButton _fan_out;
 	ARDOUR::ChanCount _cur_inputs;
 	ARDOUR::ChanCount _cur_outputs;
 };

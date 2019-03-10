@@ -41,6 +41,7 @@
 
 #include "pbd/compose.h"
 #include "pbd/error.h"
+#include "pbd/locale_guard.h"
 #include "pbd/xml++.h"
 #include "pbd/stacktrace.h"
 
@@ -58,7 +59,7 @@ using namespace std;
 using namespace ARDOUR;
 using namespace PBD;
 
-LadspaPlugin::LadspaPlugin (string module_path, AudioEngine& e, Session& session, uint32_t index, framecnt_t rate)
+LadspaPlugin::LadspaPlugin (string module_path, AudioEngine& e, Session& session, uint32_t index, samplecnt_t rate)
 	: Plugin (e, session)
 {
 	init (module_path, index, rate);
@@ -76,7 +77,7 @@ LadspaPlugin::LadspaPlugin (const LadspaPlugin &other)
 }
 
 void
-LadspaPlugin::init (string module_path, uint32_t index, framecnt_t rate)
+LadspaPlugin::init (string module_path, uint32_t index, samplecnt_t rate)
 {
 	void* func;
 	LADSPA_Descriptor_Function dfunc;
@@ -347,8 +348,6 @@ void
 LadspaPlugin::add_state (XMLNode* root) const
 {
 	XMLNode *child;
-	char buf[32];
-	LocaleGuard lg;
 
 	for (uint32_t i = 0; i < parameter_count(); ++i){
 
@@ -356,10 +355,8 @@ LadspaPlugin::add_state (XMLNode* root) const
 		    LADSPA_IS_PORT_CONTROL(port_descriptor (i))){
 
 			child = new XMLNode("Port");
-			snprintf(buf, sizeof(buf), "%u", i);
-			child->add_property("number", string(buf));
-			snprintf(buf, sizeof(buf), "%+f", _shadow_data[i]);
-			child->add_property("value", string(buf));
+			child->set_property("number", i);
+			child->set_property("value", _shadow_data[i]);
 			root->add_child_nocopy (*child);
 		}
 	}
@@ -374,14 +371,9 @@ LadspaPlugin::set_state (const XMLNode& node, int version)
 
 #ifndef NO_PLUGIN_STATE
 	XMLNodeList nodes;
-	XMLProperty const * prop;
 	XMLNodeConstIterator iter;
 	XMLNode *child;
-	const char *port;
-	const char *data;
-	uint32_t port_id;
 #endif
-	LocaleGuard lg;
 
 	if (node.name() != state_node_name()) {
 		error << _("Bad node sent to LadspaPlugin::set_state") << endmsg;
@@ -396,21 +388,20 @@ LadspaPlugin::set_state (const XMLNode& node, int version)
 
 		child = *iter;
 
-		if ((prop = child->property("number")) != 0) {
-			port = prop->value().c_str();
-		} else {
+		uint32_t port_id;
+		float value;
+
+		if (!child->get_property ("number", port_id)) {
 			warning << _("LADSPA: no ladspa port number") << endmsg;
 			continue;
 		}
-		if ((prop = child->property("value")) != 0) {
-			data = prop->value().c_str();
-		} else {
+
+		if (!child->get_property ("value", value)) {
 			warning << _("LADSPA: no ladspa port data") << endmsg;
 			continue;
 		}
 
-		sscanf (port, "%" PRIu32, &port_id);
-		set_parameter (port_id, atof(data));
+		set_parameter (port_id, value);
 	}
 #endif
 
@@ -477,28 +468,28 @@ LadspaPlugin::get_parameter_descriptor (uint32_t which, ParameterDescriptor& des
 
 
 	if (LADSPA_IS_HINT_BOUNDED_BELOW(prh.HintDescriptor)) {
-		desc.min_unbound = false;
 		if (LADSPA_IS_HINT_SAMPLE_RATE(prh.HintDescriptor)) {
-			desc.lower = prh.LowerBound * _session.frame_rate();
+			desc.lower = prh.LowerBound * _session.sample_rate();
 		} else {
 			desc.lower = prh.LowerBound;
 		}
 	} else {
-		desc.min_unbound = true;
 		desc.lower = 0;
 	}
 
 
 	if (LADSPA_IS_HINT_BOUNDED_ABOVE(prh.HintDescriptor)) {
-		desc.max_unbound = false;
 		if (LADSPA_IS_HINT_SAMPLE_RATE(prh.HintDescriptor)) {
-			desc.upper = prh.UpperBound * _session.frame_rate();
+			desc.upper = prh.UpperBound * _session.sample_rate();
 		} else {
 			desc.upper = prh.UpperBound;
 		}
 	} else {
-		desc.max_unbound = true;
-		desc.upper = 4; /* completely arbitrary */
+		if (LADSPA_IS_HINT_TOGGLED (prh.HintDescriptor)) {
+			desc.upper = 1;
+		} else {
+			desc.upper = 4; /* completely arbitrary */
+		}
 	}
 
 	if (LADSPA_IS_HINT_HAS_DEFAULT (prh.HintDescriptor)) {
@@ -534,15 +525,11 @@ LadspaPlugin::describe_parameter (Evoral::Parameter which)
 	}
 }
 
-ARDOUR::framecnt_t
-LadspaPlugin::signal_latency () const
+ARDOUR::samplecnt_t
+LadspaPlugin::plugin_latency () const
 {
-	if (_user_latency) {
-		return _user_latency;
-	}
-
 	if (_latency_control_port) {
-		return (framecnt_t) floor (*_latency_control_port);
+		return (samplecnt_t) floor (*_latency_control_port);
 	} else {
 		return 0;
 	}
@@ -566,9 +553,9 @@ LadspaPlugin::automatable () const
 
 int
 LadspaPlugin::connect_and_run (BufferSet& bufs,
-		framepos_t start, framepos_t end, double speed,
-		ChanMapping in_map, ChanMapping out_map,
-		pframes_t nframes, framecnt_t offset)
+		samplepos_t start, samplepos_t end, double speed,
+		ChanMapping const& in_map, ChanMapping const& out_map,
+		pframes_t nframes, samplecnt_t offset)
 {
 	Plugin::connect_and_run (bufs, start, end, speed, in_map, out_map, nframes, offset);
 
@@ -694,7 +681,7 @@ LadspaPlugin::latency_compute_run ()
 	uint32_t port_index = 0;
 	uint32_t in_index = 0;
 	uint32_t out_index = 0;
-	const framecnt_t bufsize = 1024;
+	const samplecnt_t bufsize = 1024;
 	LADSPA_Data buffer[bufsize];
 
 	memset(buffer,0,sizeof(LADSPA_Data)*bufsize);
@@ -726,7 +713,7 @@ PluginPtr
 LadspaPluginInfo::load (Session& session)
 {
 	try {
-		PluginPtr plugin (new LadspaPlugin (path, session.engine(), session, index, session.frame_rate()));
+		PluginPtr plugin (new LadspaPlugin (path, session.engine(), session, index, session.sample_rate()));
 		plugin->set_info(PluginInfoPtr(new LadspaPluginInfo(*this)));
 		return plugin;
 	}
@@ -803,6 +790,7 @@ LadspaPlugin::load_preset (PresetRecord r)
 		for (uint32_t i = 0; i < (uint32_t) defs->count; ++i) {
 			if (parameter_is_input (defs->items[i].pid)) {
 				set_parameter(defs->items[i].pid, defs->items[i].value);
+				PresetPortSetValue (defs->items[i].pid, defs->items[i].value); /* EMIT SIGNAL */
 			}
 		}
 		lrdf_free_setting_values(defs);

@@ -22,7 +22,6 @@
 #include <glibmm/fileutils.h>
 
 #include "pbd/gstdio_compat.h"
-#include "pbd/locale_guard.h"
 #include "pbd/pthread_utils.h"
 
 #include "ardour/audio_buffer.h"
@@ -55,10 +54,12 @@ LuaProc::LuaProc (AudioEngine& engine,
 	, lua (lua_newstate (&PBD::ReallocPool::lalloc, &_mempool))
 #endif
 	, _lua_dsp (0)
+	, _lua_latency (0)
 	, _script (script)
 	, _lua_does_channelmapping (false)
 	, _lua_has_inline_display (false)
 	, _designated_bypass_port (UINT32_MAX)
+	, _signal_latency (0)
 	, _control_data (0)
 	, _shadow_data (0)
 	, _configured (false)
@@ -86,10 +87,13 @@ LuaProc::LuaProc (const LuaProc &other)
 	, lua (lua_newstate (&PBD::ReallocPool::lalloc, &_mempool))
 #endif
 	, _lua_dsp (0)
+	, _lua_latency (0)
 	, _script (other.script ())
+	, _origin (other._origin)
 	, _lua_does_channelmapping (false)
 	, _lua_has_inline_display (false)
 	, _designated_bypass_port (UINT32_MAX)
+	, _signal_latency (0)
 	, _control_data (0)
 	, _shadow_data (0)
 	, _configured (false)
@@ -111,18 +115,21 @@ LuaProc::LuaProc (const LuaProc &other)
 LuaProc::~LuaProc () {
 #ifdef WITH_LUAPROC_STATS
 	if (_info && _stats_cnt > 0) {
-		printf ("LuaProc: '%s' run()  avg: %.3f  max: %.3f [ms]\n",
+		printf ("LuaProc: '%s' run()  avg: %.3f  max: %.3f [ms] p: %.1f\n",
 				_info->name.c_str (),
 				0.0001f * _stats_avg[0] / (float) _stats_cnt,
-				0.0001f * _stats_max[0]);
-		printf ("LuaProc: '%s' gc()   avg: %.3f  max: %.3f [ms]\n",
+				0.0001f * _stats_max[0],
+				_stats_max[0] * (float)_stats_cnt / _stats_avg[0]);
+		printf ("LuaProc: '%s' gc()   avg: %.3f  max: %.3f [ms] p: %.1f\n",
 				_info->name.c_str (),
 				0.0001f * _stats_avg[1] / (float) _stats_cnt,
-				0.0001f * _stats_max[1]);
+				0.0001f * _stats_max[1],
+				_stats_max[1] * (float)_stats_cnt / _stats_avg[1]);
 	}
 #endif
 	lua.do_command ("collectgarbage();");
 	delete (_lua_dsp);
+	delete (_lua_latency);
 	delete [] _control_data;
 	delete [] _shadow_data;
 }
@@ -131,25 +138,30 @@ void
 LuaProc::init ()
 {
 #ifdef WITH_LUAPROC_STATS
-	_stats_avg[0] = _stats_avg[1] = _stats_max[0] = _stats_max[1] = _stats_cnt = 0;
+	_stats_avg[0] = _stats_avg[1] = _stats_max[0] = _stats_max[1] = 0;
+	_stats_cnt = -25;
 #endif
 
-	lua.tweak_rt_gc ();
 	lua.Print.connect (sigc::mem_fun (*this, &LuaProc::lua_print));
 	// register session object
 	lua_State* L = lua.getState ();
+	lua_mlock (L, 1);
 	LuaBindings::stddef (L);
 	LuaBindings::common (L);
 	LuaBindings::dsp (L);
 
 	luabridge::getGlobalNamespace (L)
 		.beginNamespace ("Ardour")
-		.beginClass <LuaProc> ("LuaProc")
+		.deriveClass <LuaProc, PBD::StatefulDestructible> ("LuaProc")
 		.addFunction ("queue_draw", &LuaProc::queue_draw)
 		.addFunction ("shmem", &LuaProc::instance_shm)
 		.addFunction ("table", &LuaProc::instance_ref)
+		.addFunction ("route", &LuaProc::route)
+		.addFunction ("unique_id", &LuaProc::unique_id)
+		.addFunction ("name", &LuaProc::name)
 		.endClass ()
 		.endNamespace ();
+	lua_mlock (L, 0);
 
 	// add session to global lua namespace
 	luabridge::push <Session *> (L, &_session);
@@ -160,11 +172,20 @@ LuaProc::init ()
 	lua_setglobal (L, "self");
 
 	// sandbox
-	lua.do_command ("io = nil os = nil loadfile = nil require = nil dofile = nil package = nil debug = nil");
+	lua.sandbox (true);
 #if 0
 	lua.do_command ("for n in pairs(_G) do print(n) end print ('----')"); // print global env
 #endif
 	lua.do_command ("function ardour () end");
+}
+
+boost::weak_ptr<Route>
+LuaProc::route () const
+{
+	if (!_owner) {
+		return boost::weak_ptr<Route>();
+	}
+	return static_cast<Route*>(_owner)->weakroute ();
 }
 
 void
@@ -220,14 +241,18 @@ LuaProc::load_script ()
 		assert (0);
 	}
 
+	luabridge::LuaRef lua_dsp_latency = luabridge::getGlobal (L, "dsp_latency");
+	if (lua_dsp_latency.type () == LUA_TFUNCTION) {
+		_lua_latency = new luabridge::LuaRef (lua_dsp_latency);
+	}
+
 	// initialize the DSP if needed
 	luabridge::LuaRef lua_dsp_init = luabridge::getGlobal (L, "dsp_init");
 	if (lua_dsp_init.type () == LUA_TFUNCTION) {
 		try {
-			lua_dsp_init (_session.nominal_frame_rate ());
+			lua_dsp_init (_session.nominal_sample_rate ());
 		} catch (luabridge::LuaException const& e) {
-			;
-		}
+		} catch (...) { }
 	}
 
 	_ctrl_params.clear ();
@@ -341,6 +366,8 @@ LuaProc::can_support_io_configuration (const ChanCount& in, ChanCount& out, Chan
 				_iotable = new luabridge::LuaRef (iotable);
 			}
 		} catch (luabridge::LuaException const& e) {
+			_iotable = NULL;
+		} catch (...) {
 			_iotable = NULL;
 		}
 	}
@@ -572,6 +599,8 @@ LuaProc::configure_io (ChanCount in, ChanCount out)
 				std::cerr << "LuaException: " << e.what () << "\n";
 #endif
 				return false;
+			} catch (...) {
+				return false;
 			}
 		}
 	}
@@ -584,9 +613,9 @@ LuaProc::configure_io (ChanCount in, ChanCount out)
 
 int
 LuaProc::connect_and_run (BufferSet& bufs,
-		framepos_t start, framepos_t end, double speed,
-		ChanMapping in, ChanMapping out,
-		pframes_t nframes, framecnt_t offset)
+		samplepos_t start, samplepos_t end, double speed,
+		ChanMapping const& in, ChanMapping const& out,
+		pframes_t nframes, samplecnt_t offset)
 {
 	if (!_lua_dsp) {
 		return 0;
@@ -658,7 +687,7 @@ LuaProc::connect_and_run (BufferSet& bufs,
 				if (valid) {
 					for (MidiBuffer::iterator m = bufs.get_midi(idx).begin();
 							m != bufs.get_midi(idx).end(); ++m, ++e) {
-						const Evoral::MIDIEvent<framepos_t> ev(*m, false);
+						const Evoral::Event<samplepos_t> ev(*m, false);
 						luabridge::LuaRef lua_midi_data (luabridge::newTable (L));
 						const uint8_t* data = ev.buffer();
 						for (uint32_t i = 0; i < ev.size(); ++i) {
@@ -701,7 +730,7 @@ LuaProc::connect_and_run (BufferSet& bufs,
 						if (!i.value ()["time"].isNumber ()) { continue; }
 						if (!i.value ()["data"].isTable ()) { continue; }
 						luabridge::LuaRef data_tbl (i.value ()["data"]);
-						framepos_t tme = i.value ()["time"];
+						samplepos_t tme = i.value ()["time"];
 						if (tme < 1 || tme > nframes) { continue; }
 						uint8_t data[64];
 						size_t size = 0;
@@ -716,11 +745,18 @@ LuaProc::connect_and_run (BufferSet& bufs,
 				}
 			}
 		}
+
+		if (_lua_latency) {
+			_signal_latency = (*_lua_latency)();
+		}
+
 	} catch (luabridge::LuaException const& e) {
 		PBD::error << "LuaException: " << e.what () << "\n";
 #ifndef NDEBUG
 		std::cerr << "LuaException: " << e.what () << "\n";
 #endif
+		return -1;
+	} catch (...) {
 		return -1;
 	}
 #ifdef WITH_LUAPROC_STATS
@@ -729,14 +765,15 @@ LuaProc::connect_and_run (BufferSet& bufs,
 
 	lua.collect_garbage_step ();
 #ifdef WITH_LUAPROC_STATS
-	++_stats_cnt;
-	int64_t t2 = g_get_monotonic_time ();
-	int64_t ela0 = t1 - t0;
-	int64_t ela1 = t2 - t1;
-	if (ela0 > _stats_max[0]) _stats_max[0] = ela0;
-	if (ela1 > _stats_max[1]) _stats_max[1] = ela1;
-	_stats_avg[0] += ela0;
-	_stats_avg[1] += ela1;
+	if (++_stats_cnt > 0) {
+		int64_t t2 = g_get_monotonic_time ();
+		int64_t ela0 = t1 - t0;
+		int64_t ela1 = t2 - t1;
+		if (ela0 > _stats_max[0]) _stats_max[0] = ela0;
+		if (ela1 > _stats_max[1]) _stats_max[1] = ela1;
+		_stats_avg[0] += ela0;
+		_stats_avg[1] += ela1;
+	}
 #endif
 	return 0;
 }
@@ -746,24 +783,21 @@ void
 LuaProc::add_state (XMLNode* root) const
 {
 	XMLNode*    child;
-	char        buf[32];
-	LocaleGuard lg;
 
 	gchar* b64 = g_base64_encode ((const guchar*)_script.c_str (), _script.size ());
 	std::string b64s (b64);
 	g_free (b64);
 	XMLNode* script_node = new XMLNode (X_("script"));
-	script_node->add_property (X_("lua"), LUA_VERSION);
+	script_node->set_property (X_("lua"), LUA_VERSION);
+	script_node->set_property (X_("origin"), _origin);
 	script_node->add_content (b64s);
 	root->add_child_nocopy (*script_node);
 
 	for (uint32_t i = 0; i < parameter_count(); ++i) {
 		if (parameter_is_input(i) && parameter_is_control(i)) {
 			child = new XMLNode("Port");
-			snprintf(buf, sizeof(buf), "%u", i);
-			child->add_property("id", std::string(buf));
-			snprintf(buf, sizeof(buf), "%+f", _shadow_data[i]);
-			child->add_property("value", std::string(buf));
+			child->set_property("id", i);
+			child->set_property("value", _shadow_data[i]);
 			root->add_child_nocopy(*child);
 		}
 	}
@@ -778,6 +812,10 @@ LuaProc::set_script_from_state (const XMLNode& node)
 	}
 
 	if ((child = node.child (X_("script"))) != 0) {
+		XMLProperty const* prop;
+		if ((prop = node.property ("origin")) != 0) {
+			_origin = prop->value();
+		}
 		for (XMLNodeList::const_iterator n = child->children ().begin (); n != child->children ().end (); ++n) {
 			if (!(*n)->is_content ()) { continue; }
 			gsize size;
@@ -810,14 +848,9 @@ LuaProc::set_state (const XMLNode& node, int version)
 {
 #ifndef NO_PLUGIN_STATE
 	XMLNodeList nodes;
-	XMLProperty const * prop;
 	XMLNodeConstIterator iter;
 	XMLNode *child;
-	const char *value;
-	const char *port;
-	uint32_t port_id;
 #endif
-	LocaleGuard lg;
 
 	if (_script.empty ()) {
 		if (set_script_from_state (node)) {
@@ -834,20 +867,21 @@ LuaProc::set_state (const XMLNode& node, int version)
 	nodes = node.children ("Port");
 	for (iter = nodes.begin(); iter != nodes.end(); ++iter) {
 		child = *iter;
-		if ((prop = child->property("id")) != 0) {
-			port = prop->value().c_str();
-		} else {
+
+		uint32_t port_id;
+		float value;
+
+		if (!child->get_property("id", port_id)) {
 			warning << _("LuaProc: port has no symbol, ignored") << endmsg;
 			continue;
 		}
-		if ((prop = child->property("value")) != 0) {
-			value = prop->value().c_str();
-		} else {
+
+		if (!child->get_property("value", value)) {
 			warning << _("LuaProc: port has no value, ignored") << endmsg;
 			continue;
 		}
-		sscanf (port, "%" PRIu32, &port_id);
-		set_parameter (port_id, atof(value));
+
+		set_parameter (port_id, value);
 	}
 #endif
 
@@ -1103,20 +1137,24 @@ LuaProc::load_preset (PresetRecord r)
 
 	XMLNode* root = t->root ();
 	for (XMLNodeList::const_iterator i = root->children().begin(); i != root->children().end(); ++i) {
-		XMLProperty const * label = (*i)->property (X_("label"));
-		assert (label);
-		if (label->value() != r.label) {
+		std::string str;
+		if (!(*i)->get_property (X_("label"), str)) {
+			assert (false);
+		}
+		if (str != r.label) {
 			continue;
 		}
 
 		for (XMLNodeList::const_iterator j = (*i)->children().begin(); j != (*i)->children().end(); ++j) {
 			if ((*j)->name() == X_("Parameter")) {
-				XMLProperty const * index = (*j)->property (X_("index"));
-				XMLProperty const * value = (*j)->property (X_("value"));
-				assert (index);
-				assert (value);
-				LocaleGuard lg;
-				set_parameter (atoi (index->value().c_str()), atof (value->value().c_str ()));
+				uint32_t index;
+				float value;
+				if (!(*j)->get_property (X_("index"), index) ||
+				    !(*j)->get_property (X_("value"), value)) {
+					assert (false);
+				}
+				set_parameter (index, value);
+				PresetPortSetValue (index, value); /* EMIT SIGNAL */
 			}
 		}
 		return Plugin::load_preset(r);
@@ -1132,17 +1170,20 @@ LuaProc::do_save_preset (std::string name) {
 		return "";
 	}
 
+	// prevent dups -- just in case
+	t->root()->remove_nodes_and_delete (X_("label"), name);
+
 	std::string uri (preset_name_to_uri (name));
 
 	XMLNode* p = new XMLNode (X_("Preset"));
-	p->add_property (X_("uri"), uri);
-	p->add_property (X_("label"), name);
+	p->set_property (X_("uri"), uri);
+	p->set_property (X_("label"), name);
 
 	for (uint32_t i = 0; i < parameter_count(); ++i) {
 		if (parameter_is_input (i)) {
 			XMLNode* c = new XMLNode (X_("Parameter"));
-			c->add_property (X_("index"), string_compose ("%1", i));
-			c->add_property (X_("value"), string_compose ("%1", get_parameter (i)));
+			c->set_property (X_("index"), i);
+			c->set_property (X_("value"), get_parameter (i));
 			p->add_child_nocopy (*c);
 		}
 	}
@@ -1175,14 +1216,14 @@ LuaProc::find_presets ()
 	if (t) {
 		XMLNode* root = t->root ();
 		for (XMLNodeList::const_iterator i = root->children().begin(); i != root->children().end(); ++i) {
+			std::string uri;
+			std::string label;
 
-			XMLProperty const * uri = (*i)->property (X_("uri"));
-			XMLProperty const * label = (*i)->property (X_("label"));
+			if (!(*i)->get_property (X_("uri"), uri) || !(*i)->get_property (X_("label"), label)) {
+				assert (false);
+			}
 
-			assert (uri);
-			assert (label);
-
-			PresetRecord r (uri->value(), label->value(), true);
+			PresetRecord r (uri, label, true);
 			_presets.insert (make_pair (r.uri, r));
 		}
 	}
@@ -1205,7 +1246,6 @@ LuaPluginInfo::LuaPluginInfo (LuaScriptInfoPtr lsi) {
 	n_outputs.set (DataType::AUDIO, 1);
 	type = Lua;
 
-	_is_instrument = category == "Instrument";
 }
 
 PluginPtr
@@ -1218,7 +1258,7 @@ LuaPluginInfo::load (Session& session)
 
 	try {
 		script = Glib::file_get_contents (path);
-	} catch (Glib::FileError err) {
+	} catch (Glib::FileError const& err) {
 		return PluginPtr ();
 	}
 
@@ -1227,7 +1267,9 @@ LuaPluginInfo::load (Session& session)
 	}
 
 	try {
-		PluginPtr plugin (new LuaProc (session.engine (), session, script));
+		LuaProc* lp = new LuaProc (session.engine (), session, script);
+		lp->set_origin (path);
+		PluginPtr plugin (lp);
 		return plugin;
 	} catch (failed_constructor& err) {
 		;

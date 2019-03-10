@@ -43,7 +43,7 @@ PortMatrixBody::PortMatrixBody (PortMatrix* p)
 	  _ignore_component_size_changed (false)
 {
 	_column_labels = new PortMatrixColumnLabels (p, this);
-	_row_labels = new PortMatrixRowLabels (p, this);
+	_row_labels = new PortMatrixRowLabels (p, this, *_column_labels);
 	_grid = new PortMatrixGrid (p, this);
 
 	_components.push_back (_column_labels);
@@ -471,7 +471,7 @@ PortMatrixBody::highlight_associated_channels (int dim, ARDOUR::BundleChannel h)
 	PortGroup::BundleList const b = _matrix->visible_ports(1 - dim)->bundles ();
 
 	for (PortGroup::BundleList::const_iterator i = b.begin(); i != b.end(); ++i) {
-	        for (uint32_t j = 0; j < (*i)->bundle->nchannels().n_total(); ++j) {
+		for (uint32_t j = 0; j < (*i)->bundle->nchannels().n_total(); ++j) {
 
 			if (!_matrix->should_show ((*i)->bundle->channel_type(j))) {
 				continue;

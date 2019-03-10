@@ -31,7 +31,6 @@ namespace ActionManager {
 
 	/* Ardour specific */
 
-	extern void init ();
 	extern void load_menus (const std::string& menus_file_name); /* not path, just name */
 
 	extern std::vector<Glib::RefPtr<Gtk::Action> > session_sensitive_actions;
@@ -40,6 +39,10 @@ namespace ActionManager {
 	extern std::vector<Glib::RefPtr<Gtk::Action> > plugin_selection_sensitive_actions;
 
 	extern std::vector<Glib::RefPtr<Gtk::Action> > track_selection_sensitive_actions;
+	extern std::vector<Glib::RefPtr<Gtk::Action> > stripable_selection_sensitive_actions;
+	extern std::vector<Glib::RefPtr<Gtk::Action> > bus_selection_sensitive_actions;
+	extern std::vector<Glib::RefPtr<Gtk::Action> > route_selection_sensitive_actions;
+	extern std::vector<Glib::RefPtr<Gtk::Action> > vca_selection_sensitive_actions;
 	extern std::vector<Glib::RefPtr<Gtk::Action> > point_selection_sensitive_actions;
 	extern std::vector<Glib::RefPtr<Gtk::Action> > time_selection_sensitive_actions;
 	extern std::vector<Glib::RefPtr<Gtk::Action> > line_selection_sensitive_actions;
@@ -50,7 +53,6 @@ namespace ActionManager {
 	extern std::vector<Glib::RefPtr<Gtk::Action> > transport_sensitive_actions;
 	extern std::vector<Glib::RefPtr<Gtk::Action> > engine_sensitive_actions;
 	extern std::vector<Glib::RefPtr<Gtk::Action> > engine_opposite_sensitive_actions;
-	extern std::vector<Glib::RefPtr<Gtk::Action> > edit_point_in_region_sensitive_actions;
 	extern std::vector<Glib::RefPtr<Gtk::Action> > rec_sensitive_actions;
 
 	extern void map_some_state (const char* group, const char* action, bool (ARDOUR::RCConfiguration::*get)() const);

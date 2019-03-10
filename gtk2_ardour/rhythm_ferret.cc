@@ -173,6 +173,12 @@ RhythmFerret::RhythmFerret (Editor& e)
 }
 
 void
+RhythmFerret::on_response (int response_id)
+{
+	Gtk::Dialog::on_response (response_id);
+}
+
+void
 RhythmFerret::analysis_mode_changed ()
 {
 	bool const perc = get_analysis_mode() == PercussionOnset;
@@ -251,30 +257,36 @@ RhythmFerret::run_analysis ()
 }
 
 int
-RhythmFerret::run_percussion_onset_analysis (boost::shared_ptr<Readable> readable, frameoffset_t /*offset*/, AnalysisFeatureList& results)
+RhythmFerret::run_percussion_onset_analysis (boost::shared_ptr<Readable> readable, sampleoffset_t /*offset*/, AnalysisFeatureList& results)
 {
-	TransientDetector t (_session->frame_rate());
+	try {
+		TransientDetector t (_session->sample_rate());
 
-	for (uint32_t i = 0; i < readable->n_channels(); ++i) {
+		for (uint32_t i = 0; i < readable->n_channels(); ++i) {
 
-		AnalysisFeatureList these_results;
+			AnalysisFeatureList these_results;
 
-		t.reset ();
-		float dB = detection_threshold_adjustment.get_value();
-		float coeff = dB > -80.0f ? pow (10.0f, dB * 0.05f) : 0.0f;
-		t.set_threshold (coeff);
-		t.set_sensitivity (4, sensitivity_adjustment.get_value());
+			t.reset ();
+			float dB = detection_threshold_adjustment.get_value();
+			float coeff = dB > -80.0f ? pow (10.0f, dB * 0.05f) : 0.0f;
+			t.set_threshold (coeff);
+			t.set_sensitivity (4, sensitivity_adjustment.get_value());
 
-		if (t.run ("", readable.get(), i, these_results)) {
-			continue;
+			if (t.run ("", readable.get(), i, these_results)) {
+				continue;
+			}
+
+			/* merge */
+
+			results.insert (results.end(), these_results.begin(), these_results.end());
+			these_results.clear ();
+
+			t.update_positions (readable.get(), i, results);
 		}
 
-		/* merge */
-
-		results.insert (results.end(), these_results.begin(), these_results.end());
-		these_results.clear ();
-
-		t.update_positions (readable.get(), i, results);
+	} catch (failed_constructor& err) {
+		error << "Could not load percussion onset detection plugin" << endmsg;
+		return -1;
 	}
 
 	return 0;
@@ -300,10 +312,10 @@ RhythmFerret::get_note_onset_function ()
 }
 
 int
-RhythmFerret::run_note_onset_analysis (boost::shared_ptr<Readable> readable, frameoffset_t /*offset*/, AnalysisFeatureList& results)
+RhythmFerret::run_note_onset_analysis (boost::shared_ptr<Readable> readable, sampleoffset_t /*offset*/, AnalysisFeatureList& results)
 {
 	try {
-		OnsetDetector t (_session->frame_rate());
+		OnsetDetector t (_session->sample_rate());
 
 		for (uint32_t i = 0; i < readable->n_channels(); ++i) {
 
@@ -335,7 +347,7 @@ RhythmFerret::run_note_onset_analysis (boost::shared_ptr<Readable> readable, fra
 	}
 
 	if (!results.empty()) {
-		OnsetDetector::cleanup_onsets (results, _session->frame_rate(), trigger_gap_adjustment.get_value());
+		OnsetDetector::cleanup_onsets (results, _session->sample_rate(), trigger_gap_adjustment.get_value());
 	}
 
 	return 0;

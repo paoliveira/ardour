@@ -117,7 +117,7 @@ typedef std::list<boost::shared_ptr<Patch> > PatchNameList;
 class LIBMIDIPP_API PatchBank
 {
 public:
-	PatchBank (uint16_t n = 0, std::string a_name = std::string()) : _name(a_name), _number (n) {};
+	PatchBank (uint16_t n = UINT16_MAX, std::string a_name = std::string()) : _name(a_name), _number (n) {};
 	virtual ~PatchBank() { }
 
 	const std::string& name() const          { return _name; }
@@ -469,9 +469,10 @@ public:
 	virtual ~MIDINameDocument() {};
 
 	const std::string& file_path () const { return _file_path; }
-
 	const std::string& author() const { return _author; }
+
 	void set_author(const std::string& author) { _author = author; }
+	void set_file_path(const std::string& file_path) { _file_path = file_path; }
 
 	boost::shared_ptr<MasterDeviceNames> master_device_names(const std::string& model);
 
@@ -483,7 +484,7 @@ public:
 	int      set_state (const XMLTree&, const XMLNode&);
 
 private:
-	const std::string             _file_path;
+	std::string                   _file_path;
 	std::string                   _author;
 	MasterDeviceNamesList         _master_device_names_list;
 	MasterDeviceNames::Models     _all_models;

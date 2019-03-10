@@ -22,11 +22,6 @@
 #include <sstream>
 #include <limits>
 
-#ifdef COMPILER_MSVC
-#undef min
-#undef max
-#endif
-
 namespace PBD {
 
 bool
@@ -61,8 +56,8 @@ timing_summary (const std::vector<uint64_t>& values)
 		oss << "Count: " << values.size()
 		    << " Min: " << min
 		    << " Max: " << max
-		    << " Avg: " << avg
 		    << " Total: " << total
+		    << " Avg: " << avg << " (" << avg / 1000 << " msecs)"
 		    << std::endl;
 	}
 	return oss.str();

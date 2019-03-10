@@ -9,7 +9,6 @@
 #include "pbd/xml++.h"
 
 #include "canvas/stateful_image.h"
-#include "canvas/utils.h"
 
 #include "pbd/i18n.h"
 
@@ -45,7 +44,7 @@ StatefulImage::render (Rect const & area, Cairo::RefPtr<Cairo::Context> context)
 	ImageHandle image = _states[_state].image;
 	Rect self = item_to_window (Rect (0, 0, image->get_width(), image->get_height()));
 
-	boost::optional<Rect> draw = self.intersection (area);
+	Rect draw = self.intersection (area);
 
 	if (!draw) {
 		return;
@@ -55,7 +54,7 @@ StatefulImage::render (Rect const & area, Cairo::RefPtr<Cairo::Context> context)
 	   ("window" coordinates) and render it.
 	*/
 	context->set_source (image, self.x0, self.y0);
-	context->rectangle (draw->x0, draw->y0, draw->width(), draw->height());
+	context->rectangle (draw.x0, draw.y0, draw.width(), draw.height());
 	context->fill ();
 
 	if (!_text.empty()) {
@@ -68,7 +67,7 @@ StatefulImage::render (Rect const & area, Cairo::RefPtr<Cairo::Context> context)
 		}
 
 		// layout->set_alignment (_alignment);
-		set_source_rgba (context, _text_color);
+		Gtkmm2ext::set_source_rgba (context, _text_color);
 		context->move_to (_text_x, _text_y);
 		layout->show_in_cairo_context (context);
 	}
@@ -108,7 +107,7 @@ StatefulImage::load_states (const XMLNode& node)
 			continue;
 		}
 
-		if ((s.image = find_image (prop->value())) == 0) {
+		if (!(s.image = find_image (prop->value()))) {
 			error << string_compose (_("image %1 not found for state"), prop->value()) << endmsg;
 			continue;
 		}

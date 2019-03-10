@@ -94,6 +94,7 @@ MackieControlProtocolGUI::MackieControlProtocolGUI (MackieControlProtocol& p)
 	, ipmidi_base_port_adjustment (_cp.ipmidi_base(), 0, 32767, 1, 1000)
 	, discover_button (_("Discover Mackie Devices"))
 	, _device_dependent_widget (0)
+	, _ignore_profile_changed (false)
 	, ignore_active_change (false)
 {
 	Gtk::Label* l;
@@ -333,6 +334,7 @@ MackieControlProtocolGUI::device_dependent_widget ()
 	int row = 0;
 
 	uint32_t n_surfaces = 1 + _cp.device_info().extenders();
+	uint32_t main_pos = _cp.device_info().master_position();
 
 	if (!_cp.device_info().uses_ipmidi()) {
 		dd_table = Gtk::manage (new Gtk::Table (n_surfaces, 2));
@@ -387,12 +389,12 @@ MackieControlProtocolGUI::device_dependent_widget ()
 			string receive_string;
 
 			if (n_surfaces > 1) {
-				if (n == 0) {
-					send_string = _("Main surface sends via:");
-					receive_string = _("Main surface receives via:");
+				if (n == main_pos) {
+					send_string = string_compose(_("Main surface at position %1 sends via:"), n + 1);
+					receive_string = string_compose(_("Main surface at position %1 receives via:"), n + 1);
 				} else {
-					send_string = string_compose (_("Extender %1 sends via:"), n);
-					receive_string = string_compose (_("Extender %1 receives via:"), n);
+					send_string = string_compose (_("Extender at position %1 sends via:"), n + 1);
+					receive_string = string_compose (_("Extender at position %1 receives via:"), n + 1);
 				}
 			} else {
 				send_string = _("Surface sends via:");
@@ -458,7 +460,7 @@ MackieControlProtocolGUI::build_available_action_menu ()
 	NodeMap nodes;
 	NodeMap::iterator r;
 
-	Gtkmm2ext::ActionMap::get_all_actions (paths, labels, tooltips, keys, actions);
+	ActionManager::get_all_actions (paths, labels, tooltips, keys, actions);
 
 	vector<string>::iterator k;
 	vector<string>::iterator p;
@@ -506,13 +508,11 @@ MackieControlProtocolGUI::build_available_action_menu ()
 		}
 
 		//kinda kludgy way to avoid displaying menu items as mappable
-		if ( parts[1] == _("Main_menu") )
+		if ( parts[1] == _("Main Menu") )
 			continue;
 		if ( parts[1] == _("JACK") )
 			continue;
 		if ( parts[1] == _("redirectmenu") )
-			continue;
-		if ( parts[1] == _("Editor_menus") )
 			continue;
 		if ( parts[1] == _("RegionList") )
 			continue;
@@ -637,7 +637,7 @@ MackieControlProtocolGUI::refresh_function_key_editor ()
 					row[function_key_columns.plain] = action;
 				} else {
 
-					act = ActionManager::get_action (action.c_str());
+					act = ActionManager::get_action (action, false);
 					if (act) {
 						row[function_key_columns.plain] = act->get_label();
 					} else {
@@ -661,7 +661,7 @@ MackieControlProtocolGUI::refresh_function_key_editor ()
 					/* Probably a key alias */
 					row[function_key_columns.shift] = action;
 				} else {
-					act = ActionManager::get_action (action.c_str());
+					act = ActionManager::get_action (action, false);
 					if (act) {
 						row[function_key_columns.shift] = act->get_label();
 					} else {
@@ -679,7 +679,7 @@ MackieControlProtocolGUI::refresh_function_key_editor ()
 				/* Probably a key alias */
 				row[function_key_columns.control] = action;
 			} else {
-				act = ActionManager::get_action (action.c_str());
+				act = ActionManager::get_action (action, false);
 				if (act) {
 					row[function_key_columns.control] = act->get_label();
 				} else {
@@ -696,7 +696,7 @@ MackieControlProtocolGUI::refresh_function_key_editor ()
 				/* Probably a key alias */
 				row[function_key_columns.option] = action;
 			} else {
-				act = ActionManager::get_action (action.c_str());
+				act = ActionManager::get_action (action, false);
 				if (act) {
 					row[function_key_columns.option] = act->get_label();
 				} else {
@@ -713,7 +713,7 @@ MackieControlProtocolGUI::refresh_function_key_editor ()
 				/* Probably a key alias */
 				row[function_key_columns.cmdalt] = action;
 			} else {
-				act = ActionManager::get_action (action.c_str());
+				act = ActionManager::get_action (action, false);
 				if (act) {
 					row[function_key_columns.cmdalt] = act->get_label();
 				} else {
@@ -726,7 +726,7 @@ MackieControlProtocolGUI::refresh_function_key_editor ()
 		if (action.empty()) {
 			row[function_key_columns.shiftcontrol] = defstring;
 		} else {
-			act = ActionManager::get_action (action.c_str());
+			act = ActionManager::get_action (action, false);
 			if (act) {
 				row[function_key_columns.shiftcontrol] = act->get_label();
 			} else {
@@ -758,7 +758,7 @@ MackieControlProtocolGUI::action_changed (const Glib::ustring &sPath, const Glib
 				return;
 			}
 		}
-		Glib::RefPtr<Gtk::Action> act = ActionManager::get_action (i->second.c_str());
+		Glib::RefPtr<Gtk::Action> act = ActionManager::get_action (i->second, false);
 
 		if (act || remove) {
 			/* update visible text, using string supplied by
@@ -804,6 +804,10 @@ MackieControlProtocolGUI::action_changed (const Glib::ustring &sPath, const Glib
 				_cp.device_profile().set_button_action ((*row)[function_key_columns.id], modifier, i->second);
 			}
 
+			_ignore_profile_changed = true;
+			_profile_combo.set_active_text ( _cp.device_profile().name() );
+			_ignore_profile_changed = false;
+
 		} else {
 			std::cerr << "no such action\n";
 		}
@@ -833,11 +837,13 @@ MackieControlProtocolGUI::device_changed ()
 void
 MackieControlProtocolGUI::profile_combo_changed ()
 {
-	string profile = _profile_combo.get_active_text();
+	if (!_ignore_profile_changed) {
+		string profile = _profile_combo.get_active_text();
 
-	_cp.set_profile (profile);
+		_cp.set_profile (profile);
 
-	refresh_function_key_editor ();
+		refresh_function_key_editor ();
+	}
 }
 
 void

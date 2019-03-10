@@ -38,7 +38,7 @@
 #include "control_protocol/control_protocol.h"
 #include "control_protocol/types.h"
 
-#include "canvas/colors.h"
+#include "gtkmm2ext/colors.h"
 
 #include "midi_byte_array.h"
 
@@ -352,15 +352,15 @@ class Push2 : public ARDOUR::ControlProtocol
 
 	ModifierState modifier_state() const { return _modifier_state; }
 
-	Button* button_by_id (ButtonID);
+	boost::shared_ptr<Button> button_by_id (ButtonID);
 	static std::string button_name_by_id (ButtonID);
 
 	void strip_buttons_off ();
 
 	void write (const MidiByteArray&);
 
-	uint8_t get_color_index (ArdourCanvas::Color rgba);
-	ArdourCanvas::Color get_color (ColorName);
+	uint8_t get_color_index (Gtkmm2ext::Color rgba);
+	Gtkmm2ext::Color get_color (ColorName);
 
 	PressureMode pressure_mode () const { return _pressure_mode; }
 	void set_pressure_mode (PressureMode);
@@ -387,16 +387,16 @@ class Push2 : public ARDOUR::ControlProtocol
 	void relax () {}
 
 	/* map of Buttons by CC */
-	typedef std::map<int,Button*> CCButtonMap;
+	typedef std::map<int,boost::shared_ptr<Button> > CCButtonMap;
 	CCButtonMap cc_button_map;
 	/* map of Buttons by ButtonID */
-	typedef std::map<ButtonID,Button*> IDButtonMap;
+	typedef std::map<ButtonID,boost::shared_ptr<Button> > IDButtonMap;
 	IDButtonMap id_button_map;
 	std::set<ButtonID> buttons_down;
 	std::set<ButtonID> consumed;
 
 	bool button_long_press_timeout (ButtonID id);
-	void start_press_timeout (Button&, ButtonID);
+	void start_press_timeout (boost::shared_ptr<Button>, ButtonID);
 
 	void init_buttons (bool startup);
 	void init_touch_strip ();
@@ -404,12 +404,12 @@ class Push2 : public ARDOUR::ControlProtocol
 	/* map of Pads by note number (the "fixed" note number sent by the
 	 * hardware, not the note number generated if the pad is touched)
 	 */
-	typedef std::map<int,Pad*> NNPadMap;
+	typedef std::map<int,boost::shared_ptr<Pad> > NNPadMap;
 	NNPadMap nn_pad_map;
 
 	/* map of Pads by note number they generate (their "filtered" value)
 	 */
-	typedef std::multimap<int,Pad*> FNPadMap;
+	typedef std::multimap<int,boost::shared_ptr<Pad> > FNPadMap;
 	FNPadMap fn_pad_map;
 
 	void set_button_color (ButtonID, uint8_t color_index);
@@ -520,10 +520,9 @@ class Push2 : public ARDOUR::ControlProtocol
 	void other_vpot (int, int);
 	void other_vpot_touch (int, bool);
 
-	/* special Stripables */
+	/* special Stripable */
 
 	boost::shared_ptr<ARDOUR::Stripable> master;
-	boost::shared_ptr<ARDOUR::Stripable> monitor;
 
 	sigc::connection vblank_connection;
 	bool vblank ();
@@ -570,8 +569,7 @@ class Push2 : public ARDOUR::ControlProtocol
 
 	/* pad mapping */
 
-	PBD::ScopedConnection selection_connection;
-	void stripable_selection_change (ARDOUR::StripableNotificationListPtr);
+	void stripable_selection_changed ();
 
 	MusicalMode::Type _mode;
 	int _scale_root;
@@ -585,7 +583,7 @@ class Push2 : public ARDOUR::ControlProtocol
 
 	/* color map (device side) */
 
-	typedef std::map<ArdourCanvas::Color,uint8_t> ColorMap;
+	typedef std::map<Gtkmm2ext::Color,uint8_t> ColorMap;
 	typedef std::stack<uint8_t> ColorMapFreeList;
 	ColorMap color_map;
 	ColorMapFreeList color_map_free_list;
@@ -593,7 +591,7 @@ class Push2 : public ARDOUR::ControlProtocol
 
 	/* our own colors */
 
-	typedef std::map<ColorName,ArdourCanvas::Color> Colors;
+	typedef std::map<ColorName,Gtkmm2ext::Color> Colors;
 	Colors colors;
 	void fill_color_table ();
 	void reset_pad_colors ();

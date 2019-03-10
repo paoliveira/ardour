@@ -40,7 +40,9 @@ public:
 	            double                            x,
 	            double                            y,
 	            ARDOUR::InstrumentInfo&           info,
-	            ARDOUR::MidiModel::PatchChangePtr patch);
+	            ARDOUR::MidiModel::PatchChangePtr patch,
+		    Gtkmm2ext::Color               outline_color,
+		    Gtkmm2ext::Color               fill_color);
 
 	~PatchChange();
 
@@ -53,6 +55,9 @@ public:
 	void set_height (ArdourCanvas::Distance);
 	void hide ();
 	void show ();
+
+	double width() const { return _flag->width(); }
+	void set_text (std::string const & s) { _flag->set_text (s); }
 
 	ARDOUR::MidiModel::PatchChangePtr patch()       const { return _patch; }
 	ArdourCanvas::Item*               canvas_item() const { return _flag; }

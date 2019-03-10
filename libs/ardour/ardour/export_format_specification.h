@@ -48,7 +48,7 @@ class LIBARDOUR_API ExportFormatSpecification : public ExportFormatBase {
 		Time (Session & session) : AnyTime (), session (session) {}
 		Time & operator= (AnyTime const & other);
 
-		framecnt_t get_frames_at (framepos_t position, framecnt_t target_rate) const;
+		samplecnt_t get_samples_at (samplepos_t position, samplecnt_t target_rate) const;
 
 		/* Serialization */
 
@@ -103,6 +103,7 @@ class LIBARDOUR_API ExportFormatSpecification : public ExportFormatBase {
 	void set_soundcloud_upload (bool yn) { _soundcloud_upload = yn; }
 	void set_command (std::string command) { _command = command; }
 	void set_analyse (bool yn) { _analyse = yn; }
+	void set_codec_quality (int q) { _codec_quality = q; }
 
 	void set_silence_beginning (AnyTime const & value) { _silence_beginning = value; }
 	void set_silence_end (AnyTime const & value) { _silence_end = value; }
@@ -171,13 +172,14 @@ class LIBARDOUR_API ExportFormatSpecification : public ExportFormatBase {
 	bool soundcloud_upload() const { return _soundcloud_upload; }
 	std::string command() const { return _command; }
 	bool analyse() const { return _analyse; }
+	int  codec_quality() const { return _codec_quality; }
 
 	bool tag () const { return _tag && supports_tagging; }
 
-	framecnt_t silence_beginning_at (framepos_t position, framecnt_t samplerate) const
-		{ return _silence_beginning.get_frames_at (position, samplerate); }
-	framecnt_t silence_end_at (framepos_t position, framecnt_t samplerate) const
-		{ return _silence_end.get_frames_at (position, samplerate); }
+	samplecnt_t silence_beginning_at (samplepos_t position, samplecnt_t samplerate) const
+		{ return _silence_beginning.get_samples_at (position, samplerate); }
+	samplecnt_t silence_end_at (samplepos_t position, samplecnt_t samplerate) const
+		{ return _silence_end.get_samples_at (position, samplerate); }
 
 	AnyTime silence_beginning_time () const { return _silence_beginning; }
 	AnyTime silence_end_time () const { return _silence_end; }
@@ -197,6 +199,7 @@ class LIBARDOUR_API ExportFormatSpecification : public ExportFormatBase {
 	std::string  _format_name;
 	bool            has_sample_format;
 	bool            supports_tagging;
+	bool           _has_codec_quality;
 	bool           _has_broadcast_info;
 	uint32_t       _channel_limit;
 
@@ -228,6 +231,7 @@ class LIBARDOUR_API ExportFormatSpecification : public ExportFormatBase {
 
 	std::string     _command;
 	bool            _analyse;
+	int             _codec_quality;
 
 	/* serialization helpers */
 

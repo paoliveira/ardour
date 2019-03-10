@@ -22,6 +22,7 @@
 
 #include "ardour/worker.h"
 #include "pbd/error.h"
+#include "pbd/compose.h"
 
 #include <glibmm/timer.h>
 
@@ -29,10 +30,10 @@ namespace ARDOUR {
 
 Worker::Worker(Workee* workee, uint32_t ring_size, bool threaded)
 	: _workee(workee)
-	, _requests(threaded ? new RingBuffer<uint8_t>(ring_size) : NULL)
-	, _responses(new RingBuffer<uint8_t>(ring_size))
+	, _requests(threaded ? new PBD::RingBuffer<uint8_t>(ring_size) : NULL)
+	, _responses(new PBD::RingBuffer<uint8_t>(ring_size))
 	, _response((uint8_t*)malloc(ring_size))
-	, _sem("worker_semaphore", 0)
+	, _sem(string_compose ("worker_semaphore%1", this).c_str(), 0)
 	, _thread(NULL)
 	, _exit(false)
 	, _synchronous(!threaded)
@@ -50,6 +51,9 @@ Worker::~Worker()
 	if (_thread) {
 		_thread->join();
 	}
+	delete _responses;
+	delete _requests;
+	free (_response);
 }
 
 bool
@@ -57,6 +61,7 @@ Worker::schedule(uint32_t size, const void* data)
 {
 	if (_synchronous || !_requests) {
 		_workee->work(*this, size, data);
+		emit_responses ();
 		return true;
 	}
 	if (_requests->write_space() < size + sizeof(size)) {
@@ -88,11 +93,11 @@ Worker::respond(uint32_t size, const void* data)
 }
 
 bool
-Worker::verify_message_completeness(RingBuffer<uint8_t>* rb)
+Worker::verify_message_completeness(PBD::RingBuffer<uint8_t>* rb)
 {
 	uint32_t read_space = rb->read_space();
 	uint32_t size;
-	RingBuffer<uint8_t>::rw_vector vec;
+	PBD::RingBuffer<uint8_t>::rw_vector vec;
 	rb->get_read_vector (&vec);
 	if (vec.len[0] + vec.len[1] < sizeof(size)) {
 		return false;

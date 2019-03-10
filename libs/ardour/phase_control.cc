@@ -49,7 +49,6 @@ PhaseControl::set_phase_invert (uint32_t c, bool yn)
 	if (_phase_invert[c] != yn) {
 		_phase_invert[c] = yn;
 		AutomationControl::actually_set_value (_phase_invert.to_ulong(), Controllable::NoGroup);
-		_session.set_dirty ();
 	}
 }
 
@@ -59,8 +58,6 @@ PhaseControl::set_phase_invert (boost::dynamic_bitset<> p)
 	if (_phase_invert != p) {
 		_phase_invert = p;
 		AutomationControl::actually_set_value (_phase_invert.to_ulong(), Controllable::NoGroup);
-		Changed (true, Controllable::NoGroup); /* EMIT SIGNAL */
-		_session.set_dirty ();
 	}
 }
 
@@ -77,7 +74,7 @@ PhaseControl::get_state ()
 
 	string p;
 	boost::to_string (_phase_invert, p);
-	node.add_property("phase-invert", p);
+	node.set_property ("phase-invert", p);
 
 	return node;
 }
@@ -87,10 +84,9 @@ PhaseControl::set_state (XMLNode const & node, int version)
 {
 	AutomationControl::set_state (node, version);
 
-	const XMLProperty* prop;
-
-	if ((prop = node.property (X_("phase-invert"))) != 0) {
-		set_phase_invert (boost::dynamic_bitset<> (prop->value ()));
+	std::string str;
+	if (node.get_property (X_("phase-invert"), str)) {
+		set_phase_invert (boost::dynamic_bitset<> (str));
 	}
 
 	return 0;

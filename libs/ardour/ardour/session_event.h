@@ -33,14 +33,13 @@
 
 namespace ARDOUR {
 
-class Slave;
+class TransportMaster;
 class Region;
 
 class LIBARDOUR_API SessionEvent {
 public:
 	enum Type {
 		SetTransportSpeed,
-		SetTrackSpeed,
 		Locate,
 		LocateRoll,
 		LocateRollLocate,
@@ -50,9 +49,7 @@ public:
 		RangeStop,
 		RangeLocate,
 		Overwrite,
-		SetSyncSource,
 		Audition,
-		InputConfigurationChange,
 		SetPlayAudioRange,
 		CancelPlayAudioRange,
 		RealTimeOperation,
@@ -60,12 +57,12 @@ public:
 		AdjustCaptureBuffering,
 		SetTimecodeTransmission,
 		Skip,
+		SetTransportMaster,
 
 		/* only one of each of these events can be queued at any one time */
 
 		StopOnce,
 		AutoLoop,
-		AutoLoopDeclick,
 	};
 
 	enum Action {
@@ -77,16 +74,15 @@ public:
 
 	Type       type;
 	Action     action;
-	framepos_t action_frame;
-	framepos_t target_frame;
+	samplepos_t action_sample;
+	samplepos_t target_sample;
 	double     speed;
 
 	union {
-		void*        ptr;
-		bool         yes_or_no;
-		framepos_t   target2_frame;
-		Slave*       slave;
-		Route*       route;
+		void*            ptr;
+		bool             yes_or_no;
+		samplepos_t      target2_sample;
+		Route*           route;
 	};
 
 	union {
@@ -112,19 +108,20 @@ public:
 	std::list<MusicRange> music_range;
 
 	boost::shared_ptr<Region> region;
+	boost::shared_ptr<TransportMaster> transport_master;
 
-	SessionEvent (Type t, Action a, framepos_t when, framepos_t where, double spd, bool yn = false, bool yn2 = false, bool yn3 = false);
+	SessionEvent (Type t, Action a, samplepos_t when, samplepos_t where, double spd, bool yn = false, bool yn2 = false, bool yn3 = false);
 
 	void set_ptr (void* p) {
 		ptr = p;
 	}
 
 	bool before (const SessionEvent& other) const {
-		return action_frame < other.action_frame;
+		return action_sample < other.action_sample;
 	}
 
 	bool after (const SessionEvent& other) const {
-		return action_frame > other.action_frame;
+		return action_sample > other.action_sample;
 	}
 
 	static bool compare (const SessionEvent *e1, const SessionEvent *e2) {
@@ -134,7 +131,7 @@ public:
 	void* operator new (size_t);
 	void  operator delete (void *ptr, size_t /*size*/);
 
-	static const framepos_t Immediate = -1;
+	static const samplepos_t Immediate = -1;
 
 	static bool has_per_thread_pool ();
 	static void create_per_thread_pool (const std::string& n, uint32_t nitems);
@@ -160,11 +157,13 @@ public:
 	void clear_events (SessionEvent::Type type, boost::function<void (void)> after);
 
 protected:
-	RingBuffer<SessionEvent*> pending_events;
+	PBD::RingBuffer<SessionEvent*> pending_events;
 	typedef std::list<SessionEvent *> Events;
 	Events           events;
 	Events           immediate_events;
 	Events::iterator next_event;
+
+	Glib::Threads::Mutex rb_write_lock;
 
 	/* there can only ever be one of each of these */
 
@@ -174,13 +173,13 @@ protected:
 
 	void dump_events () const;
 	void merge_event (SessionEvent*);
-	void replace_event (SessionEvent::Type, framepos_t action_frame, framepos_t target = 0);
+	void replace_event (SessionEvent::Type, samplepos_t action_sample, samplepos_t target = 0);
 	bool _replace_event (SessionEvent*);
 	bool _remove_event (SessionEvent *);
 	void _clear_event_type (SessionEvent::Type);
 
-	void add_event (framepos_t action_frame, SessionEvent::Type type, framepos_t target_frame = 0);
-	void remove_event (framepos_t frame, SessionEvent::Type type);
+	void add_event (samplepos_t action_sample, SessionEvent::Type type, samplepos_t target_sample = 0);
+	void remove_event (samplepos_t sample, SessionEvent::Type type);
 
 	virtual void process_event(SessionEvent*) = 0;
 	virtual void set_next_event () = 0;

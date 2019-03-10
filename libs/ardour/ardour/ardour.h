@@ -31,7 +31,6 @@
 
 #include "pbd/error.h"
 #include "pbd/failed_constructor.h"
-#include "pbd/locale_guard.h"
 #include "pbd/stateful.h"
 
 #include "ardour/libardour_visibility.h"
@@ -52,7 +51,7 @@ namespace ARDOUR {
 	extern LIBARDOUR_API PBD::Signal1<void,int> PluginScanTimeout;
 	extern LIBARDOUR_API PBD::Signal0<void> GUIIdle;
 	extern LIBARDOUR_API PBD::Signal3<bool,std::string,std::string,int> CopyConfigurationFiles;
-	extern LIBARDOUR_API std::vector<std::string> reserved_io_names;
+	extern LIBARDOUR_API std::map<std::string, bool> reserved_io_names;
 
 	/**
 	 * @param with_vst true to enable VST Support
@@ -63,7 +62,7 @@ namespace ARDOUR {
 	 * @return true if Ardour library was successfully initialized
 	 */
 	LIBARDOUR_API bool init (bool with_vst, bool try_optimization, const char* localedir);
-	LIBARDOUR_API void init_post_engine ();
+	LIBARDOUR_API void init_post_engine (uint32_t);
 	LIBARDOUR_API void cleanup ();
 	LIBARDOUR_API bool no_auto_connect ();
 	LIBARDOUR_API void make_property_quarks ();

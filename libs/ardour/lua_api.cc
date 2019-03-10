@@ -103,8 +103,8 @@ ARDOUR::LuaAPI::new_luaproc (Session *s, const string& name)
 	return boost::shared_ptr<Processor> (new PluginInsert (*s, p));
 }
 
-PluginInfoPtr
-ARDOUR::LuaAPI::new_plugin_info (const string& name, ARDOUR::PluginType type)
+PluginInfoList
+ARDOUR::LuaAPI::list_plugins ()
 {
 	PluginManager& manager = PluginManager::instance ();
 	PluginInfoList all_plugs;
@@ -112,6 +112,9 @@ ARDOUR::LuaAPI::new_plugin_info (const string& name, ARDOUR::PluginType type)
 	all_plugs.insert (all_plugs.end (), manager.lua_plugin_info ().begin (), manager.lua_plugin_info ().end ());
 #ifdef WINDOWS_VST_SUPPORT
 	all_plugs.insert (all_plugs.end (), manager.windows_vst_plugin_info ().begin (), manager.windows_vst_plugin_info ().end ());
+#endif
+#ifdef MACVST_SUPPORT
+	all_plugs.insert (all_plugs.end (), manager.mac_vst_plugin_info ().begin (), manager.mac_vst_plugin_info ().end ());
 #endif
 #ifdef LXVST_SUPPORT
 	all_plugs.insert (all_plugs.end (), manager.lxvst_plugin_info ().begin (), manager.lxvst_plugin_info ().end ());
@@ -122,6 +125,34 @@ ARDOUR::LuaAPI::new_plugin_info (const string& name, ARDOUR::PluginType type)
 #ifdef LV2_SUPPORT
 	all_plugs.insert (all_plugs.end (), manager.lv2_plugin_info ().begin (), manager.lv2_plugin_info ().end ());
 #endif
+	all_plugs.insert (all_plugs.end (), manager.lua_plugin_info ().begin (), manager.lua_plugin_info ().end ());
+
+	return all_plugs;
+}
+
+PluginInfoPtr
+ARDOUR::LuaAPI::new_plugin_info (const string& name, ARDOUR::PluginType type)
+{
+	PluginManager& manager = PluginManager::instance ();
+	PluginInfoList all_plugs;
+	all_plugs.insert (all_plugs.end (), manager.ladspa_plugin_info ().begin (), manager.ladspa_plugin_info ().end ());
+	all_plugs.insert (all_plugs.end (), manager.lua_plugin_info ().begin (), manager.lua_plugin_info ().end ());
+#ifdef WINDOWS_VST_SUPPORT
+	all_plugs.insert (all_plugs.end (), manager.windows_vst_plugin_info ().begin (), manager.windows_vst_plugin_info ().end ());
+#endif
+#ifdef MACVST_SUPPORT
+	all_plugs.insert (all_plugs.end (), manager.mac_vst_plugin_info ().begin (), manager.mac_vst_plugin_info ().end ());
+#endif
+#ifdef LXVST_SUPPORT
+	all_plugs.insert (all_plugs.end (), manager.lxvst_plugin_info ().begin (), manager.lxvst_plugin_info ().end ());
+#endif
+#ifdef AUDIOUNIT_SUPPORT
+	all_plugs.insert (all_plugs.end (), manager.au_plugin_info ().begin (), manager.au_plugin_info ().end ());
+#endif
+#ifdef LV2_SUPPORT
+	all_plugs.insert (all_plugs.end (), manager.lv2_plugin_info ().begin (), manager.lv2_plugin_info ().end ());
+#endif
+	all_plugs.insert (all_plugs.end (), manager.lua_plugin_info ().begin (), manager.lua_plugin_info ().end ());
 
 	for (PluginInfoList::const_iterator i = all_plugs.begin (); i != all_plugs.end (); ++i) {
 		if (((*i)->name == name || (*i)->unique_id == name) && (*i)->type == type) {
@@ -207,6 +238,17 @@ ARDOUR::LuaAPI::get_processor_param (boost::shared_ptr<Processor> proc, uint32_t
 	return get_plugin_insert_param (pi, which, ok);
 }
 
+bool
+ARDOUR::LuaAPI::reset_processor_to_default ( boost::shared_ptr<Processor> proc )
+{
+	boost::shared_ptr<PluginInsert> pi = boost::dynamic_pointer_cast<PluginInsert> (proc);
+	if (pi) {
+		pi->reset_parameters_to_default();
+		return true;
+	}
+	return false;
+}
+
 int
 ARDOUR::LuaAPI::plugin_automation (lua_State *L)
 {
@@ -250,6 +292,128 @@ ARDOUR::LuaAPI::plugin_automation (lua_State *L)
 	luabridge::Stack<boost::shared_ptr<Evoral::ControlList> >::push (L, c->list ());
 	luabridge::Stack<ParameterDescriptor>::push (L, pd);
 	return 3;
+}
+
+int
+ARDOUR::LuaAPI::sample_to_timecode (lua_State *L)
+{
+	int top = lua_gettop (L);
+	if (top < 3) {
+		return luaL_argerror (L, 1, "invalid number of arguments sample_to_timecode (TimecodeFormat, sample_rate, sample)");
+	}
+	typedef Timecode::TimecodeFormat T;
+	T tf = luabridge::Stack<T>::get (L, 1);
+	double sample_rate = luabridge::Stack<double>::get (L, 2);
+	int64_t sample = luabridge::Stack<int64_t>::get (L, 3);
+
+	Timecode::Time timecode;
+
+	Timecode::sample_to_timecode (
+			sample, timecode, false, false,
+			Timecode::timecode_to_frames_per_second (tf),
+			Timecode::timecode_has_drop_frames (tf),
+			sample_rate,
+			0, false, 0);
+
+	luabridge::Stack<uint32_t>::push (L, timecode.hours);
+	luabridge::Stack<uint32_t>::push (L, timecode.minutes);
+	luabridge::Stack<uint32_t>::push (L, timecode.seconds);
+	luabridge::Stack<uint32_t>::push (L, timecode.frames);
+	return 4;
+}
+
+int
+ARDOUR::LuaAPI::timecode_to_sample (lua_State *L)
+{
+	int top = lua_gettop (L);
+	if (top < 6) {
+		return luaL_argerror (L, 1, "invalid number of arguments sample_to_timecode (TimecodeFormat, sample_rate, hh, mm, ss, ff)");
+	}
+	typedef Timecode::TimecodeFormat T;
+	T tf = luabridge::Stack<T>::get (L, 1);
+	double sample_rate = luabridge::Stack<double>::get (L, 2);
+	int hh = luabridge::Stack<int>::get (L, 3);
+	int mm = luabridge::Stack<int>::get (L, 4);
+	int ss = luabridge::Stack<int>::get (L, 5);
+	int ff = luabridge::Stack<int>::get (L, 6);
+
+	Timecode::Time timecode;
+	timecode.negative = false;
+	timecode.hours = hh;
+	timecode.minutes = mm;
+	timecode.seconds = ss;
+	timecode.frames = ff;
+	timecode.subframes = 0;
+	timecode.rate = Timecode::timecode_to_frames_per_second (tf);
+	timecode.drop = Timecode::timecode_has_drop_frames (tf);
+
+	int64_t sample;
+
+	Timecode::timecode_to_sample (
+			timecode, sample, false, false,
+			sample_rate, 0, false, 0);
+
+	luabridge::Stack<int64_t>::push (L, sample);
+	return 1;
+}
+
+int
+ARDOUR::LuaAPI::sample_to_timecode_lua (lua_State *L)
+{
+	int top = lua_gettop (L);
+	if (top < 2) {
+		return luaL_argerror (L, 1, "invalid number of arguments sample_to_timecode (sample)");
+	}
+	Session const* const s = luabridge::Userdata::get <Session> (L, 1, true);
+	int64_t sample = luabridge::Stack<int64_t>::get (L, 2);
+
+	Timecode::Time timecode;
+
+	Timecode::sample_to_timecode (
+			sample, timecode, false, false,
+			s->timecode_frames_per_second (),
+			s->timecode_drop_frames (),
+			s->sample_rate (),
+			0, false, 0);
+
+	luabridge::Stack<uint32_t>::push (L, timecode.hours);
+	luabridge::Stack<uint32_t>::push (L, timecode.minutes);
+	luabridge::Stack<uint32_t>::push (L, timecode.seconds);
+	luabridge::Stack<uint32_t>::push (L, timecode.frames);
+	return 4;
+}
+int
+ARDOUR::LuaAPI::timecode_to_sample_lua (lua_State *L)
+{
+	int top = lua_gettop (L);
+	if (top < 5) {
+		return luaL_argerror (L, 1, "invalid number of arguments sample_to_timecode (hh, mm, ss, ff)");
+	}
+	Session const* const s = luabridge::Userdata::get <Session> (L, 1, true);
+	int hh = luabridge::Stack<int>::get (L, 2);
+	int mm = luabridge::Stack<int>::get (L, 3);
+	int ss = luabridge::Stack<int>::get (L, 4);
+	int ff = luabridge::Stack<int>::get (L, 5);
+
+	Timecode::Time timecode;
+	timecode.negative = false;
+	timecode.hours = hh;
+	timecode.minutes = mm;
+	timecode.seconds = ss;
+	timecode.frames = ff;
+	timecode.subframes = 0;
+	timecode.rate = s->timecode_frames_per_second ();
+	timecode.drop = s->timecode_drop_frames ();
+
+	int64_t sample;
+
+	Timecode::timecode_to_sample (
+			timecode, sample, false, false,
+			s->sample_rate (),
+			0, false, 0);
+
+	luabridge::Stack<int64_t>::push (L, sample);
+	return 1;
 }
 
 int
@@ -352,7 +516,7 @@ ARDOUR::LuaAPI::hsla_to_rgba (lua_State *L)
 		a = luabridge::Stack<double>::get (L, 4);
 	}
 
-	// we can't use ArdourCanvas::hsva_to_color here
+	// we can't use Gtkmm2ext::hsva_to_color here
 	// besides we want HSL not HSV and without intermediate
 	// color_to_rgba (rgba_to_color ())
 	double r, g, b;
@@ -366,6 +530,40 @@ ARDOUR::LuaAPI::hsla_to_rgba (lua_State *L)
 	luabridge::Stack<double>::push (L, g);
 	luabridge::Stack<double>::push (L, b);
 	luabridge::Stack<double>::push (L, a);
+	return 4;
+}
+
+std::string
+ARDOUR::LuaAPI::ascii_dtostr (const double d)
+{
+	gchar buf[G_ASCII_DTOSTR_BUF_SIZE];
+	g_ascii_dtostr (buf, sizeof(buf), d);
+	return std::string (buf);
+}
+
+int
+ARDOUR::LuaAPI::color_to_rgba (lua_State *L)
+{
+	int top = lua_gettop (L);
+	if (top < 1) {
+		return luaL_argerror (L, 1, "invalid number of arguments, color_to_rgba (uint32_t)");
+	}
+	uint32_t color = luabridge::Stack<uint32_t>::get (L, 1);
+	double r, g, b, a;
+
+	/* libardour is no user of libcanvas, otherwise
+	 * we could just call
+	 * Gtkmm2ext::color_to_rgba (color, r, g, b, a);
+	 */
+	r = ((color >> 24) & 0xff) / 255.0;
+	g = ((color >> 16) & 0xff) / 255.0;
+	b = ((color >>  8) & 0xff) / 255.0;
+	a = ((color >>  0) & 0xff) / 255.0;
+
+	luabridge::Stack <double>::push (L, r);
+	luabridge::Stack <double>::push (L, g);
+	luabridge::Stack <double>::push (L, b);
+	luabridge::Stack <double>::push (L, a);
 	return 4;
 }
 
@@ -483,10 +681,11 @@ LuaTableRef::set (lua_State* L)
 					}
 					// invalid userdata -- fall through
 				}
-				// no break
+				/* fall through */
 			case LUA_TFUNCTION: // no support -- we could... string.format("%q", string.dump(value, true))
+				/* fall through */
 			case LUA_TTABLE: // no nested tables, sorry.
-			case LUA_TNIL: // fallthrough
+			case LUA_TNIL:
 			default:
 				// invalid value
 				lua_pop (L, 2);
@@ -551,7 +750,7 @@ LuaAPI::Vamp::Vamp (const std::string& key, float sample_rate)
 	: _plugin (0)
 	, _sample_rate (sample_rate)
 	, _bufsize (1024)
-	, _stepsize (512)
+	, _stepsize (1024)
 	, _initialized (false)
 {
 	using namespace ::Vamp::HostExt;
@@ -562,6 +761,14 @@ LuaAPI::Vamp::Vamp (const std::string& key, float sample_rate)
 	if (!_plugin) {
 		PBD::error << string_compose (_("VAMP Plugin \"%1\" could not be loaded"), key) << endmsg;
 		throw failed_constructor ();
+	}
+
+	size_t bs = _plugin->getPreferredBlockSize ();
+	size_t ss = _plugin->getPreferredStepSize ();
+
+	if (bs > 0 && ss > 0 && bs <= 8192 && ss <= 8192) {
+		_bufsize = bs;
+		_stepsize = ss;
 	}
 }
 
@@ -606,12 +813,12 @@ LuaAPI::Vamp::analyze (boost::shared_ptr<ARDOUR::Readable> r, uint32_t channel, 
 	float* data = new float[_bufsize];
 	float* bufs[1] = { data };
 
-	framecnt_t len = r->readable_length();
-	framepos_t pos = 0;
+	samplecnt_t len = r->readable_length();
+	samplepos_t pos = 0;
 
 	int rv = 0;
 	while (1) {
-		framecnt_t to_read = std::min ((len - pos), _bufsize);
+		samplecnt_t to_read = std::min ((len - pos), _bufsize);
 		if (r->read (data, pos, to_read, channel) != to_read) {
 			rv = -1;
 			break;
@@ -645,4 +852,24 @@ LuaAPI::Vamp::process (const std::vector<float*>& d, ::Vamp::RealTime rt)
 	}
 	const float* const* bufs = &d[0];
 	return _plugin->process (bufs, rt);
+}
+
+boost::shared_ptr<Evoral::Note<Temporal::Beats> >
+LuaAPI::new_noteptr (uint8_t chan, Temporal::Beats beat_time, Temporal::Beats length, uint8_t note, uint8_t velocity)
+{
+	return boost::shared_ptr<Evoral::Note<Temporal::Beats> > (new Evoral::Note<Temporal::Beats>(chan, beat_time, length, note, velocity));
+}
+
+std::list<boost::shared_ptr<Evoral::Note<Temporal::Beats> > >
+LuaAPI::note_list (boost::shared_ptr<MidiModel> mm)
+{
+	typedef boost::shared_ptr<Evoral::Note<Temporal::Beats> > NotePtr;
+
+	std::list<NotePtr> note_ptr_list;
+
+	const MidiModel::Notes& notes = mm->notes();
+	for (MidiModel::Notes::const_iterator i = notes.begin(); i != notes.end(); ++i) {
+		note_ptr_list.push_back (*i);
+	}
+	return note_ptr_list;
 }

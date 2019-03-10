@@ -26,14 +26,16 @@
 #include "evoral/EventList.hpp"
 #include "evoral/Control.hpp"
 
-#include "ardour/beats_frames_converter.h"
+#include "ardour/beats_samples_converter.h"
 #include "ardour/debug.h"
 #include "ardour/midi_model.h"
 #include "ardour/midi_playlist.h"
 #include "ardour/midi_region.h"
 #include "ardour/midi_source.h"
 #include "ardour/midi_state_tracker.h"
+#include "ardour/region_factory.h"
 #include "ardour/session.h"
+#include "ardour/tempo.h"
 #include "ardour/types.h"
 
 #include "pbd/i18n.h"
@@ -76,8 +78,8 @@ MidiPlaylist::MidiPlaylist (boost::shared_ptr<const MidiPlaylist> other, string 
 }
 
 MidiPlaylist::MidiPlaylist (boost::shared_ptr<const MidiPlaylist> other,
-                            framepos_t                            start,
-                            framecnt_t                            dur,
+                            samplepos_t                            start,
+                            samplecnt_t                            dur,
                             string                                name,
                             bool                                  hidden)
 	: Playlist (other, start, dur, name, hidden)
@@ -92,7 +94,7 @@ MidiPlaylist::~MidiPlaylist ()
 
 template<typename Time>
 struct EventsSortByTimeAndType {
-    bool operator() (Evoral::Event<Time>* a, Evoral::Event<Time>* b) {
+    bool operator() (const Evoral::Event<Time>* a, const Evoral::Event<Time>* b) {
 	    if (a->time() == b->time()) {
 		    if (parameter_is_midi ((AutomationType)a->event_type()) &&
 		        parameter_is_midi ((AutomationType)b->event_type())) {
@@ -106,15 +108,15 @@ struct EventsSortByTimeAndType {
     }
 };
 
-framecnt_t
-MidiPlaylist::read (Evoral::EventSink<framepos_t>& dst,
-                    framepos_t                     start,
-                    framecnt_t                     dur,
-                    Evoral::Range<framepos_t>*     loop_range,
+samplecnt_t
+MidiPlaylist::read (Evoral::EventSink<samplepos_t>& dst,
+                    samplepos_t                     start,
+                    samplecnt_t                     dur,
+                    Evoral::Range<samplepos_t>*     loop_range,
                     unsigned                       chan_n,
                     MidiChannelFilter*             filter)
 {
-	typedef pair<MidiStateTracker*,framepos_t> TrackerInfo;
+	typedef pair<MidiStateTracker*,samplepos_t> TrackerInfo;
 
 	Playlist::RegionReadLock rl (this);
 
@@ -128,10 +130,16 @@ MidiPlaylist::read (Evoral::EventSink<framepos_t>& dst,
 	}
 
 	/* Find relevant regions that overlap [start..end] */
-	const framepos_t                         end = start + dur - 1;
+	const samplepos_t                         end = start + dur - 1;
 	std::vector< boost::shared_ptr<Region> > regs;
 	std::vector< boost::shared_ptr<Region> > ended;
 	for (RegionList::iterator i = regions.begin(); i != regions.end(); ++i) {
+
+		/* check for the case of solo_selection */
+		bool force_transparent = ( _session.solo_selection_active() && SoloSelectedActive() && !SoloSelectedListIncludes( (const Region*) &(**i) ) );
+		if ( force_transparent )
+			continue;
+
 		switch ((*i)->coverage (start, end)) {
 		case Evoral::OverlapStart:
 		case Evoral::OverlapInternal:
@@ -161,8 +169,8 @@ MidiPlaylist::read (Evoral::EventSink<framepos_t>& dst,
 	const bool direct_read = regs.size() == 1 &&
 		(ended.empty() || (ended.size() == 1 && ended.front() == regs.front()));
 
-	Evoral::EventList<framepos_t>  evlist;
-	Evoral::EventSink<framepos_t>& tgt = direct_read ? dst : evlist;
+	Evoral::EventList<samplepos_t>  evlist;
+	Evoral::EventSink<samplepos_t>& tgt = direct_read ? dst : evlist;
 
 	DEBUG_TRACE (DEBUG::MidiPlaylistIO,
 	             string_compose ("\t%1 regions to read, direct: %2\n", regs.size(), direct_read));
@@ -182,12 +190,12 @@ MidiPlaylist::read (Evoral::EventSink<framepos_t>& dst,
 			new_tracker = true;
 			DEBUG_TRACE (DEBUG::MidiPlaylistIO,
 			             string_compose ("\tPre-read %1 (%2 .. %3): new tracker\n",
-			                             mr->name(), mr->position(), mr->last_frame()));
+			                             mr->name(), mr->position(), mr->last_sample()));
 		} else {
 			tracker = t->second;
 			DEBUG_TRACE (DEBUG::MidiPlaylistIO,
 			             string_compose ("\tPre-read %1 (%2 .. %3): %4 active notes\n",
-			                             mr->name(), mr->position(), mr->last_frame(), tracker->tracker.on()));
+			                             mr->name(), mr->position(), mr->last_sample(), tracker->tracker.on()));
 		}
 
 		/* Read from region into target. */
@@ -195,7 +203,7 @@ MidiPlaylist::read (Evoral::EventSink<framepos_t>& dst,
 		                                                    mr->name(), start, dur, 
 		                                                    (loop_range ? loop_range->from : -1),
 		                                                    (loop_range ? loop_range->to : -1)));
-		mr->read_at (tgt, start, dur, loop_range, chan_n, _note_mode, &tracker->tracker, filter);
+		mr->read_at (tgt, start, dur, loop_range, tracker->cursor, chan_n, _note_mode, &tracker->tracker, filter);
 		DEBUG_TRACE (DEBUG::MidiPlaylistIO,
 		             string_compose ("\tPost-read: %1 active notes\n", tracker->tracker.on()));
 
@@ -207,7 +215,8 @@ MidiPlaylist::read (Evoral::EventSink<framepos_t>& dst,
 			             string_compose ("\t%1 ended, resolve notes and delete (%2) tracker\n",
 			                             mr->name(), ((new_tracker) ? "new" : "old")));
 
-			tracker->tracker.resolve_notes (tgt, loop_range ? loop_range->squish ((*i)->last_frame()) : (*i)->last_frame());
+			tracker->tracker.resolve_notes (tgt, loop_range ? loop_range->squish ((*i)->last_sample()) : (*i)->last_sample());
+			tracker->cursor.invalidate (false);
 			if (!new_tracker) {
 				_note_trackers.erase (t);
 			}
@@ -223,12 +232,12 @@ MidiPlaylist::read (Evoral::EventSink<framepos_t>& dst,
 
 	if (!direct_read && !evlist.empty()) {
 		/* We've read from multiple regions, sort the event list by time. */
-		EventsSortByTimeAndType<framepos_t> cmp;
+		EventsSortByTimeAndType<samplepos_t> cmp;
 		evlist.sort (cmp);
 
 		/* Copy ordered events from event list to dst. */
-		for (Evoral::EventList<framepos_t>::iterator e = evlist.begin(); e != evlist.end(); ++e) {
-			Evoral::Event<framepos_t>* ev (*e);
+		for (Evoral::EventList<samplepos_t>::iterator e = evlist.begin(); e != evlist.end(); ++e) {
+			Evoral::Event<samplepos_t>* ev (*e);
 			dst.write (ev->time(), ev->event_type(), ev->size(), ev->buffer());
 			delete ev;
 		}
@@ -261,7 +270,7 @@ MidiPlaylist::region_edited(boost::shared_ptr<Region>         region,
 	/* Queue any necessary edit compensation events. */
 	t->second->fixer.prepare(
 		_session.tempo_map(), cmd, mr->position() - mr->start(),
-		_read_end, mr->midi_source()->model()->active_notes());
+		_read_end, t->second->cursor.active_notes);
 }
 
 void
@@ -274,7 +283,7 @@ MidiPlaylist::reset_note_trackers ()
 }
 
 void
-MidiPlaylist::resolve_note_trackers (Evoral::EventSink<framepos_t>& dst, framepos_t time)
+MidiPlaylist::resolve_note_trackers (Evoral::EventSink<samplepos_t>& dst, samplepos_t time)
 {
 	Playlist::RegionWriteLock rl (this, false);
 
@@ -290,6 +299,15 @@ MidiPlaylist::remove_dependents (boost::shared_ptr<Region> region)
 {
 	/* MIDI regions have no dependents (crossfades) but we might be tracking notes */
 	_note_trackers.erase(region.get());
+}
+
+void
+MidiPlaylist::region_going_away (boost::weak_ptr<Region> region)
+{
+	boost::shared_ptr<Region> r = region.lock();
+	if (r) {
+		remove_dependents(r);
+	}
 }
 
 int
@@ -357,8 +375,12 @@ MidiPlaylist::destroy_region (boost::shared_ptr<Region> region)
 
 			i = tmp;
 		}
-	}
 
+		NoteTrackers::iterator t = _note_trackers.find(region.get());
+		if (t != _note_trackers.end()) {
+			_note_trackers.erase(t);
+		}
+	}
 
 	if (changed) {
 		/* overload this, it normally means "removed", not destroyed */
@@ -366,6 +388,80 @@ MidiPlaylist::destroy_region (boost::shared_ptr<Region> region)
 	}
 
 	return changed;
+}
+void
+MidiPlaylist::_split_region (boost::shared_ptr<Region> region, const MusicSample& playlist_position)
+{
+	if (!region->covers (playlist_position.sample)) {
+		return;
+	}
+
+	if (region->position() == playlist_position.sample ||
+	    region->last_sample() == playlist_position.sample) {
+		return;
+	}
+
+	boost::shared_ptr<const MidiRegion> mr = boost::dynamic_pointer_cast<MidiRegion>(region);
+
+	if (mr == 0) {
+		return;
+	}
+
+	boost::shared_ptr<Region> left;
+	boost::shared_ptr<Region> right;
+
+	string before_name;
+	string after_name;
+	const double before_qn = _session.tempo_map().exact_qn_at_sample (playlist_position.sample, playlist_position.division) - region->quarter_note();
+	const double after_qn = mr->length_beats() - before_qn;
+	MusicSample before (playlist_position.sample - region->position(), playlist_position.division);
+	MusicSample after (region->length() - before.sample, playlist_position.division);
+
+	/* split doesn't change anything about length, so don't try to splice */
+	bool old_sp = _splicing;
+	_splicing = true;
+
+	RegionFactory::region_name (before_name, region->name(), false);
+
+	{
+		PropertyList plist;
+
+		plist.add (Properties::length, before.sample);
+		plist.add (Properties::length_beats, before_qn);
+		plist.add (Properties::name, before_name);
+		plist.add (Properties::left_of_split, true);
+		plist.add (Properties::layering_index, region->layering_index ());
+		plist.add (Properties::layer, region->layer ());
+
+		/* note: we must use the version of ::create with an offset here,
+		   since it supplies that offset to the Region constructor, which
+		   is necessary to get audio region gain envelopes right.
+		*/
+		left = RegionFactory::create (region, MusicSample (0, 0), plist, true);
+	}
+
+	RegionFactory::region_name (after_name, region->name(), false);
+
+	{
+		PropertyList plist;
+
+		plist.add (Properties::length, after.sample);
+		plist.add (Properties::length_beats, after_qn);
+		plist.add (Properties::name, after_name);
+		plist.add (Properties::right_of_split, true);
+		plist.add (Properties::layering_index, region->layering_index ());
+		plist.add (Properties::layer, region->layer ());
+
+		/* same note as above */
+		right = RegionFactory::create (region, before, plist, true);
+	}
+
+	add_region_internal (left, region->position(), 0, region->quarter_note(), true);
+	add_region_internal (right, region->position() + before.sample, before.division, region->quarter_note() + before_qn, true);
+
+	remove_region_internal (region);
+
+	_splicing = old_sp;
 }
 
 set<Evoral::Parameter>

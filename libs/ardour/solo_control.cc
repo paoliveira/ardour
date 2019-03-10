@@ -191,25 +191,33 @@ SoloControl::get_value () const
 void
 SoloControl::clear_all_solo_state ()
 {
-	// ideally this function will never do anything, it only exists to forestall Murphy
+	bool change = false;
 
-#ifndef NDEBUG
-	// these are really debug messages, but of possible interest.
 	if (self_soloed()) {
-		PBD::info << string_compose (_("Cleared Explicit solo: %1\n"), name());
+		PBD::info << string_compose (_("Cleared Explicit solo: %1\n"), name()) << endmsg;
+		actually_set_value (0.0, Controllable::NoGroup);
+		change = true;
 	}
-	if (_soloed_by_others_upstream || _soloed_by_others_downstream) {
-		PBD::info << string_compose (_("Cleared Implicit solo: %1 up:%2 down:%3\n"),
-				name(), _soloed_by_others_upstream, _soloed_by_others_downstream);
+
+	if (_soloed_by_others_upstream) {
+		PBD::info << string_compose (_("Cleared upstream solo: %1 up:%2\n"), name(), _soloed_by_others_upstream)
+		          << endmsg;
+		_soloed_by_others_upstream = 0;
+		change = true;
 	}
-#endif
 
-	_soloed_by_others_upstream = 0;
-	_soloed_by_others_downstream = 0;
+	if (_soloed_by_others_downstream) {
+		PBD::info << string_compose (_("Cleared downstream solo: %1 down:%2\n"), name(), _soloed_by_others_downstream)
+		          << endmsg;
+		_soloed_by_others_downstream = 0;
+		change = true;
+	}
 
-	set_self_solo (false);
 	_transition_into_solo = 0; /* Session does not need to propagate */
-	Changed (false, Controllable::UseGroup); /* EMIT SIGNAL */
+
+	if (change) {
+		Changed (false, Controllable::NoGroup); /* EMIT SIGNAL */
+	}
 }
 
 int
@@ -219,20 +227,20 @@ SoloControl::set_state (XMLNode const & node, int version)
 		return -1;
 	}
 
-	XMLProperty const * prop;
-
-	if ((prop = node.property ("self-solo")) != 0) {
-		set_self_solo (string_is_affirmative (prop->value()));
+	bool yn;
+	if (node.get_property ("self-solo", yn)) {
+		set_self_solo (yn);
 	}
 
-	if ((prop = node.property ("soloed-by-upstream")) != 0) {
+	uint32_t val;
+	if (node.get_property ("soloed-by-upstream", val)) {
 		_soloed_by_others_upstream = 0; // needed for mod_.... () to work
-		mod_solo_by_others_upstream (atoi (prop->value()));
+		mod_solo_by_others_upstream (val);
 	}
 
-	if ((prop = node.property ("soloed-by-downstream")) != 0) {
+	if (node.get_property ("soloed-by-downstream", val)) {
 		_soloed_by_others_downstream = 0; // needed for mod_.... () to work
-		mod_solo_by_others_downstream (atoi (prop->value()));
+		mod_solo_by_others_downstream (val);
 	}
 
 	return 0;
@@ -243,19 +251,18 @@ SoloControl::get_state ()
 {
 	XMLNode& node (SlavableAutomationControl::get_state());
 
-	node.add_property (X_("self-solo"), _self_solo ? X_("yes") : X_("no"));
-	char buf[32];
-	snprintf (buf, sizeof(buf), "%d",  _soloed_by_others_upstream);
-	node.add_property (X_("soloed-by-upstream"), buf);
-	snprintf (buf, sizeof(buf), "%d",  _soloed_by_others_downstream);
-	node.add_property (X_("soloed-by-downstream"), buf);
+	node.set_property (X_("self-solo"), _self_solo);
+	node.set_property (X_("soloed-by-upstream"), _soloed_by_others_upstream);
+	node.set_property (X_("soloed-by-downstream"), _soloed_by_others_downstream);
 
 	return node;
 }
 
 void
-SoloControl::master_changed (bool /*from self*/, GroupControlDisposition, boost::shared_ptr<AutomationControl> m)
+SoloControl::master_changed (bool /*from self*/, GroupControlDisposition, boost::weak_ptr<AutomationControl> wm)
 {
+	boost::shared_ptr<AutomationControl> m = wm.lock ();
+	assert (m);
 	bool send_signal = false;
 
 	_transition_into_solo = 0;

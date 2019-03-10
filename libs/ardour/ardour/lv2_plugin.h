@@ -59,11 +59,11 @@ class LIBARDOUR_API LV2Plugin : public ARDOUR::Plugin, public ARDOUR::Workee
 	LV2Plugin (ARDOUR::AudioEngine& engine,
 	           ARDOUR::Session&     session,
 	           const void*          c_plugin,
-	           framecnt_t           sample_rate);
+	           samplecnt_t           sample_rate);
 	LV2Plugin (const LV2Plugin &);
 	~LV2Plugin ();
 
-	static bool force_state_save;
+	static bool force_state_save; // to be used only by session-state
 
 	std::string unique_id () const;
 	const char* uri () const;
@@ -74,8 +74,7 @@ class LIBARDOUR_API LV2Plugin : public ARDOUR::Plugin, public ARDOUR::Workee
 	uint32_t    num_ports () const;
 	uint32_t    parameter_count () const;
 	float       default_value (uint32_t port);
-	framecnt_t  max_latency () const;
-	framecnt_t  signal_latency () const;
+	samplecnt_t  max_latency () const;
 	void        set_parameter (uint32_t port, float val);
 	float       get_parameter (uint32_t port) const;
 	std::string get_docs() const;
@@ -112,9 +111,9 @@ class LIBARDOUR_API LV2Plugin : public ARDOUR::Plugin, public ARDOUR::Workee
 	bool requires_fixed_sized_buffers () const;
 
 	int connect_and_run (BufferSet& bufs,
-	                     framepos_t start, framepos_t end, double speed,
-	                     ChanMapping in, ChanMapping out,
-	                     pframes_t nframes, framecnt_t offset);
+	                     samplepos_t start, samplepos_t end, double speed,
+	                     ChanMapping const& in, ChanMapping const& out,
+	                     pframes_t nframes, samplecnt_t offset);
 
 	std::string describe_parameter (Evoral::Parameter);
 	std::string state_node_name () const { return "lv2"; }
@@ -172,6 +171,7 @@ class LIBARDOUR_API LV2Plugin : public ARDOUR::Plugin, public ARDOUR::Workee
 	void                       set_property(uint32_t key, const Variant& value);
 	const PropertyDescriptors& get_supported_properties() const { return _property_descriptors; }
 	const ParameterDescriptor& get_property_descriptor(uint32_t id) const;
+	Variant                    get_property_value (uint32_t) const;
 	void                       announce_property_values();
 
   private:
@@ -181,7 +181,7 @@ class LIBARDOUR_API LV2Plugin : public ARDOUR::Plugin, public ARDOUR::Workee
 	LV2_Feature** _features;
 	Worker*       _worker;
 	Worker*       _state_worker;
-	framecnt_t    _sample_rate;
+	samplecnt_t    _sample_rate;
 	float*        _control_data;
 	float*        _shadow_data;
 	float*        _defaults;
@@ -190,8 +190,8 @@ class LIBARDOUR_API LV2Plugin : public ARDOUR::Plugin, public ARDOUR::Workee
 	float*        _bpm_control_port;  ///< Special input set by ardour
 	float*        _freewheel_control_port;  ///< Special input set by ardour
 	float*        _latency_control_port;  ///< Special output set by ardour
-	framepos_t    _next_cycle_start;  ///< Expected start frame of next run cycle
-	double        _next_cycle_speed;  ///< Expected start frame of next run cycle
+	samplepos_t    _next_cycle_start;  ///< Expected start sample of next run cycle
+	double        _next_cycle_speed;  ///< Expected start sample of next run cycle
 	double        _next_cycle_beat;  ///< Expected bar_beat of next run cycle
 	double        _current_bpm;
 	PBD::ID       _insert_id;
@@ -201,8 +201,8 @@ class LIBARDOUR_API LV2Plugin : public ARDOUR::Plugin, public ARDOUR::Workee
 	URIMap&       _uri_map;
 	bool          _no_sample_accurate_ctrl;
 	bool          _can_write_automation;
-	framecnt_t    _max_latency;
-	framecnt_t    _current_latency;
+	samplecnt_t    _max_latency;
+	samplecnt_t    _current_latency;
 
 	friend const void* lv2plugin_get_port_value(const char* port_symbol,
 	                                            void*       user_data,
@@ -230,6 +230,8 @@ class LIBARDOUR_API LV2Plugin : public ARDOUR::Plugin, public ARDOUR::Workee
 	std::vector<PortFlags>         _port_flags;
 	std::vector<size_t>            _port_minimumSize;
 	std::map<std::string,uint32_t> _port_indices;
+
+	std::map<uint32_t, Variant>    _property_values;
 
 	PropertyDescriptors _property_descriptors;
 
@@ -264,20 +266,36 @@ class LIBARDOUR_API LV2Plugin : public ARDOUR::Plugin, public ARDOUR::Workee
 	                 uint32_t       size,
 	                 const uint8_t* body);
 
-	bool write_to(RingBuffer<uint8_t>* dest,
-	              uint32_t             index,
-	              uint32_t             protocol,
-	              uint32_t             size,
-	              const uint8_t*       body);
+	bool write_to(PBD::RingBuffer<uint8_t>* dest,
+	              uint32_t                  index,
+	              uint32_t                  protocol,
+	              uint32_t                  size,
+	              const uint8_t*            body);
 
 	// Created on demand so the space is only consumed if necessary
-	RingBuffer<uint8_t>* _to_ui;
-	RingBuffer<uint8_t>* _from_ui;
+	PBD::RingBuffer<uint8_t>* _to_ui;
+	PBD::RingBuffer<uint8_t>* _from_ui;
 
 	Glib::Threads::Mutex _work_mutex;
 
 #ifdef LV2_EXTENDED
+	static void queue_draw (LV2_Inline_Display_Handle);
+	static void midnam_update (LV2_Midnam_Handle);
+	static void bankpatch_notify (LV2_BankPatch_Handle, uint8_t, uint32_t, uint8_t);
+
 	const LV2_Inline_Display_Interface* _display_interface;
+	bool _inline_display_in_gui;
+	const LV2_Midnam_Interface*    _midname_interface;
+
+	uint32_t _bankpatch[16];
+	bool seen_bankpatch;
+	bool knows_bank_patch () { return seen_bankpatch; }
+	uint32_t bank_patch (uint8_t chn) {
+		assert (chn < 16);
+		if (chn > 15) return UINT32_MAX;
+		return _bankpatch[chn];
+	}
+
 #endif
 
 	typedef struct {
@@ -294,6 +312,8 @@ class LIBARDOUR_API LV2Plugin : public ARDOUR::Plugin, public ARDOUR::Workee
 	LV2_Feature    _def_state_feature;
 #ifdef LV2_EXTENDED
 	LV2_Feature    _queue_draw_feature;
+	LV2_Feature    _midnam_feature;
+	LV2_Feature    _bankpatch_feature;
 #endif
 
 	// Options passed to plugin
@@ -312,7 +332,7 @@ class LIBARDOUR_API LV2Plugin : public ARDOUR::Plugin, public ARDOUR::Workee
 	static char* lv2_state_make_path (void*       host_data,
 	                                  const char* path);
 
-	void init (const void* c_plugin, framecnt_t rate);
+	void init (const void* c_plugin, samplecnt_t rate);
 	void allocate_atom_event_buffers ();
 	void run (pframes_t nsamples, bool sync_work = false);
 
@@ -320,8 +340,16 @@ class LIBARDOUR_API LV2Plugin : public ARDOUR::Plugin, public ARDOUR::Workee
 
 #ifdef LV2_EXTENDED
 	bool has_inline_display ();
+	bool inline_display_in_gui ();
 	Plugin::Display_Image_Surface* render_inline_display (uint32_t, uint32_t);
+
+	bool has_midnam ();
+	bool read_midnam ();
+	std::string midnam_model ();
+	bool _midnam_dirty;
 #endif
+
+	samplecnt_t plugin_latency () const;
 
 	void latency_compute_run ();
 	std::string do_save_preset (std::string);
@@ -340,8 +368,6 @@ public:
 
 	PluginPtr load (Session& session);
 	std::vector<Plugin::PresetRecord> get_presets (bool user_only) const;
-	virtual bool in_category (const std::string &c) const;
-	virtual bool is_instrument() const;
 
 	char * _plugin_uri;
 };

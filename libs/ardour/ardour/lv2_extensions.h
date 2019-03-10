@@ -32,6 +32,7 @@
 #define LV2_INLINEDISPLAY_PREFIX LV2_INLINEDISPLAY_URI "#"
 #define LV2_INLINEDISPLAY__interface LV2_INLINEDISPLAY_PREFIX "interface"
 #define LV2_INLINEDISPLAY__queue_draw LV2_INLINEDISPLAY_PREFIX "queue_draw"
+#define LV2_INLINEDISPLAY__in_gui LV2_INLINEDISPLAY_PREFIX "in_gui"
 
 /** Opaque handle for LV2_Inline_Display::queue_draw() */
 typedef void* LV2_Inline_Display_Handle;
@@ -121,6 +122,8 @@ typedef struct {
 #define LV2_PLUGINLICENSE_URI "http://harrisonconsoles.com/lv2/license"
 #define LV2_PLUGINLICENSE_PREFIX LV2_PLUGINLICENSE_URI "#"
 #define LV2_PLUGINLICENSE__interface LV2_PLUGINLICENSE_PREFIX "interface"
+#define LV2_PLUGINLICENSE__interface2 LV2_PLUGINLICENSE_PREFIX "interface2"
+
 
 typedef struct _LV2_License_Interface {
 	/* @return -1 if no license is needed; 0 if unlicensed, 1 if licensed */
@@ -133,6 +136,12 @@ typedef struct _LV2_License_Interface {
 	const char* (*product_name)(LV2_Handle instance);
 	/* @return link to website or webstore */
 	const char* (*store_url)(LV2_Handle instance);
+	/* interface2 ext: preferred location to install the license file, the caller needs to free this */
+	char* (*preferred_license_file_path)(LV2_Handle instance);
+	/* interface2 ext: currently used license file (if any, may be NULL), the caller needs to free this */
+	char* (*current_license_file_path)(LV2_Handle instance);
+	/* interface2 ext: free() allocated strings (licensee, license_file_paths) */
+	void (*free)(char*);
 } LV2_License_Interface;
 
 /**
@@ -171,4 +180,77 @@ typedef struct _LV2_License_Interface {
    @}
 */
 
+/**
+   @defgroup midnam MIDI Naming
+
+   @{
+*/
+
+
+#define LV2_MIDNAM_URI "http://ardour.org/lv2/midnam"
+#define LV2_MIDNAM_PREFIX LV2_MIDNAM_URI "#"
+#define LV2_MIDNAM__interface LV2_MIDNAM_PREFIX "interface"
+#define LV2_MIDNAM__update LV2_MIDNAM_PREFIX "update"
+
+typedef void* LV2_Midnam_Handle;
+
+/** a LV2 Feature provided by the Host to the plugin */
+typedef struct {
+	/** Opaque host data */
+	LV2_Midnam_Handle handle;
+	/** Request from run() that the host should re-read the midnam */
+	void (*update)(LV2_Midnam_Handle handle);
+} LV2_Midnam;
+
+typedef struct {
+	/** Query midnam document. The plugin
+	 * is expected to return a null-terminated XML
+	 * text which is a valid midnam desciption
+	 * (or NULL in case of error).
+	 *
+	 * The midnam <Model> must be unique and
+	 * specific for the given plugin-instance.
+	 */
+	char* (*midnam)(LV2_Handle instance);
+
+	/** The unique model id used ith the midnam,
+	 * (or NULL).
+	 */
+	char* (*model)(LV2_Handle instance);
+
+	/** free allocated strings. The host
+	 * calls this for every value returned by
+	 * \ref midnam and \ref model.
+	 */
+	void (*free)(char*);
+} LV2_Midnam_Interface;
+
+/**
+   @}
+*/
+
+/**
+   @defgroup bankpatch
+
+   @{
+*/
+
+
+#define LV2_BANKPATCH_URI "http://ardour.org/lv2/bankpatch"
+#define LV2_BANKPATCH_PREFIX LV2_BANKPATCH_URI "#"
+#define LV2_BANKPATCH__notify LV2_BANKPATCH_PREFIX "notify"
+
+typedef void* LV2_BankPatch_Handle;
+
+/** a LV2 Feature provided by the Host to the plugin */
+typedef struct {
+	/** Opaque host data */
+	LV2_BankPatch_Handle handle;
+	/** Info from plugin's run(), notify host that bank/program changed */
+	void (*notify)(LV2_BankPatch_Handle handle, uint8_t channel, uint32_t bank, uint8_t pgm);
+} LV2_BankPatch;
+
+/**
+   @}
+*/
 #endif

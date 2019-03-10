@@ -15,7 +15,6 @@
     You should have received a copy of the GNU General Public License
     along with this program; if not, write to the Free Software
     Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
-
 */
 
 #ifndef __ardour_plugin_eq_gui_h
@@ -36,7 +35,7 @@ namespace ARDOUR {
 }
 
 namespace GTKArdour {
-        class FFT;
+	class FFT;
 }
 
 class PluginEqGui : public Gtk::Table
@@ -79,10 +78,9 @@ private:
 
 	void plot_signal_amplitude_difference (Gtk::Widget *,cairo_t *);
 
-	void update_pointer_info(float, float);
+	void update_pointer_info(float);
 	bool analysis_area_mouseover(GdkEventMotion *);
 	bool analysis_area_mouseexit(GdkEventCrossing *);
-	bool analysis_area_mousedown(GdkEventButton *);
 
 	// Helpers
 	bool timeout_callback ();
@@ -100,22 +98,22 @@ private:
 	float _log_coeff;
 	float _log_max;
 
-	ARDOUR::framecnt_t _buffer_size;
-	ARDOUR::framecnt_t _signal_buffer_size;
+	ARDOUR::samplecnt_t _block_size;
+	ARDOUR::samplecnt_t _buffer_size;
+	ARDOUR::samplecnt_t _signal_buffer_size;
 
 	// buffers
 	ARDOUR::BufferSet _bufferset;
 	ARDOUR::BufferSet _collect_bufferset;
-
 
 	// dimensions
 	float _analysis_width;
 	float _analysis_height;
 
 	// My objects
-        GTKArdour::FFT *_impulse_fft;
-        GTKArdour::FFT *_signal_input_fft;
-        GTKArdour::FFT *_signal_output_fft;
+	GTKArdour::FFT *_impulse_fft;
+	GTKArdour::FFT *_signal_input_fft;
+	GTKArdour::FFT *_signal_output_fft;
 	boost::shared_ptr<ARDOUR::Plugin> _plugin;
 	boost::shared_ptr<ARDOUR::PluginInsert> _plugin_insert;
 
@@ -123,6 +121,8 @@ private:
 	Gtk::DrawingArea *_analysis_area;
 	cairo_surface_t *_analysis_scale_surface;
 	Gtk::Label *_pointer_info;
+	int _pointer_in_area_xpos;
+	int _pointer_in_area_freq;
 
 	// dB scale selection:
 	class dBSelectionColumns : public Gtk::TreeModel::ColumnRecord
@@ -142,6 +142,7 @@ private:
 	Gtk::ComboBox *dBScaleCombo;
 	Glib::RefPtr<Gtk::ListStore> dBScaleModel;
 
+	Gtk::CheckButton *_signal_button;
 	Gtk::CheckButton *_phase_button;
 
 	// signals and connections
@@ -153,4 +154,3 @@ private:
 };
 
 #endif
-

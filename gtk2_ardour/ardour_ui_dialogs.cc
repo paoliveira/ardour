@@ -25,6 +25,8 @@
 
 #include <vector>
 
+#include <gtkmm/treemodelfilter.h>
+
 #include "pbd/convert.h"
 
 #include "ardour/audioengine.h"
@@ -43,6 +45,7 @@
 #include "add_video_dialog.h"
 #include "ardour_ui.h"
 #include "big_clock_window.h"
+#include "big_transport_window.h"
 #include "bundle_manager.h"
 #include "global_port_matrix.h"
 #include "gui_object.h"
@@ -56,7 +59,9 @@
 #include "meter_patterns.h"
 #include "monitor_section.h"
 #include "midi_tracer.h"
+#include "mini_timeline.h"
 #include "mixer_ui.h"
+#include "plugin_dspload_window.h"
 #include "public_editor.h"
 #include "processor_box.h"
 #include "rc_option_editor.h"
@@ -66,9 +71,9 @@
 #include "speaker_dialog.h"
 #include "splash.h"
 #include "sfdb_ui.h"
-#include "theme_manager.h"
 #include "time_info_box.h"
 #include "timers.h"
+#include "transport_masters_dialog.h"
 
 #include "pbd/i18n.h"
 
@@ -77,11 +82,18 @@ using namespace PBD;
 using namespace Glib;
 using namespace Gtk;
 using namespace Gtkmm2ext;
+using namespace ArdourWidgets;
 
 void
 ARDOUR_UI::set_session (Session *s)
 {
 	SessionHandlePtr::set_session (s);
+
+	transport_ctrl.set_session (s);
+
+	if (big_transport_window) {
+		big_transport_window->set_session (s);
+	}
 
 	if (!_session) {
 		WM::Manager::instance().set_session (s);
@@ -108,15 +120,18 @@ ARDOUR_UI::set_session (Session *s)
 
 	AutomationWatch::instance().set_session (s);
 
-	if (shuttle_box) {
-		shuttle_box->set_session (s);
-	}
+	shuttle_box.set_session (s);
+	mini_timeline.set_session (s);
+	time_info_box->set_session (s);
 
 	primary_clock->set_session (s);
 	secondary_clock->set_session (s);
 	big_clock->set_session (s);
-	time_info_box->set_session (s);
 	video_timeline->set_session (s);
+	lua_script_window->set_session (s);
+	plugin_dsp_load_window->set_session (s);
+	transport_masters_window->set_session (s);
+	rc_option_editor->set_session (s);
 
 	/* sensitize menu bar options that are now valid */
 
@@ -127,13 +142,6 @@ ARDOUR_UI::set_session (Session *s)
 		ActionManager::set_sensitive (ActionManager::range_sensitive_actions, true);
 	} else {
 		ActionManager::set_sensitive (ActionManager::range_sensitive_actions, false);
-	}
-
-	if (!_session->monitor_out()) {
-		Glib::RefPtr<Action> act = ActionManager::get_action (X_("options"), X_("SoloViaBus"));
-		if (act) {
-			act->set_sensitive (false);
-		}
 	}
 
 	/* allow wastebasket flush again */
@@ -147,11 +155,13 @@ ARDOUR_UI::set_session (Session *s)
 
 	ActionManager::set_sensitive (ActionManager::time_selection_sensitive_actions, false);
 	ActionManager::set_sensitive (ActionManager::track_selection_sensitive_actions, false);
+	ActionManager::set_sensitive (ActionManager::route_selection_sensitive_actions, false);
+	ActionManager::set_sensitive (ActionManager::bus_selection_sensitive_actions, false);
+	ActionManager::set_sensitive (ActionManager::vca_selection_sensitive_actions, false);
+	ActionManager::set_sensitive (ActionManager::stripable_selection_sensitive_actions, false);
 	ActionManager::set_sensitive (ActionManager::line_selection_sensitive_actions, false);
 	ActionManager::set_sensitive (ActionManager::point_selection_sensitive_actions, false);
 	ActionManager::set_sensitive (ActionManager::playlist_selection_sensitive_actions, false);
-
-	rec_button.set_sensitive (true);
 
 	solo_alert_button.set_active (_session->soloing());
 
@@ -160,8 +170,8 @@ ARDOUR_UI::set_session (Session *s)
 	blink_connection = Timers::blink_connect (sigc::mem_fun(*this, &ARDOUR_UI::blink_handler));
 
 	_session->SaveSessionRequested.connect (_session_connections, MISSING_INVALIDATOR, boost::bind (&ARDOUR_UI::save_session_at_its_request, this, _1), gui_context());
+	_session->StateSaved.connect (_session_connections, MISSING_INVALIDATOR, boost::bind (&ARDOUR_UI::update_title, this), gui_context());
 	_session->RecordStateChanged.connect (_session_connections, MISSING_INVALIDATOR, boost::bind (&ARDOUR_UI::record_state_changed, this), gui_context());
-	_session->StepEditStatusChange.connect (_session_connections, MISSING_INVALIDATOR, boost::bind (&ARDOUR_UI::step_edit_status_change, this, _1), gui_context());
 	_session->TransportStateChange.connect (_session_connections, MISSING_INVALIDATOR, boost::bind (&ARDOUR_UI::map_transport_state, this), gui_context());
 	_session->DirtyChanged.connect (_session_connections, MISSING_INVALIDATOR, boost::bind (&ARDOUR_UI::session_dirty_changed, this), gui_context());
 
@@ -197,21 +207,19 @@ ARDOUR_UI::set_session (Session *s)
 
 	update_format ();
 
-	if (meter_box.get_parent()) {
-		transport_hbox.remove (meter_box);
-		transport_hbox.remove (editor_meter_peak_display);
+	if (editor_meter_table.get_parent()) {
+		transport_hbox.remove (editor_meter_table);
 	}
 
 	if (editor_meter) {
-		meter_box.remove(*editor_meter);
+		editor_meter_table.remove(*editor_meter);
 		delete editor_meter;
 		editor_meter = 0;
 		editor_meter_peak_display.hide();
 	}
 
-	if (meter_box.get_parent()) {
-		transport_hbox.remove (meter_box);
-		transport_hbox.remove (editor_meter_peak_display);
+	if (editor_meter_table.get_parent()) {
+		transport_hbox.remove (editor_meter_table);
 	}
 
 	if (_session &&
@@ -222,10 +230,17 @@ ARDOUR_UI::set_session (Session *s)
 			editor_meter = new LevelMeterHBox(_session);
 			editor_meter->set_meter (_session->master_out()->shared_peak_meter().get());
 			editor_meter->clear_meters();
-			editor_meter->set_type (_session->master_out()->meter_type());
-			editor_meter->setup_meters (30, 12, 6);
+			editor_meter->set_meter_type (_session->master_out()->meter_type());
+			editor_meter->setup_meters (30, 10, 6);
 			editor_meter->show();
-			meter_box.pack_start(*editor_meter);
+			editor_meter->ButtonPress.connect_same_thread (editor_meter_connection, boost::bind (&ARDOUR_UI::editor_meter_button_press, this, _1));
+
+			editor_meter_table.set_spacings(3);
+			editor_meter_table.attach(*editor_meter,             0,1, 0,1, FILL, FILL);
+			editor_meter_table.attach(editor_meter_peak_display, 0,1, 1,2, FILL, EXPAND|FILL);
+
+			editor_meter->show();
+			editor_meter_peak_display.show();
 		}
 
 		ArdourMeter::ResetAllPeakDisplays.connect (sigc::mem_fun(*this, &ARDOUR_UI::reset_peak_display));
@@ -234,18 +249,13 @@ ARDOUR_UI::set_session (Session *s)
 
 		editor_meter_peak_display.set_name ("meterbridge peakindicator");
 		editor_meter_peak_display.unset_flags (Gtk::CAN_FOCUS);
-		editor_meter_peak_display.set_size_request (std::max(9.f, rintf(8.f * UIConfiguration::instance().get_ui_scale())), -1);
+		editor_meter_peak_display.set_size_request (-1, std::max(6.f, rintf(5.f * UIConfiguration::instance().get_ui_scale())) );
 		editor_meter_peak_display.set_corner_radius (3.0);
 
 		editor_meter_max_peak = -INFINITY;
 		editor_meter_peak_display.signal_button_release_event().connect (sigc::mem_fun(*this, &ARDOUR_UI::editor_meter_peak_button_release), false);
 
-		if (UIConfiguration::instance().get_show_editor_meter() && !ARDOUR::Profile->get_trx()) {
-			transport_hbox.pack_start (meter_box, false, false);
-			transport_hbox.pack_start (editor_meter_peak_display, false, false);
-			meter_box.show();
-			editor_meter_peak_display.show();
-		}
+		repack_transport_hbox ();
 	}
 
 	update_title ();
@@ -285,6 +295,7 @@ ARDOUR_UI::unload_session (bool hide_stuff)
 	}
 
 	if (hide_stuff) {
+		close_all_dialogs ();
 		editor->hide ();
 		mixer->hide ();
 		meterbridge->hide ();
@@ -299,15 +310,13 @@ ARDOUR_UI::unload_session (bool hide_stuff)
 	fps_connection.disconnect();
 
 	if (editor_meter) {
-		meter_box.remove(*editor_meter);
+		editor_meter_table.remove(*editor_meter);
 		delete editor_meter;
 		editor_meter = 0;
 		editor_meter_peak_display.hide();
 	}
 
 	ActionManager::set_sensitive (ActionManager::session_sensitive_actions, false);
-
-	rec_button.set_sensitive (false);
 
 	WM::Manager::instance().set_session ((ARDOUR::Session*) 0);
 
@@ -321,12 +330,10 @@ ARDOUR_UI::unload_session (bool hide_stuff)
 
 	blink_connection.disconnect ();
 
-	delete _session;
+	ARDOUR::Session* session_to_delete = _session;
 	_session = 0;
+	delete session_to_delete;
 
-	session_loaded = false;
-
-	update_buffer_load ();
 	update_title ();
 
 	return 0;
@@ -703,14 +710,14 @@ ARDOUR_UI::tabbable_state_change (Tabbable& t)
 	}
 
 	for (std::vector<std::string>::iterator s = insensitive_action_names.begin(); s != insensitive_action_names.end(); ++s) {
-		action = ActionManager::get_action (X_("Common"), (*s).c_str());
+		action = ActionManager::get_action (X_("Common"), (*s).c_str(), false);
 		if (action) {
 			action->set_sensitive (false);
 		}
 	}
 
 	for (std::vector<std::string>::iterator s = sensitive_action_names.begin(); s != sensitive_action_names.end(); ++s) {
-		action = ActionManager::get_action (X_("Common"), (*s).c_str());
+		action = ActionManager::get_action (X_("Common"), (*s).c_str(), false);
 		if (action) {
 			action->set_sensitive (true);
 		}
@@ -865,6 +872,14 @@ ARDOUR_UI::create_big_clock_window ()
 	return new BigClockWindow (*big_clock);
 }
 
+BigTransportWindow*
+ARDOUR_UI::create_big_transport_window ()
+{
+	BigTransportWindow* btw = new BigTransportWindow ();
+	btw->set_session (_session);
+	return btw;
+}
+
 void
 ARDOUR_UI::handle_locations_change (Location *)
 {
@@ -887,6 +902,9 @@ ARDOUR_UI::tabbed_window_state_event_handler (GdkEventWindowState* ev, void* obj
 			if (big_clock_window) {
 				big_clock_window->set_transient_for (*editor->own_window());
 			}
+			if (big_transport_window) {
+				big_transport_window->set_transient_for (*editor->own_window());
+			}
 		}
 
 	} else if (object == mixer) {
@@ -895,6 +913,9 @@ ARDOUR_UI::tabbed_window_state_event_handler (GdkEventWindowState* ev, void* obj
 		    (ev->new_window_state & GDK_WINDOW_STATE_FULLSCREEN)) {
 			if (big_clock_window) {
 				big_clock_window->set_transient_for (*mixer->own_window());
+			}
+			if (big_transport_window) {
+				big_transport_window->set_transient_for (*mixer->own_window());
 			}
 		}
 	}
@@ -920,36 +941,10 @@ ARDOUR_UI::editor_meter_peak_button_release (GdkEventButton* ev)
 void
 ARDOUR_UI::toggle_mixer_space()
 {
-	Glib::RefPtr<Action> act = ActionManager::get_action ("Common", "ToggleMaximalMixer");
-
-	if (act) {
-		Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
-		if (tact->get_active()) {
-			mixer->maximise_mixer_space ();
-		} else {
-			mixer->restore_mixer_space ();
-		}
-	}
-}
-
-void
-ARDOUR_UI::toggle_mixer_list()
-{
-	Glib::RefPtr<Action> act = ActionManager::get_action ("Common", "ToggleMixerList");
-
-	if (act) {
-		Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
-			mixer->show_mixer_list (tact->get_active());
-	}
-}
-
-void
-ARDOUR_UI::toggle_monitor_section_visibility ()
-{
-	Glib::RefPtr<Action> act = ActionManager::get_action ("Common", "ToggleMonitorSection");
-
-	if (act) {
-		Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
-			mixer->show_monitor_section (tact->get_active());
+	Glib::RefPtr<ToggleAction> tact = ActionManager::get_toggle_action ("Common", "ToggleMaximalMixer");
+	if (tact->get_active()) {
+		mixer->maximise_mixer_space ();
+	} else {
+		mixer->restore_mixer_space ();
 	}
 }

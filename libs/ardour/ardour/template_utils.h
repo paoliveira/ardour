@@ -24,6 +24,7 @@
 #include <string>
 #include <vector>
 
+#include "ardour/utils.h"
 #include "ardour/libardour_visibility.h"
 
 namespace ARDOUR {
@@ -37,10 +38,16 @@ namespace ARDOUR {
 	struct LIBARDOUR_API TemplateInfo {
 		std::string name;
 		std::string path;
+		std::string description;
+		std::string modified_with;
+
+		bool operator < (const TemplateInfo& other) const {
+			return cmp_nocase_utf8 (name, other.name) < 0;
+		}
 	};
 
 	LIBARDOUR_API void find_route_templates (std::vector<TemplateInfo>& template_names);
-	LIBARDOUR_API void find_session_templates (std::vector<TemplateInfo>& template_names);
+	LIBARDOUR_API void find_session_templates (std::vector<TemplateInfo>& template_names, bool read_xml = false);
 
 	LIBARDOUR_API std::string session_template_dir_to_file (std::string const &);
 

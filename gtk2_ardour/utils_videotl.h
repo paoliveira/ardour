@@ -25,7 +25,6 @@
 #define __gtk_ardour_video_utils_h__
 
 #include <string>
-#include <gtkmm.h>
 
 #include "ardour/rc_configuration.h"
 #include "ardour/types.h"
@@ -33,6 +32,8 @@
 #include "ardour_dialog.h"
 
 namespace VideoUtils {
+
+extern unsigned int harvid_version;
 
 bool confirm_video_outfn (Gtk::Window& parent, std::string, std::string docroot="");
 std::string video_dest_dir (const std::string, const std::string);

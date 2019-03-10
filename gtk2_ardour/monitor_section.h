@@ -17,61 +17,68 @@
 
 */
 
-#include <gtkmm/box.h>
-#include <gtkmm/table.h>
-#include <gtkmm/eventbox.h>
+#ifndef __gtk2_ardour_monitor_section_h__
+#define __gtk2_ardour_monitor_section_h__
 
-#include "gtkmm2ext/bindable_button.h"
+#include <gtkmm/box.h>
+#include <gtkmm/eventbox.h>
+#include <gtkmm/sizegroup.h>
+#include <gtkmm/table.h>
+#include <gtkmm/viewport.h>
+
 #include "gtkmm2ext/bindings.h"
 
-#include "ardour_button.h"
-#include "ardour_knob.h"
-#include "ardour_display.h"
+#include "widgets/ardour_button.h"
+#include "widgets/ardour_knob.h"
+#include "widgets/ardour_display.h"
+
 #include "level_meter.h"
 #include "route_ui.h"
 #include "monitor_selector.h"
 
 #include "plugin_selector.h"
-#include "route_processor_selection.h"
 #include "processor_box.h"
+#include "processor_selection.h"
 
-namespace Gtkmm2ext {
+namespace ArdourWidgets {
 	class TearOff;
 }
 
 class MonitorSection : public RouteUI, public Gtk::EventBox
 {
-  public:
-	MonitorSection (ARDOUR::Session*);
+public:
+	MonitorSection ();
 	~MonitorSection ();
 
 	void set_session (ARDOUR::Session*);
 
-	Gtkmm2ext::TearOff& tearoff() const { return *_tearoff; }
+	ArdourWidgets::TearOff& tearoff() const { return *_tearoff; }
 
 	std::string state_id() const;
 
 	PluginSelector* plugin_selector() { return _plugin_selector; }
 
-	private:
+	void use_others_actions ();
+
+private:
 	Gtk::HBox hpacker;
 	Gtk::VBox vpacker;
-	Gtkmm2ext::TearOff* _tearoff;
+	ArdourWidgets::TearOff* _tearoff;
 
 	Gtk::HBox  channel_table_packer;
 	Gtk::HBox  table_hpacker;
 	Gtk::HBox  master_packer;
-	Gtk::Table channel_table;
 	Gtk::Table channel_table_header;
+	Gtk::Table *channel_table;
 	Gtk::ScrolledWindow channel_table_scroller;
 	Gtk::Viewport channel_table_viewport;
 	Glib::RefPtr<Gtk::SizeGroup> channel_size_group;
 
 	struct ChannelButtonSet {
-		ArdourButton cut;
-		ArdourButton dim;
-		ArdourButton solo;
-		ArdourButton invert;
+		ArdourWidgets::ArdourButton cut;
+		ArdourWidgets::ArdourButton dim;
+		ArdourWidgets::ArdourButton solo;
+		ArdourWidgets::ArdourButton invert;
 
 		ChannelButtonSet ();
 	};
@@ -79,20 +86,20 @@ class MonitorSection : public RouteUI, public Gtk::EventBox
 	typedef std::vector<ChannelButtonSet*> ChannelButtons;
 	ChannelButtons _channel_buttons;
 
-	ArdourKnob* gain_control;
-	ArdourKnob* dim_control;
-	ArdourKnob* solo_boost_control;
-	ArdourKnob* solo_cut_control;
+	ArdourWidgets::ArdourKnob* gain_control;
+	ArdourWidgets::ArdourKnob* dim_control;
+	ArdourWidgets::ArdourKnob* solo_boost_control;
+	ArdourWidgets::ArdourKnob* solo_cut_control;
 
-	ArdourDisplay*  gain_display;
-	ArdourDisplay*  dim_display;
-	ArdourDisplay*  solo_boost_display;
-	ArdourDisplay*  solo_cut_display;
+	ArdourWidgets::ArdourDisplay*  gain_display;
+	ArdourWidgets::ArdourDisplay*  dim_display;
+	ArdourWidgets::ArdourDisplay*  solo_boost_display;
+	ArdourWidgets::ArdourDisplay*  solo_cut_display;
 
 	std::list<boost::shared_ptr<ARDOUR::Bundle> > output_menu_bundles;
 	Gtk::Menu output_menu;
 	MonitorSelectorWindow *_output_selector;
-	ArdourButton* output_button;
+	ArdourWidgets::ArdourButton* output_button;
 
 	void maybe_add_bundle_to_output_menu (boost::shared_ptr<ARDOUR::Bundle>, ARDOUR::BundleList const &);
 	void bundle_output_chosen (boost::shared_ptr<ARDOUR::Bundle>);
@@ -104,11 +111,10 @@ class MonitorSection : public RouteUI, public Gtk::EventBox
 	void map_state ();
 
 	boost::shared_ptr<ARDOUR::MonitorProcessor> _monitor;
-	boost::shared_ptr<ARDOUR::Route> _route;
 
-	static Glib::RefPtr<Gtk::ActionGroup> monitor_actions;
+	Glib::RefPtr<Gtk::ActionGroup> monitor_actions;
+	Glib::RefPtr<Gtk::ActionGroup> solo_actions;
 	void register_actions ();
-	void connect_actions ();
 
 	void cut_channel (uint32_t);
 	void dim_channel (uint32_t);
@@ -126,24 +132,24 @@ class MonitorSection : public RouteUI, public Gtk::EventBox
 	gint output_press (GdkEventButton *);
 	gint output_release (GdkEventButton *);
 
-	ArdourButton solo_in_place_button;
-	ArdourButton afl_button;
-	ArdourButton pfl_button;
+	ArdourWidgets::ArdourButton solo_in_place_button;
+	ArdourWidgets::ArdourButton afl_button;
+	ArdourWidgets::ArdourButton pfl_button;
 	Gtk::VBox    solo_model_box;
 
 	void solo_use_in_place ();
 	void solo_use_afl ();
 	void solo_use_pfl ();
 
-	ArdourButton cut_all_button;
-	ArdourButton dim_all_button;
-	ArdourButton mono_button;
-	ArdourButton rude_solo_button;
-	ArdourButton rude_iso_button;
-	ArdourButton rude_audition_button;
-	ArdourButton exclusive_solo_button;
-	ArdourButton solo_mute_override_button;
-	ArdourButton toggle_processorbox_button;
+	ArdourWidgets::ArdourButton cut_all_button;
+	ArdourWidgets::ArdourButton dim_all_button;
+	ArdourWidgets::ArdourButton mono_button;
+	ArdourWidgets::ArdourButton rude_solo_button;
+	ArdourWidgets::ArdourButton rude_iso_button;
+	ArdourWidgets::ArdourButton rude_audition_button;
+	ArdourWidgets::ArdourButton exclusive_solo_button;
+	ArdourWidgets::ArdourButton solo_mute_override_button;
+	ArdourWidgets::ArdourButton toggle_processorbox_button;
 
 	void do_blink (bool);
 	void solo_blink (bool);
@@ -156,12 +162,13 @@ class MonitorSection : public RouteUI, public Gtk::EventBox
 	void isolated_changed ();
 
 	PBD::ScopedConnection config_connection;
-	PBD::ScopedConnectionList control_connections;
-	PBD::ScopedConnection _output_changed_connection;
+	PBD::ScopedConnectionList connections;
+	PBD::ScopedConnectionList route_connections;
 
 	bool _inhibit_solo_model_update;
 
 	void assign_controllables ();
+	void unassign_controllables ();
 
 	void port_connected_or_disconnected (boost::weak_ptr<ARDOUR::Port>, boost::weak_ptr<ARDOUR::Port>);
 
@@ -171,19 +178,22 @@ class MonitorSection : public RouteUI, public Gtk::EventBox
 
 	ProcessorBox* insert_box;
 	PluginSelector* _plugin_selector;
-	RouteProcessorSelection _rr_selection;
+	ProcessorSelection _rr_selection;
 	void help_count_processors (boost::weak_ptr<ARDOUR::Processor> p, uint32_t* cnt) const;
 	uint32_t count_processors ();
 
 	void processors_changed (ARDOUR::RouteProcessorChange);
-	Glib::RefPtr<Gtk::Action> proctoggle;
+	Glib::RefPtr<Gtk::ToggleAction> proctoggle;
 	bool _ui_initialized;
 
-  private:
-	Gtkmm2ext::ActionMap myactions;
 	Gtkmm2ext::Bindings* bindings;
 
 	void load_bindings ();
 	bool enter_handler (GdkEventCrossing*);
 	bool leave_handler (GdkEventCrossing*);
+
+	void toggle_use_monitor_section ();
+	void drop_route ();
 };
+
+#endif /* __gtk2_ardour_monitor_section_h__ */

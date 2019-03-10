@@ -198,15 +198,15 @@ ExportFileNotebook::handle_page_change (GtkNotebookPage*, uint32_t page)
 ExportFileNotebook::FilePage::FilePage (Session * s, ManagerPtr profile_manager, ExportFileNotebook * parent, uint32_t number,
                                         ExportProfileManager::FormatStatePtr format_state,
                                         ExportProfileManager::FilenameStatePtr filename_state) :
-  format_state (format_state),
-  filename_state (filename_state),
-  profile_manager (profile_manager),
+	format_state (format_state),
+	filename_state (filename_state),
+	profile_manager (profile_manager),
 
-  format_label (_("Format"), Gtk::ALIGN_LEFT),
-  filename_label (_("Location"), Gtk::ALIGN_LEFT),
-  soundcloud_upload_button (_("Upload to Soundcloud")),
-  analysis_button (_("Analyze Exported Audio")),
-  tab_number (number)
+	format_label (_("Format"), Gtk::ALIGN_LEFT),
+	filename_label (_("Location"), Gtk::ALIGN_LEFT),
+	soundcloud_upload_button (_("Upload to Soundcloud")),
+	analysis_button (_("Analyze Exported Audio")),
+	tab_number (number)
 {
 	set_border_width (12);
 
@@ -217,7 +217,9 @@ ExportFileNotebook::FilePage::FilePage (Session * s, ManagerPtr profile_manager,
 
 	Gtk::HBox *hbox = Gtk::manage (new Gtk::HBox());
 	hbox->set_spacing (6);
+#ifndef NDEBUG // SoundCloud upload is currently b0rked, needs debugging
 	hbox->pack_start (soundcloud_upload_button, false, false, 0);
+#endif
 	hbox->pack_start (analysis_button, false, false, 0);
 	pack_start (*hbox, false, false, 0);
 
@@ -250,6 +252,7 @@ ExportFileNotebook::FilePage::FilePage (Session * s, ManagerPtr profile_manager,
 	format_selector.FormatEdited.connect (sigc::mem_fun (*this, &ExportFileNotebook::FilePage::save_format_to_manager));
 	format_selector.FormatRemoved.connect (sigc::mem_fun (*profile_manager, &ExportProfileManager::remove_format_profile));
 	format_selector.NewFormat.connect (sigc::mem_fun (*profile_manager, &ExportProfileManager::get_new_format));
+	format_selector.FormatReverted.connect (sigc::mem_fun (*profile_manager, &ExportProfileManager::revert_format_profile));
 
 	format_selector.CriticalSelectionChanged.connect (
 		sigc::mem_fun (*this, &ExportFileNotebook::FilePage::critical_selection_changed));
@@ -257,8 +260,8 @@ ExportFileNotebook::FilePage::FilePage (Session * s, ManagerPtr profile_manager,
 		sigc::mem_fun (*this, &ExportFileNotebook::FilePage::critical_selection_changed));
 
 	soundcloud_upload_button.signal_toggled().connect (sigc::mem_fun (*parent, &ExportFileNotebook::update_soundcloud_upload));
-	soundcloud_upload_button.signal_toggled().connect (sigc::mem_fun (*this, &ExportFileNotebook::FilePage::soundcloud_upload_changed));
-	analysis_button.signal_toggled().connect (sigc::mem_fun (*this, &ExportFileNotebook::FilePage::analysis_changed));
+	soundcloud_button_connection = soundcloud_upload_button.signal_toggled().connect (sigc::mem_fun (*this, &ExportFileNotebook::FilePage::soundcloud_upload_changed));
+	analysis_button_connection = analysis_button.signal_toggled().connect (sigc::mem_fun (*this, &ExportFileNotebook::FilePage::analysis_changed));
 	/* Tab widget */
 
 	tab_close_button.add (*Gtk::manage (new Gtk::Image (::get_icon("close"))));
@@ -298,6 +301,9 @@ ExportFileNotebook::FilePage::get_format_name () const
 bool
 ExportFileNotebook::FilePage::get_soundcloud_upload () const
 {
+#ifdef NDEBUG // SoundCloud upload is currently b0rked, needs debugging
+	return false;
+#endif
 	return soundcloud_upload_button.get_active ();
 }
 
@@ -355,7 +361,15 @@ ExportFileNotebook::FilePage::critical_selection_changed ()
 {
 	update_tab_label();
 	update_example_filename();
+
+	soundcloud_button_connection.block ();
+	analysis_button_connection.block ();
+
 	update_analysis_button();
 	update_soundcloud_upload_button();
+
+	analysis_button_connection.unblock ();
+	soundcloud_button_connection.unblock ();
+
 	CriticalSelectionChanged();
 }

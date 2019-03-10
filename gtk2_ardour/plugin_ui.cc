@@ -30,15 +30,15 @@
 #include "pbd/xml++.h"
 #include "pbd/failed_constructor.h"
 
-#include <gtkmm/widget.h>
-#include <gtkmm/box.h>
-#include <gtkmm2ext/click_box.h>
-#include <gtkmm2ext/fastmeter.h>
-#include <gtkmm2ext/barcontroller.h>
-#include <gtkmm2ext/utils.h>
-#include <gtkmm2ext/doi.h>
-#include <gtkmm2ext/slider_controller.h>
-#include <gtkmm2ext/application.h>
+#include "gtkmm/widget.h"
+#include "gtkmm/box.h"
+
+#include "gtkmm2ext/utils.h"
+#include "gtkmm2ext/doi.h"
+#include "gtkmm2ext/application.h"
+
+#include "widgets/tooltips.h"
+#include "widgets/fastmeter.h"
 
 #include "ardour/session.h"
 #include "ardour/plugin.h"
@@ -52,6 +52,10 @@
 #include "ardour/lxvst_plugin.h"
 #include "lxvst_plugin_ui.h"
 #endif
+#ifdef MACVST_SUPPORT
+#include "ardour/mac_vst_plugin.h"
+#include "vst_plugin_ui.h"
+#endif
 #ifdef LV2_SUPPORT
 #include "ardour/lv2_plugin.h"
 #include "lv2_plugin_ui.h"
@@ -59,7 +63,6 @@
 
 #include "ardour_window.h"
 #include "ardour_ui.h"
-#include "prompter.h"
 #include "plugin_ui.h"
 #include "utils.h"
 #include "gui_thread.h"
@@ -67,18 +70,22 @@
 #include "processor_box.h"
 #include "keyboard.h"
 #include "latency_gui.h"
+#include "plugin_dspload_ui.h"
 #include "plugin_eq_gui.h"
+#include "plugin_presets_ui.h"
+#include "timers.h"
 #include "new_plugin_preset_dialog.h"
-#include "tooltips.h"
 
 #include "pbd/i18n.h"
 
 using namespace std;
 using namespace ARDOUR;
 using namespace ARDOUR_UI_UTILS;
+using namespace ArdourWidgets;
 using namespace PBD;
 using namespace Gtkmm2ext;
 using namespace Gtk;
+
 
 PluginUIWindow::PluginUIWindow (
 	boost::shared_ptr<PluginInsert> insert,
@@ -88,8 +95,8 @@ PluginUIWindow::PluginUIWindow (
 	, was_visible (false)
 	, _keyboard_focused (false)
 #ifdef AUDIOUNIT_SUPPORT
-        , pre_deactivate_x (-1)
-        , pre_deactivate_y (-1)
+	, pre_deactivate_x (-1)
+	, pre_deactivate_y (-1)
 #endif
 
 {
@@ -105,6 +112,10 @@ PluginUIWindow::PluginUIWindow (
 
 		case ARDOUR::LXVST:
 			have_gui = create_lxvst_editor (insert);
+			break;
+
+		case ARDOUR::MacVST:
+			have_gui = create_mac_vst_editor (insert);
 			break;
 
 		case ARDOUR::AudioUnit:
@@ -180,9 +191,9 @@ PluginUIWindow::on_show ()
 
 	if (_pluginui) {
 #if defined (HAVE_AUDIOUNITS) && defined(__APPLE__)
-                if (pre_deactivate_x >= 0) {
-                        move (pre_deactivate_x, pre_deactivate_y);
-                }
+		if (pre_deactivate_x >= 0) {
+			move (pre_deactivate_x, pre_deactivate_y);
+		}
 #endif
 
 		if (_pluginui->on_window_show (_title)) {
@@ -195,7 +206,7 @@ void
 PluginUIWindow::on_hide ()
 {
 #if defined (HAVE_AUDIOUNITS) && defined(__APPLE__)
-        get_position (pre_deactivate_x, pre_deactivate_y);
+	get_position (pre_deactivate_x, pre_deactivate_y);
 #endif
 
 	Window::on_hide ();
@@ -273,6 +284,35 @@ PluginUIWindow::create_lxvst_editor(boost::shared_ptr<PluginInsert>)
 }
 
 bool
+#ifdef MACVST_SUPPORT
+PluginUIWindow::create_mac_vst_editor (boost::shared_ptr<PluginInsert> insert)
+#else
+PluginUIWindow::create_mac_vst_editor (boost::shared_ptr<PluginInsert>)
+#endif
+{
+#ifndef MACVST_SUPPORT
+	return false;
+#else
+	boost::shared_ptr<MacVSTPlugin> mvst;
+	if ((mvst = boost::dynamic_pointer_cast<MacVSTPlugin> (insert->plugin())) == 0) {
+		error << string_compose (_("unknown type of editor-supplying plugin (note: no MacVST support in this version of %1)"), PROGRAM_NAME)
+		      << endmsg;
+		throw failed_constructor ();
+	}
+	VSTPluginUI* vpu = create_mac_vst_gui (insert);
+	_pluginui = vpu;
+	_pluginui->KeyboardFocused.connect (sigc::mem_fun (*this, &PluginUIWindow::keyboard_focused));
+	add (*vpu);
+	vpu->package (*this);
+
+	Application::instance()->ActivationChanged.connect (mem_fun (*this, &PluginUIWindow::app_activated));
+
+	return true;
+#endif
+}
+
+
+bool
 #ifdef AUDIOUNIT_SUPPORT
 PluginUIWindow::create_audiounit_editor (boost::shared_ptr<PluginInsert> insert)
 #else
@@ -305,15 +345,15 @@ PluginUIWindow::app_activated (bool)
 		if (yn) {
 			if (was_visible) {
 				_pluginui->activate ();
-                                if (pre_deactivate_x >= 0) {
-                                        move (pre_deactivate_x, pre_deactivate_y);
-                                }
+				if (pre_deactivate_x >= 0) {
+					move (pre_deactivate_x, pre_deactivate_y);
+				}
 				present ();
 				was_visible = true;
 			}
 		} else {
 			was_visible = is_visible();
-                        get_position (pre_deactivate_x, pre_deactivate_y);
+			get_position (pre_deactivate_x, pre_deactivate_y);
 			hide ();
 			_pluginui->deactivate ();
 		}
@@ -393,12 +433,12 @@ PluginUIWindow::on_key_release_event (GdkEventKey *event)
 			if (_pluginui->non_gtk_gui()) {
 				_pluginui->forward_key_event (event);
 			}
-			return true;
 		}
-		return false;
 	} else {
-		return true;
+		gtk_window_propagate_key_event (GTK_WINDOW(gobj()), event);
 	}
+	/* don't forward releases */
+	return true;
 }
 
 void
@@ -424,9 +464,12 @@ PlugUIBase::PlugUIBase (boost::shared_ptr<PluginInsert> pi)
 	, pin_management_button (_("Pinout"))
 	, description_expander (_("Description"))
 	, plugin_analysis_expander (_("Plugin analysis"))
+	, cpuload_expander (_("CPU Profile"))
 	, latency_gui (0)
 	, latency_dialog (0)
 	, eqgui (0)
+	, stats_gui (0)
+	, preset_gui (0)
 {
 	_preset_modified.set_size_request (16, -1);
 	_preset_combo.set_text("(default)");
@@ -484,6 +527,9 @@ PlugUIBase::PlugUIBase (boost::shared_ptr<PluginInsert> pi)
 	plugin_analysis_expander.property_expanded().signal_changed().connect( sigc::mem_fun(*this, &PlugUIBase::toggle_plugin_analysis));
 	plugin_analysis_expander.set_expanded(false);
 
+	cpuload_expander.property_expanded().signal_changed().connect( sigc::mem_fun(*this, &PlugUIBase::toggle_cpuload_display));
+	cpuload_expander.set_expanded(false);
+
 	insert->DropReferences.connect (death_connection, invalidator (*this), boost::bind (&PlugUIBase::plugin_going_away, this), gui_context());
 
 	plugin->PresetAdded.connect (*this, invalidator (*this), boost::bind (&PlugUIBase::preset_added_or_removed, this), gui_context ());
@@ -493,13 +539,18 @@ PlugUIBase::PlugUIBase (boost::shared_ptr<PluginInsert> pi)
 
 	insert->AutomationStateChanged.connect (*this, invalidator (*this), boost::bind (&PlugUIBase::automation_state_changed, this), gui_context());
 
+	insert->LatencyChanged.connect (*this, invalidator (*this), boost::bind (&PlugUIBase::set_latency_label, this), gui_context());
+
 	automation_state_changed();
 }
 
 PlugUIBase::~PlugUIBase()
 {
 	delete eqgui;
+	delete stats_gui;
+	delete preset_gui;
 	delete latency_gui;
+	delete latency_dialog;
 }
 
 void
@@ -513,8 +564,8 @@ PlugUIBase::plugin_going_away ()
 void
 PlugUIBase::set_latency_label ()
 {
-	framecnt_t const l = insert->effective_latency ();
-	framecnt_t const sr = insert->session().frame_rate ();
+	samplecnt_t const l = insert->effective_latency ();
+	samplecnt_t const sr = insert->session().sample_rate ();
 
 	string t;
 
@@ -531,7 +582,7 @@ void
 PlugUIBase::latency_button_clicked ()
 {
 	if (!latency_gui) {
-		latency_gui = new LatencyGUI (*(insert.get()), insert->session().frame_rate(), insert->session().get_block_size());
+		latency_gui = new LatencyGUI (*(insert.get()), insert->session().sample_rate(), insert->session().get_block_size());
 		latency_dialog = new ArdourWindow (_("Edit Latency"));
 		/* use both keep-above and transient for to try cover as many
 		   different WM's as possible.
@@ -542,9 +593,9 @@ PlugUIBase::latency_button_clicked ()
 			latency_dialog->set_transient_for (*win);
 		}
 		latency_dialog->add (*latency_gui);
-		latency_dialog->signal_hide().connect (sigc::mem_fun (*this, &PlugUIBase::set_latency_label));
 	}
 
+	latency_gui->refresh ();
 	latency_dialog->show_all ();
 }
 
@@ -738,10 +789,8 @@ PlugUIBase::toggle_description()
 			wr.height -= child_height;
 			toplevel->resize (wr.width, wr.height);
 		}
-
 	}
 }
-
 
 void
 PlugUIBase::toggle_plugin_analysis()
@@ -775,6 +824,37 @@ PlugUIBase::toggle_plugin_analysis()
 			toplevel->resize (wr.width, wr.height);
 		}
 	}
+}
+
+void
+PlugUIBase::toggle_cpuload_display()
+{
+	if (cpuload_expander.get_expanded() && !cpuload_expander.get_child()) {
+		if (stats_gui == 0) {
+			stats_gui = new PluginLoadStatsGui (insert);
+		}
+		cpuload_expander.add (*stats_gui);
+		cpuload_expander.show_all();
+		stats_gui->start_updating ();
+	}
+
+	if (!cpuload_expander.get_expanded()) {
+		const int child_height = cpuload_expander.get_child ()->get_height ();
+
+		stats_gui->hide ();
+		stats_gui->stop_updating ();
+		cpuload_expander.remove();
+
+		Gtk::Window *toplevel = (Gtk::Window*) cpuload_expander.get_ancestor (GTK_TYPE_WINDOW);
+
+		if (toplevel) {
+			Gtk::Requisition wr;
+			toplevel->get_size (wr.width, wr.height);
+			wr.height -= child_height;
+			toplevel->resize (wr.width, wr.height);
+		}
+	}
+
 }
 
 void
@@ -814,17 +894,17 @@ PlugUIBase::update_preset ()
 	}
 	--_no_load_preset;
 
-	save_button.set_sensitive (!p.uri.empty() && p.user);
 	delete_button.set_sensitive (!p.uri.empty() && p.user);
-
 	update_preset_modified ();
 }
 
 void
 PlugUIBase::update_preset_modified ()
 {
+	Plugin::PresetRecord p = plugin->last_preset();
 
-	if (plugin->last_preset().uri.empty()) {
+	if (p.uri.empty()) {
+		save_button.set_sensitive (false);
 		_preset_modified.set_text ("");
 		return;
 	}
@@ -833,6 +913,7 @@ PlugUIBase::update_preset_modified ()
 	if (_preset_modified.get_text().empty() == c) {
 		_preset_modified.set_text (c ? "*" : "");
 	}
+	save_button.set_sensitive (c && p.user);
 }
 
 void

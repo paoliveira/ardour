@@ -19,9 +19,11 @@
 
 #include "pbd/error.h"
 #include "pbd/failed_constructor.h"
+#include "pbd/types_convert.h"
 
 #include "ardour/amp.h"
 #include "ardour/audio_buffer.h"
+#include "ardour/delayline.h"
 #include "ardour/internal_return.h"
 #include "ardour/internal_send.h"
 #include "ardour/meter.h"
@@ -49,6 +51,7 @@ InternalSend::InternalSend (Session& s,
 		bool ignore_bitslot)
 	: Send (s, p, mm, role, ignore_bitslot)
 	, _send_from (sendfrom)
+	, _allow_feedback (false)
 {
 	if (sendto) {
 		if (use_target (sendto)) {
@@ -88,25 +91,29 @@ InternalSend::use_target (boost::shared_ptr<Route> sendto)
 		_send_to->remove_send_from_internal_return (this);
 	}
 
-        _send_to = sendto;
+	_send_to = sendto;
 
-        _send_to->add_send_to_internal_return (this);
+	_send_to->add_send_to_internal_return (this);
 
 	mixbufs.ensure_buffers (_send_to->internal_return()->input_streams(), _session.get_block_size());
 	mixbufs.set_count (_send_to->internal_return()->input_streams());
 
+	_meter->configure_io (ChanCount (DataType::AUDIO, pan_outs()), ChanCount (DataType::AUDIO, pan_outs()));
+
+	_send_delay->configure_io (ChanCount (DataType::AUDIO, pan_outs()), ChanCount (DataType::AUDIO, pan_outs()));
+
 	reset_panner ();
 
-        set_name (sendto->name());
-        _send_to_id = _send_to->id();
+	set_name (sendto->name());
+	_send_to_id = _send_to->id();
 
-        target_connections.drop_connections ();
+	target_connections.drop_connections ();
 
-        _send_to->DropReferences.connect_same_thread (target_connections, boost::bind (&InternalSend::send_to_going_away, this));
-        _send_to->PropertyChanged.connect_same_thread (target_connections, boost::bind (&InternalSend::send_to_property_changed, this, _1));
-        _send_to->io_changed.connect_same_thread (target_connections, boost::bind (&InternalSend::target_io_changed, this));
+	_send_to->DropReferences.connect_same_thread (target_connections, boost::bind (&InternalSend::send_to_going_away, this));
+	_send_to->PropertyChanged.connect_same_thread (target_connections, boost::bind (&InternalSend::send_to_property_changed, this, _1));
+	_send_to->io_changed.connect_same_thread (target_connections, boost::bind (&InternalSend::target_io_changed, this));
 
-        return 0;
+	return 0;
 }
 
 void
@@ -127,13 +134,13 @@ InternalSend::send_from_going_away ()
 void
 InternalSend::send_to_going_away ()
 {
-        target_connections.drop_connections ();
+	target_connections.drop_connections ();
 	_send_to.reset ();
 	_send_to_id = "0";
 }
 
 void
-InternalSend::run (BufferSet& bufs, framepos_t start_frame, framepos_t end_frame, double speed, pframes_t nframes, bool)
+InternalSend::run (BufferSet& bufs, samplepos_t start_sample, samplepos_t end_sample, double speed, pframes_t nframes, bool)
 {
 	if ((!_active && !_pending_active) || !_send_to) {
 		_meter->reset ();
@@ -145,7 +152,7 @@ InternalSend::run (BufferSet& bufs, framepos_t start_frame, framepos_t end_frame
 
 	if (_panshell && !_panshell->bypassed() && role() != Listen) {
 		if (mixbufs.count ().n_audio () > 0) {
-			_panshell->run (bufs, mixbufs, start_frame, end_frame, nframes);
+			_panshell->run (bufs, mixbufs, start_sample, end_sample, nframes);
 		}
 
 		/* non-audio data will not have been copied by the panner, do it now
@@ -194,13 +201,18 @@ InternalSend::run (BufferSet& bufs, framepos_t start_frame, framepos_t end_frame
 			*/
 
 			uint32_t j = 0;
-			for (uint32_t i = 0; i < mixbufs_audio; ++i) {
+			uint32_t i = 0;
+			for (i = 0; i < mixbufs_audio && j < bufs_audio; ++i) {
 				mixbufs.get_audio(i).read_from (bufs.get_audio(j), nframes);
 				++j;
 
 				if (j == bufs_audio) {
 					j = 0;
 				}
+			}
+			/* in case or MIDI track with 0 audio channels */
+			for (; i < mixbufs_audio; ++i) {
+				mixbufs.get_audio(i).silence (nframes);
 			}
 
 		} else {
@@ -217,7 +229,7 @@ InternalSend::run (BufferSet& bufs, framepos_t start_frame, framepos_t end_frame
 
 		/* target gain has changed */
 
-		_current_gain = Amp::apply_gain (mixbufs, _session.nominal_frame_rate(), nframes, _current_gain, tgain);
+		_current_gain = Amp::apply_gain (mixbufs, _session.nominal_sample_rate(), nframes, _current_gain, tgain);
 
 	} else if (tgain == GAIN_COEFF_ZERO) {
 
@@ -235,10 +247,10 @@ InternalSend::run (BufferSet& bufs, framepos_t start_frame, framepos_t end_frame
 	}
 
 	_amp->set_gain_automation_buffer (_session.send_gain_automation_buffer ());
-	_amp->setup_gain_automation (start_frame, end_frame, nframes);
-	_amp->run (mixbufs, start_frame, end_frame, speed, nframes, true);
+	_amp->setup_gain_automation (start_sample, end_sample, nframes);
+	_amp->run (mixbufs, start_sample, end_sample, speed, nframes, true);
 
-	_delayline->run (mixbufs, start_frame, end_frame, speed, nframes, true);
+	_send_delay->run (mixbufs, start_sample, end_sample, speed, nframes, true);
 
 	/* consider metering */
 
@@ -246,9 +258,11 @@ InternalSend::run (BufferSet& bufs, framepos_t start_frame, framepos_t end_frame
 		if (_amp->gain_control()->get_value() == GAIN_COEFF_ZERO) {
 			_meter->reset();
 		} else {
-			_meter->run (mixbufs, start_frame, end_frame, speed, nframes, true);
+			_meter->run (mixbufs, start_sample, end_sample, speed, nframes, true);
 		}
 	}
+
+	_thru_delay->run (bufs, start_sample, end_sample, speed, nframes, true);
 
 	/* target will pick up our output when it is ready */
 
@@ -263,49 +277,50 @@ InternalSend::set_block_size (pframes_t nframes)
 		mixbufs.ensure_buffers (_send_to->internal_return()->input_streams(), nframes);
 	}
 
-        return 0;
+	return 0;
+}
+
+void
+InternalSend::set_allow_feedback (bool yn)
+{
+	_allow_feedback = yn;
+	_send_from->processors_changed (RouteProcessorChange ()); /* EMIT SIGNAL */
 }
 
 bool
 InternalSend::feeds (boost::shared_ptr<Route> other) const
 {
-	return _send_to == other;
+	if (_role == Listen || !_allow_feedback) {
+		return _send_to == other;
+	}
+	return false;
 }
 
 XMLNode&
-InternalSend::state (bool full)
+InternalSend::state ()
 {
-	XMLNode& node (Send::state (full));
+	XMLNode& node (Send::state ());
 
 	/* this replaces any existing "type" property */
 
-	node.add_property ("type", "intsend");
+	node.set_property ("type", "intsend");
 
 	if (_send_to) {
-		node.add_property ("target", _send_to->id().to_s());
+		node.set_property ("target", _send_to->id());
 	}
+	node.set_property ("allow-feedback", _allow_feedback);
 
 	return node;
-}
-
-XMLNode&
-InternalSend::get_state()
-{
-	return state (true);
 }
 
 int
 InternalSend::set_state (const XMLNode& node, int version)
 {
-	XMLProperty const * prop;
-
 	init_gain ();
 
 	Send::set_state (node, version);
 
-	if ((prop = node.property ("target")) != 0) {
-
-		_send_to_id = prop->value();
+	if (node.get_property ("target", _send_to_id)) {
 
 		/* if we're loading a session, the target route may not have been
 		   create yet. make sure we defer till we are sure that it should
@@ -318,6 +333,8 @@ InternalSend::set_state (const XMLNode& node, int version)
 			connect_when_legal ();
 		}
 	}
+
+	node.get_property (X_("allow-feedback"), _allow_feedback);
 
 	return 0;
 }
@@ -332,7 +349,7 @@ InternalSend::connect_when_legal ()
 		return 0;
 	}
 
-        boost::shared_ptr<Route> sendto;
+	boost::shared_ptr<Route> sendto;
 
 	if ((sendto = _session.route_by_id (_send_to_id)) == 0) {
 		error << string_compose (_("%1 - cannot find any track/bus with the ID %2 to connect to"), display_name(), _send_to_id) << endmsg;
@@ -340,7 +357,7 @@ InternalSend::connect_when_legal ()
 		return -1;
 	}
 
-        return use_target (sendto);
+	return use_target (sendto);
 }
 
 bool

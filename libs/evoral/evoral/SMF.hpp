@@ -28,8 +28,10 @@
 
 struct smf_struct;
 struct smf_track_struct;
+struct smf_tempo_struct;
 typedef smf_struct smf_t;
 typedef smf_track_struct smf_track_t;
+typedef smf_tempo_struct smf_tempo_t;
 
 namespace Evoral {
 
@@ -37,6 +39,14 @@ namespace Evoral {
 
 /** Standard Midi File.
  * Currently only tempo-based time of a given PPQN is supported.
+ *
+ * For WRITING: this object specifically wraps a type0 file or a type1 file with only a
+ * single track. It has no support at this time for a type1 file with multiple
+ * tracks.
+ *
+ * For READING: this object can read a single arbitrary track from a type1
+ * file, or the single track of a type0 file. It has no support at this time
+ * for reading more than 1 track.
  */
 class LIBEVORAL_API SMF {
 public:
@@ -78,8 +88,41 @@ public:
 
 	bool is_type0 () const { return _type0; }
 	std::set<uint8_t> channels () const { return _type0channels; }
+	void track_names (std::vector<std::string>&) const;
+	void instrument_names (std::vector<std::string>&) const;
 
-private:
+	int num_tempos () const;
+
+	/* This is exactly modelled on smf_tempo_t */
+	struct Tempo {
+		size_t time_pulses;
+		double time_seconds;
+		int    microseconds_per_quarter_note;
+		int    numerator;
+		int    denominator;
+		int    clocks_per_click;
+		int    notes_per_note;
+
+		Tempo ()
+			: time_pulses (0)
+			, time_seconds (0)
+			, microseconds_per_quarter_note (-1)
+			, numerator (-1)
+			, denominator (-1)
+			, clocks_per_click (-1)
+			, notes_per_note (-1) {}
+		Tempo (smf_tempo_t*);
+
+		double tempo() const {
+			return 60.0 * (1000000.0 / (double) microseconds_per_quarter_note);
+		}
+	};
+
+	Tempo* tempo_at_smf_pulse (size_t smf_pulse) const;
+	Tempo* tempo_at_seconds (double seconds) const;
+	Tempo* nth_tempo (size_t n) const;
+
+  private:
 	smf_t*       _smf;
 	smf_track_t* _smf_track;
 	bool         _empty; ///< true iff file contains(non-empty) events
@@ -92,4 +135,3 @@ private:
 }; /* namespace Evoral */
 
 #endif /* EVORAL_SMF_HPP */
-

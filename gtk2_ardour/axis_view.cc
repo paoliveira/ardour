@@ -29,14 +29,16 @@
 #include "pbd/convert.h"
 
 #include <gtkmm2ext/utils.h>
-#include <gtkmm2ext/selector.h>
 #include <gtkmm2ext/gtk_ui.h>
+
+#include "ardour/selection.h"
 
 #include "public_editor.h"
 #include "ardour_ui.h"
 #include "gui_object.h"
 #include "axis_view.h"
 #include "utils.h"
+
 #include "pbd/i18n.h"
 
 using namespace std;
@@ -67,7 +69,7 @@ AxisView::gui_property (const string& property_name) const
 	if (property_hashtable.count(property_name)) {
 		return property_hashtable[property_name];
 	} else {
-	  string rv = gui_object_state().get_string (state_id(), property_name);
+		string rv = gui_object_state().get_string (state_id(), property_name);
 		property_hashtable.erase(property_name);
 		property_hashtable.emplace(property_name, rv);
 		return rv;
@@ -75,21 +77,46 @@ AxisView::gui_property (const string& property_name) const
 }
 
 bool
+AxisView::get_gui_property (const std::string& property_name, std::string& value) const
+{
+	std::string str = gui_property(property_name);
+
+	if (!str.empty()) {
+		value = str;
+		return true;
+	}
+
+	return false;
+}
+
+void
+AxisView::set_gui_property (const std::string& property_name, const std::string& value)
+{
+	property_hashtable.erase (property_name);
+	property_hashtable.emplace (property_name, value);
+	gui_object_state ().set_property (state_id (), property_name, value);
+}
+
+bool
 AxisView::marked_for_display () const
 {
-	string const v = gui_property ("visible");
-	return (v == "" || PBD::string_is_affirmative (v));
+	bool visible;
+	if (!get_gui_property ("visible", visible)) {
+		return true;
+	}
+	return visible;
 }
 
 bool
 AxisView::set_marked_for_display (bool yn)
 {
-	string const v = gui_property ("visible");
-	if (v == "" || yn != PBD::string_is_affirmative (v)) {
-		set_gui_property ("visible", yn);
-		return true; // things changed
+	bool visible;
+	if (get_gui_property ("visible", visible) && visible == yn) {
+		return false; // nothing changed
 	}
-	return false;
+
+	set_gui_property ("visible", yn);
+	return true; // things changed
 }
 
 GUIObjectState&
@@ -106,10 +133,4 @@ AxisView::set_selected (bool yn)
 	}
 
 	Selectable::set_selected (yn);
-
-	boost::shared_ptr<Stripable> s = stripable ();
-
-	if (s) {
-		s->presentation_info().set_selected (yn);
-	}
 }

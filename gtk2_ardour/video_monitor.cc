@@ -76,7 +76,7 @@ VideoMonitor::start ()
 	sync_by_manual_seek = false;
 	if (clock_connection.connected()) { clock_connection.disconnect(); }
 
-	if (process->start(debug_enable?2:1)) {
+	if (process->start (debug_enable ? SystemExec::MergeWithStdin : SystemExec::IgnoreAndClose)) {
 		return false;
 	}
 	return true;
@@ -430,8 +430,8 @@ VideoMonitor::save_session ()
 
 	for(XJSettings::const_iterator it = xjadeo_settings.begin(); it != xjadeo_settings.end(); ++it) {
 	  XMLNode* child = node->add_child (X_("XJSetting"));
-		child->add_property (X_("k"), it->first);
-		child->add_property (X_("v"), it->second);
+		child->set_property (X_("k"), it->first);
+		child->set_property (X_("v"), it->second);
 	}
 }
 
@@ -441,6 +441,7 @@ VideoMonitor::set_session (ARDOUR::Session *s)
 {
 	SessionHandlePtr::set_session (s);
 	if (!_session) { return; }
+	ARDOUR::Config->ParameterChanged.connect (*this, invalidator (*this), ui_bind (&VideoMonitor::parameter_changed, this, _1), gui_context());
 	_session->config.ParameterChanged.connect (*this, invalidator (*this), ui_bind (&VideoMonitor::parameter_changed, this, _1), gui_context());
 	XMLNode* node = _session->extra_xml (X_("XJSettings"));
 	if (!node) { return;}
@@ -466,31 +467,31 @@ VideoMonitor::get_custom_setting (const std::string k)
 	return (xjadeo_settings[k]);
 }
 
-#define NO_OFFSET (ARDOUR::max_framepos) //< skip setting or modifying offset
+#define NO_OFFSET (Temporal::max_samplepos) //< skip setting or modifying offset
 void
 VideoMonitor::srsupdate ()
 {
 	if (!_session) { return; }
 	if (editor->dragging_playhead()) { return ;}
-	manual_seek(_session->audible_frame(), false, NO_OFFSET);
+	manual_seek(_session->audible_sample(), false, NO_OFFSET);
 }
 
 void
-VideoMonitor::set_offset (ARDOUR::frameoffset_t offset)
+VideoMonitor::set_offset (ARDOUR::sampleoffset_t offset)
 {
 	if (!is_started()) { return; }
 	if (!_session) { return; }
 	if (offset == NO_OFFSET ) { return; }
 
-	framecnt_t video_frame_offset;
-	framecnt_t audio_sample_rate;
+	samplecnt_t video_frame_offset;
+	samplecnt_t audio_sample_rate;
 	if (_session->config.get_videotimeline_pullup()) {
-		audio_sample_rate = _session->frame_rate();
+		audio_sample_rate = _session->sample_rate();
 	} else {
-		audio_sample_rate = _session->nominal_frame_rate();
+		audio_sample_rate = _session->nominal_sample_rate();
 	}
 
-	/* Note: pull-up/down are applied here: frame_rate() vs. nominal_frame_rate() */
+	/* Note: pull-up/down are applied here: sample_rate() vs. nominal_sample_rate() */
 	if (_session->config.get_use_video_file_fps()) {
 		video_frame_offset = floor(offset * fps / audio_sample_rate);
 	} else {
@@ -505,19 +506,19 @@ VideoMonitor::set_offset (ARDOUR::frameoffset_t offset)
 }
 
 void
-VideoMonitor::manual_seek (framepos_t when, bool /*force*/, ARDOUR::frameoffset_t offset)
+VideoMonitor::manual_seek (samplepos_t when, bool /*force*/, ARDOUR::sampleoffset_t offset)
 {
 	if (!is_started()) { return; }
 	if (!_session) { return; }
-	framecnt_t video_frame;
-	framecnt_t audio_sample_rate;
+	samplecnt_t video_frame;
+	samplecnt_t audio_sample_rate;
 	if (_session->config.get_videotimeline_pullup()) {
-		audio_sample_rate = _session->frame_rate();
+		audio_sample_rate = _session->sample_rate();
 	} else {
-		audio_sample_rate = _session->nominal_frame_rate();
+		audio_sample_rate = _session->nominal_sample_rate();
 	}
 
-	/* Note: pull-up/down are applied here: frame_rate() vs. nominal_frame_rate() */
+	/* Note: pull-up/down are applied here: sample_rate() vs. nominal_sample_rate() */
 	if (_session->config.get_use_video_file_fps()) {
 		video_frame = floor(when * fps / audio_sample_rate);
 	} else {
@@ -555,9 +556,8 @@ VideoMonitor::xjadeo_sync_setup ()
 	if (!_session) { return; }
 
 	bool my_manual_seek = true;
-	if (_session->config.get_external_sync()) {
-		if (ARDOUR::Config->get_sync_source() == ARDOUR::Engine)
-			my_manual_seek = false;
+	if (_session->synced_to_engine ()) {
+		my_manual_seek = false;
 	}
 
 	if (my_manual_seek != sync_by_manual_seek) {

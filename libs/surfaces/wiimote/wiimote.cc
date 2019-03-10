@@ -89,7 +89,7 @@ XMLNode&
 WiimoteControlProtocol::get_state ()
 {
 	XMLNode& node (ControlProtocol::get_state());
-	node.add_property (X_("feedback"), "0");
+	node.set_property (X_("feedback"), "0");
 	return node;
 }
 
@@ -376,7 +376,7 @@ WiimoteControlProtocol::wiimote_callback (int mesg_count, union cwiid_mesg mesg[
 
 			// B + Home = add marker at playhead
 			if (b & CWIID_BTN_HOME) {
-				access_action ("Editor/add-location-from-playhead");
+				access_action ("Common/add-location-from-playhead");
 			}
 
 			// B + minus = move playhead to the start
@@ -406,12 +406,12 @@ WiimoteControlProtocol::wiimote_callback (int mesg_count, union cwiid_mesg mesg[
 
 			// left = move playhead back a bit
 			if (b & CWIID_BTN_LEFT) {
-				access_action ("Editor/nudge-playhead-backward");
+				access_action ("Common/nudge-playhead-backward");
 			}
 
 			// right = move playhead forward a bit
 			if (b & CWIID_BTN_RIGHT) {
-				access_action ("Editor/nudge-playhead-forward");
+				access_action ("Common/nudge-playhead-forward");
 			}
 
 			// up = select previous track

@@ -40,9 +40,10 @@ LXVSTPlugin::LXVSTPlugin (AudioEngine& e, Session& session, VSTHandle* h, int un
 	if ((_state = vstfx_instantiate (_handle, Session::vst_callback, this)) == 0) {
 		throw failed_constructor();
 	}
+	open_plugin ();
 	Session::vst_current_loading_id = 0;
 
-	set_plugin (_state->plugin);
+	init_plugin ();
 }
 
 LXVSTPlugin::LXVSTPlugin (const LXVSTPlugin &other)
@@ -54,11 +55,15 @@ LXVSTPlugin::LXVSTPlugin (const LXVSTPlugin &other)
 	if ((_state = vstfx_instantiate (_handle, Session::vst_callback, this)) == 0) {
 		throw failed_constructor();
 	}
+	open_plugin ();
 	Session::vst_current_loading_id = 0;
 
-	_plugin = _state->plugin;
+	XMLNode* root = new XMLNode (other.state_node_name ());
+	other.add_state (root);
+	set_state (*root, Stateful::loading_state_version);
+	delete root;
 
-	// Plugin::setup_controls ();
+	init_plugin ();
 }
 
 LXVSTPlugin::~LXVSTPlugin ()
@@ -114,16 +119,17 @@ LXVSTPluginInfo::get_presets (bool user_only) const
 		Session::vst_current_loading_id = atoi (unique_id);
 		AEffect* plugin = handle->main_entry (Session::vst_callback);
 		Session::vst_current_loading_id = 0;
+		plugin->ptr1 = NULL;
 
 		plugin->dispatcher (plugin, effOpen, 0, 0, 0, 0); // :(
 		int const vst_version = plugin->dispatcher (plugin, effGetVstVersion, 0, 0, NULL, 0);
 
 		for (int i = 0; i < plugin->numPrograms; ++i) {
-			Plugin::PresetRecord r (string_compose (X_("VST:%1:%2"), unique_id, i), "", false);
+			Plugin::PresetRecord r (string_compose (X_("VST:%1:%2"), unique_id, std::setw(4), std::setfill('0'), i), "", false);
 			if (vst_version >= 2) {
 				char buf[256];
 				if (plugin->dispatcher (plugin, 29, i, 0, buf, 0) == 1) {
-					r.label = buf;
+					r.label = string_compose (_("%1 - %2"), i, buf);
 				} else {
 					r.label = string_compose (_("Preset %1"), i);
 				}
@@ -162,8 +168,8 @@ LXVSTPluginInfo::get_presets (bool user_only) const
 	return p;
 }
 
-LXVSTPluginInfo::LXVSTPluginInfo()
+LXVSTPluginInfo::LXVSTPluginInfo (_VSTInfo* nfo) : VSTPluginInfo (nfo)
 {
-       type = ARDOUR::LXVST;
+	type = ARDOUR::LXVST;
 }
 

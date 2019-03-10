@@ -38,10 +38,10 @@ using namespace ARDOUR;
 PeakMeter::PeakMeter (Session& s, const std::string& name)
     : Processor (s, string_compose ("meter-%1", name))
 {
-	Kmeterdsp::init(s.nominal_frame_rate());
-	Iec1ppmdsp::init(s.nominal_frame_rate());
-	Iec2ppmdsp::init(s.nominal_frame_rate());
-	Vumeterdsp::init(s.nominal_frame_rate());
+	Kmeterdsp::init(s.nominal_sample_rate());
+	Iec1ppmdsp::init(s.nominal_sample_rate());
+	Iec2ppmdsp::init(s.nominal_sample_rate());
+	Vumeterdsp::init(s.nominal_sample_rate());
 	_pending_active = true;
 	_meter_type = MeterPeak;
 	_reset_dpm = true;
@@ -78,7 +78,7 @@ PeakMeter::~PeakMeter ()
  * (runs in jack realtime context)
  */
 void
-PeakMeter::run (BufferSet& bufs, framepos_t /*start_frame*/, framepos_t /*end_frame*/, double /*speed*/, pframes_t nframes, bool)
+PeakMeter::run (BufferSet& bufs, samplepos_t /*start_sample*/, samplepos_t /*end_sample*/, double /*speed*/, pframes_t nframes, bool)
 {
 	if (!_active && !_pending_active) {
 		return;
@@ -96,17 +96,20 @@ PeakMeter::run (BufferSet& bufs, framepos_t /*start_frame*/, framepos_t /*end_fr
 
 	uint32_t n = 0;
 
-	const float falloff_dB = Config->get_meter_falloff() * nframes / _session.nominal_frame_rate();
-	const uint32_t zoh = _session.nominal_frame_rate() * .021;
+	const float falloff_dB = Config->get_meter_falloff() * nframes / _session.nominal_sample_rate();
+	const uint32_t zoh = _session.nominal_sample_rate() * .021;
 	_bufcnt += nframes;
 
 	// Meter MIDI in to the first n_midi peaks
 	for (uint32_t i = 0; i < n_midi; ++i, ++n) {
 		float val = 0.0f;
+		if (do_reset_dpm) {
+			_peak_power[n] = 0;
+		}
 		const MidiBuffer& buf (bufs.get_midi(i));
 
 		for (MidiBuffer::const_iterator e = buf.begin(); e != buf.end(); ++e) {
-			const Evoral::MIDIEvent<framepos_t> ev(*e, false);
+			const Evoral::Event<samplepos_t> ev(*e, false);
 			if (ev.is_note_on()) {
 				const float this_vel = ev.buffer()[2] / 127.0;
 				if (this_vel > val) {
@@ -203,6 +206,10 @@ PeakMeter::reset ()
 			_peak_power[i] = -std::numeric_limits<float>::infinity();
 			_peak_buffer[i] = 0;
 		}
+		const uint32_t n_midi = min (current_meters.n_midi(), (uint32_t)_peak_power.size());
+		for (size_t i = 0; i < n_midi; ++i) {
+			_peak_power[i] = 0;
+		}
 	}
 
 	// these are handled async just fine.
@@ -285,7 +292,11 @@ PeakMeter::set_max_channels (const ChanCount& chn)
 
 	while (_peak_power.size() < limit) {
 		_peak_buffer.push_back(0);
-		_peak_power.push_back(-std::numeric_limits<float>::infinity());
+		if (_peak_power.size() < current_meters.n_midi()) {
+			_peak_power.push_back(0);
+		} else {
+			_peak_power.push_back(-std::numeric_limits<float>::infinity());
+		}
 		_max_peak_signal.push_back(0);
 	}
 
@@ -427,9 +438,9 @@ PeakMeter::set_type(MeterType t)
 }
 
 XMLNode&
-PeakMeter::state (bool full_state)
+PeakMeter::state ()
 {
-	XMLNode& node (Processor::state (full_state));
-	node.add_property("type", "meter");
+	XMLNode& node (Processor::state ());
+	node.set_property("type", "meter");
 	return node;
 }

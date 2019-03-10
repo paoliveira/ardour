@@ -49,7 +49,7 @@ LocationImportHandler::LocationImportHandler (XMLTree const & source, Session & 
 	for (XMLNodeList::const_iterator it = locations.begin(); it != locations.end(); ++it) {
 		try {
 			elements.push_back (ElementPtr ( new LocationImporter (source, session, *this, **it)));
-		} catch (failed_constructor err) {
+		} catch (failed_constructor const&) {
 			_dirty = true;
 		}
 	}
@@ -104,7 +104,7 @@ LocationImporter::~LocationImporter ()
 string
 LocationImporter::get_info () const
 {
-	framepos_t start, end;
+	samplepos_t start, end;
 	Timecode::Time start_time, end_time;
 
 	// Get sample positions

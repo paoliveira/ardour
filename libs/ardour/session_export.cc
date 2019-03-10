@@ -86,7 +86,7 @@ Session::pre_export ()
 	/* no slaving */
 
 	post_export_sync = config.get_external_sync ();
-	post_export_position = _transport_frame;
+	post_export_position = _transport_sample;
 
 	config.set_external_sync (false);
 
@@ -104,35 +104,28 @@ Session::pre_export ()
 
 /** Called for each range that is being exported */
 int
-Session::start_audio_export (framepos_t position, bool realtime)
+Session::start_audio_export (samplepos_t position, bool realtime, bool region_export)
 {
 	if (!_exporting) {
 		pre_export ();
 	}
 
 	_realtime_export = realtime;
+	_region_export = region_export;
 
-	if (realtime) {
-		_export_preroll = nominal_frame_rate ();
+	if (region_export) {
+		_export_preroll = 0;
+	}
+	else if (realtime) {
+		_export_preroll = nominal_sample_rate ();
 	} else {
-		_export_preroll = Config->get_export_preroll() * nominal_frame_rate ();
+		_export_preroll = Config->get_export_preroll() * nominal_sample_rate ();
 	}
 
 	if (_export_preroll == 0) {
 		// must be > 0 so that transport is started in sync.
 		_export_preroll = 1;
 	}
-
-	/* "worst_track_latency" is the correct value for stem-exports
-	 * see to Route::add_export_point(),
-	 *
-	 * for master-bus export, we'd need to add the master's latency.
-	 * or actually longest-total-session-latency.
-	 *
-	 * We can't use worst_playback_latency because that includes
-	 * includes external latencies and would overcompensate.
-	 */
-	_export_latency = worst_track_latency ();
 
 	/* We're about to call Track::seek, so the butler must have finished everything
 	   up otherwise it could be doing do_refill in its thread while we are doing
@@ -158,11 +151,17 @@ Session::start_audio_export (framepos_t position, bool realtime)
 	}
 
 	/* we just did the core part of a locate() call above, but
-	   for the sake of any GUI, put the _transport_frame in
+	   for the sake of any GUI, put the _transport_sample in
 	   the right place too.
 	*/
 
-	_transport_frame = position;
+	_transport_sample = position;
+
+	if (!region_export) {
+		_remaining_latency_preroll = worst_latency_preroll ();
+	} else {
+		_remaining_latency_preroll = 0;
+	}
 	export_status->stop = false;
 
 	/* get transport ready. note how this is calling butler functions
@@ -173,7 +172,7 @@ Session::start_audio_export (framepos_t position, bool realtime)
 
 	/* we are ready to go ... */
 
-	if (!_engine.connected()) {
+	if (!_engine.running()) {
 		return -1;
 	}
 
@@ -197,19 +196,26 @@ Session::process_export (pframes_t nframes)
 		stop_audio_export ();
 	}
 
-	if (_export_rolling) {
-		if (!_realtime_export)  {
-			/* make sure we've caught up with disk i/o, since
-			 * we're running faster than realtime c/o JACK.
-			 */
-			_butler->wait_until_finished ();
+	/* for Region Raw or Fades, we can skip this
+	 * RegionExportChannelFactory::update_buffers() does not care
+	 * about anything done here
+	 */
+	if (!_region_export) {
+		if (_export_rolling) {
+			if (!_realtime_export)  {
+				/* make sure we've caught up with disk i/o, since
+				 * we're running faster than realtime c/o JACK.
+				 */
+				_butler->wait_until_finished ();
+			}
+
+			/* do the usual stuff */
+
+			process_without_events (nframes);
+
+		} else if (_realtime_export) {
+			fail_roll (nframes); // somehow we need to silence _ALL_ output buffers
 		}
-
-		/* do the usual stuff */
-
-		process_without_events (nframes);
-	} else if (_realtime_export) {
-		fail_roll (nframes); // somehow we need to silence _ALL_ output buffers
 	}
 
 	try {
@@ -237,7 +243,7 @@ Session::process_export_fw (pframes_t nframes)
 			_engine.main_thread()->drop_buffers ();
 		}
 
-		_export_preroll -= std::min ((framepos_t)nframes, _export_preroll);
+		_export_preroll -= std::min ((samplepos_t)nframes, _export_preroll);
 
 		if (_export_preroll > 0) {
 			// clear out buffers (reverb tails etc).
@@ -252,23 +258,27 @@ Session::process_export_fw (pframes_t nframes)
 		return;
 	}
 
-	if (_export_latency > 0) {
-		framepos_t remain = std::min ((framepos_t)nframes, _export_latency);
+	if (_remaining_latency_preroll > 0) {
+		samplepos_t remain = std::min ((samplepos_t)nframes, _remaining_latency_preroll);
 
 		if (need_buffers) {
 			_engine.main_thread()->get_buffers ();
 		}
+
 		process_without_events (remain);
+
 		if (need_buffers) {
 			_engine.main_thread()->drop_buffers ();
 		}
 
-		_export_latency -= remain;
+		_remaining_latency_preroll -= remain;
+		_transport_sample -= remain;
 		nframes -= remain;
 
 		if (nframes == 0) {
 			return;
 		}
+		_engine.split_cycle (remain);
 	}
 
 	if (need_buffers) {

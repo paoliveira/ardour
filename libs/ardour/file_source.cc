@@ -61,6 +61,7 @@ FileSource::FileSource (Session& session, DataType type, const string& path, con
 	, _file_is_new (!origin.empty()) // if origin is left unspecified (empty string) then file must exist
 	, _channel (0)
 	, _origin (origin)
+	, _gain (1.f)
 {
 	set_within_session_from_path (path);
 }
@@ -69,6 +70,7 @@ FileSource::FileSource (Session& session, const XMLNode& node, bool /*must_exist
 	: Source (session, node)
 	, _file_is_new (false)
 	, _channel (0)
+	, _gain (1.f)
 {
 	/* this setting of _path is temporary - we expect derived classes
 	   to call ::init() which will actually locate the file
@@ -142,16 +144,14 @@ FileSource::init (const string& pathstr, bool must_exist)
 int
 FileSource::set_state (const XMLNode& node, int /*version*/)
 {
-	XMLProperty const * prop;
-
-	if ((prop = node.property (X_("channel"))) != 0) {
-		_channel = atoi (prop->value());
-	} else {
+	if (!node.get_property (X_("channel"), _channel)) {
 		_channel = 0;
 	}
 
-	if ((prop = node.property (X_("origin"))) != 0) {
-		_origin = prop->value();
+	node.get_property (X_("origin"), _origin);
+
+	if (!node.get_property (X_("gain"), _gain)) {
+		_gain = 1.f;
 	}
 
 	return 0;
@@ -433,7 +433,7 @@ FileSource::find_2X (Session& s, DataType type, const string& path, bool must_ex
 		if (cnt > 1) {
 
 			error << string_compose (
-					_("FileSource: \"%1\" is ambigous when searching\n\t"), pathstr) << endmsg;
+					_("FileSource: \"%1\" is ambiguous when searching\n\t"), pathstr) << endmsg;
 			goto out;
 
 		} else if (cnt == 0) {
@@ -519,6 +519,7 @@ FileSource::mark_immutable ()
 	/* destructive sources stay writable, and their other flags don't change.  */
 	if (!(_flags & Destructive)) {
 		_flags = Flag (_flags & ~(Writable|Removable|RemovableIfEmpty|RemoveAtDestroy|CanRename));
+		close();
 	}
 }
 

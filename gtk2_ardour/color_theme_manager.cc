@@ -20,12 +20,11 @@
 #include <cmath>
 #include <errno.h>
 
+#include <gtkmm/stock.h>
+
 #include "fix_carbon.h"
 
 #include "pbd/gstdio_compat.h"
-
-#include "gtkmm2ext/cell_renderer_color_selector.h"
-#include "gtkmm2ext/utils.h"
 
 #include "pbd/compose.h"
 #include "pbd/file_utils.h"
@@ -34,12 +33,15 @@
 #include "ardour/filesystem_paths.h"
 #include "ardour/profile.h"
 
+#include "gtkmm2ext/cell_renderer_color_selector.h"
+#include "gtkmm2ext/utils.h"
+
 #include "canvas/container.h"
 #include "canvas/rectangle.h"
 #include "canvas/scroll_group.h"
-#include "canvas/wave_view.h"
 
-#include "ardour_button.h"
+#include "waveview/wave_view.h"
+
 #include "ardour_dialog.h"
 #include "color_theme_manager.h"
 #include "rgb_macros.h"
@@ -52,6 +54,7 @@ using namespace std;
 using namespace Gtk;
 using namespace PBD;
 using namespace ARDOUR;
+using namespace Gtkmm2ext;
 using namespace ARDOUR_UI_UTILS;
 
 ColorThemeManager::ColorThemeManager ()
@@ -61,11 +64,10 @@ ColorThemeManager::ColorThemeManager ()
 	, palette_window (0)
 	, color_theme_label (_("Color Theme"))
 {
-	set_spacing (12);
-
 	std::map<string,string> color_themes;
 
 	get_color_themes (color_themes);
+	int n = 0;
 
 	if (color_themes.size() > 1) {
 		theme_list = TreeStore::create (color_theme_columns);
@@ -105,8 +107,9 @@ ColorThemeManager::ColorThemeManager ()
 		hbox->set_spacing (6);
 		hbox->pack_start (color_theme_label, false, false);
 		hbox->pack_start (*align, true, true);
-		pack_start (*hbox, PACK_SHRINK);
 		hbox->show_all ();
+		table.attach (*hbox, 0, 3, n, n + 1);
+		++n;
 	}
 
 	reset_button.signal_clicked().connect (sigc::mem_fun (*this, &ColorThemeManager::reset_canvas_colors));
@@ -146,8 +149,9 @@ ColorThemeManager::ColorThemeManager ()
 
 	notebook.set_size_request (400, 400);
 
-	pack_start (notebook, true, true);
-	pack_start (reset_button, false, false);
+	table.attach (notebook, 0, 3, n, n + 1);
+	++n;
+	table.attach (reset_button, 0, 3, n, n + 1);
 
 	color_dialog.get_colorsel()->set_has_opacity_control (true);
 	color_dialog.get_colorsel()->set_has_palette (true);
@@ -161,9 +165,17 @@ ColorThemeManager::ColorThemeManager ()
 	setup_modifiers ();
 
 	UIConfiguration::instance().ColorsChanged.connect (sigc::mem_fun (*this, &ColorThemeManager::colors_changed));
-
-	show_all ();
 }
+
+
+ColorThemeManager::~ColorThemeManager ()
+{
+	if (palette_group) { 
+		palette_group->clear (true);  
+		delete palette_group;
+	}
+}
+
 
 void
 ColorThemeManager::setup_modifiers ()
@@ -263,8 +275,8 @@ ColorThemeManager::palette_canvas_allocated (Gtk::Allocation& alloc, ArdourCanva
 
 struct NamedColor {
 	string name;
-	ArdourCanvas::HSV    color;
-	NamedColor (string s, ArdourCanvas::HSV c) : name (s), color (c) {}
+	Gtkmm2ext::HSV    color;
+	NamedColor (string s, Gtkmm2ext::HSV c) : name (s), color (c) {}
 };
 
 struct SortByHue {
@@ -311,7 +323,6 @@ ColorThemeManager::build_palette_canvas (ArdourCanvas::Canvas& canvas, ArdourCan
 	for (uint32_t y = 0; y < height - box_size && color_num < color_limit; y += box_size) {
 		for (uint32_t x = 0; x < width - box_size && color_num < color_limit; x += box_size) {
 			ArdourCanvas::Rectangle* r = new ArdourCanvas::Rectangle (&group, ArdourCanvas::Rect (x, y, x + box_size, y + box_size));
-
 			string name = nc[color_num++].name;
 
 			UIConfiguration::Colors::iterator c = colors.find (name);
@@ -369,7 +380,7 @@ ColorThemeManager::edit_palette_color (std::string name)
 	using namespace ArdourCanvas;
 	double r,g, b, a;
 	UIConfiguration* uic (&UIConfiguration::instance());
-	ArdourCanvas::Color c = uic->color (name);
+	Gtkmm2ext::Color c = uic->color (name);
 	Gdk::Color gdkcolor;
 
 	color_to_rgba (c, r, g, b, a);
@@ -595,9 +606,16 @@ ColorThemeManager::set_state_from_config ()
 }
 
 void
-ColorThemeManager::add_to_page (OptionEditorPage* page)
+ColorThemeManager::add_to_page (OptionEditorPage* p)
 {
-	add_widget_to_page (page, this);
+	int const n = p->table.property_n_rows();
+	int m = n + 1;
+	if (!_note.empty ()) {
+		++m;
+	}
+	p->table.resize (m, 3);
+	p->table.attach (box, 1, 3, n, n + 1, FILL | EXPAND, SHRINK, 0, 0);
+	maybe_add_note (p, n + 1);
 }
 
 Gtk::Widget&

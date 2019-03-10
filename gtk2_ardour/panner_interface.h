@@ -24,7 +24,12 @@
 #include <gtkmm/drawingarea.h>
 #include <gtkmm/label.h>
 #include "gtkmm2ext/persistent_tooltip.h"
+
 #include "pbd/destructible.h"
+
+namespace PBD {
+	class Controllable;
+}
 
 namespace ARDOUR {
 	class Panner;
@@ -63,11 +68,12 @@ public:
 
 protected:
 	virtual void set_tooltip () = 0;
+	virtual boost::weak_ptr<PBD::Controllable> proxy_controllable () const = 0;
 
 	void value_change ();
 
-        bool on_enter_notify_event (GdkEventCrossing *);
-        bool on_leave_notify_event (GdkEventCrossing *);
+	bool on_enter_notify_event (GdkEventCrossing *);
+	bool on_leave_notify_event (GdkEventCrossing *);
 	bool on_key_release_event  (GdkEventKey *);
 	bool on_button_press_event (GdkEventButton*);
 	bool on_button_release_event (GdkEventButton*);

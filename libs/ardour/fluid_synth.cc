@@ -40,7 +40,6 @@ FluidSynth::FluidSynth (float samplerate, int polyphony)
 	}
 
 	fluid_settings_setnum (_settings, "synth.sample-rate", samplerate);
-	fluid_settings_setint (_settings, "synth.parallel-render", 1);
 	fluid_settings_setint (_settings, "synth.threadsafe-api", 0);
 
 	_synth = new_fluid_synth (_settings);
@@ -71,19 +70,18 @@ FluidSynth::load_sf2 (const std::string& fn)
 	}
 
 	size_t count;
-	fluid_preset_t preset;
+	fluid_preset_t* preset;
 
-	sfont->iteration_start (sfont);
-	for (count = 0; sfont->iteration_next (sfont, &preset) != 0; ++count) {
+	fluid_sfont_iteration_start (sfont);
+	for (count = 0; (preset = fluid_sfont_iteration_next (sfont)) != 0; ++count) {
 		if (count < 16) {
-			fluid_synth_program_select (_synth, count, _synth_id, preset.get_banknum (&preset), preset.get_num (&preset));
+			fluid_synth_program_select (_synth, count, _synth_id, fluid_preset_get_banknum (preset), fluid_preset_get_num (preset));
 		}
 		_presets.push_back (BankProgram (
-					preset.get_name (&preset),
-					preset.get_banknum (&preset),
-					preset.get_num (&preset)));
+					fluid_preset_get_name (preset),
+					fluid_preset_get_banknum (preset),
+					fluid_preset_get_num (preset)));
 	}
-
 	if (count == 0) {
 		return false;
 	}
@@ -135,7 +133,12 @@ FluidSynth::midi_event (uint8_t const* const data, size_t len)
 		fluid_midi_event_set_key (_f_midi_event, data[1]);
 	}
 	if (len > 2) {
-		fluid_midi_event_set_value (_f_midi_event, data[2]);
+		if (0xe0 /*PITCH_BEND*/ == fluid_midi_event_get_type (_f_midi_event)) {
+			fluid_midi_event_set_value (_f_midi_event, 0);
+			fluid_midi_event_set_pitch (_f_midi_event, ((data[2] & 0x7f) << 7) | (data[1] & 0x7f));
+		} else {
+			fluid_midi_event_set_value (_f_midi_event, data[2]);
+		}
 	}
 	return FLUID_OK == fluid_synth_handle_midi_event (_synth, _f_midi_event);
 }

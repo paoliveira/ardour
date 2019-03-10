@@ -23,7 +23,7 @@
 #include "evoral/Range.hpp" // shouldn't Evoral have its own enum registration?
 
 #include "ardour/delivery.h"
-#include "ardour/diskstream.h"
+#include "ardour/disk_io.h"
 #include "ardour/export_channel.h"
 #include "ardour/export_filename.h"
 #include "ardour/export_format_base.h"
@@ -38,6 +38,7 @@
 #include "ardour/source.h"
 #include "ardour/tempo.h"
 #include "ardour/track.h"
+#include "ardour/transport_master.h"
 #include "ardour/types.h"
 
 using namespace std;
@@ -58,6 +59,7 @@ setup_enum_writer ()
 	AlignStyle _AlignStyle;
 	AlignChoice _AlignChoice;
 	MeterPoint _MeterPoint;
+	DiskIOPoint _DiskIOPoint;
 	MeterType _MeterType;
 	TrackMode _TrackMode;
 	NoteMode _NoteMode;
@@ -76,6 +78,7 @@ setup_enum_writer ()
 	PFLPosition _PFLPosition;
 	AFLPosition _AFLPosition;
 	DenormalModel _DenormalModel;
+	ClockDeltaMode _ClockDeltaMode;
 	LayerModel _LayerModel;
 	InsertMergePolicy _InsertMergePolicy;
 	ListenPosition _ListenPosition;
@@ -84,6 +87,7 @@ setup_enum_writer ()
 	HeaderFormat _HeaderFormat;
 	PluginType _PluginType;
 	SyncSource _SyncSource;
+	TransportRequestType _TransportRequestType;
 	ShuttleBehaviour _ShuttleBehaviour;
 	ShuttleUnits _ShuttleUnits;
 	Session::RecordState _Session_RecordState;
@@ -93,15 +97,15 @@ setup_enum_writer ()
 	Session::PullupFormat _Session_PullupFormat;
 	FadeShape _FadeShape;
 	RegionSelectionAfterSplit _RegionSelectionAfterSplit;
+	RangeSelectionAfterSplit _RangeSelectionAfterSplit;
 	IOChange _IOChange;
 	AutomationType _AutomationType;
 	AutoState _AutoState;
-	AutoStyle _AutoStyle;
 	AutoConnectOption _AutoConnectOption;
 	TracksAutoNamingRule _TracksAutoNamingRule;
 	Session::StateOfTheState _Session_StateOfTheState;
 	Source::Flag _Source_Flag;
-	Diskstream::Flag _Diskstream_Flag;
+	DiskIOProcessor::Flag _DiskIOProcessor_Flag;
 	Location::Flags _Location_Flags;
 	PositionLockStyle _PositionLockStyle;
 	TempoSection::Type _TempoSection_Type;
@@ -126,21 +130,28 @@ setup_enum_writer ()
 	MidiModel::NoteDiffCommand::Property _MidiModel_NoteDiffCommand_Property;
 	MidiModel::SysExDiffCommand::Property _MidiModel_SysExDiffCommand_Property;
 	MidiModel::PatchChangeDiffCommand::Property _MidiModel_PatchChangeDiffCommand_Property;
+	RegionEquivalence _RegionEquivalence;
 	WaveformScale _WaveformScale;
 	WaveformShape _WaveformShape;
 	Session::PostTransportWork _Session_PostTransportWork;
-	Session::SlaveState _Session_SlaveState;
 	MTC_Status _MIDI_MTC_Status;
 	Evoral::OverlapType _OverlapType;
-        BufferingPreset _BufferingPreset;
+	BufferingPreset _BufferingPreset;
 	AutoReturnTarget _AutoReturnTarget;
 	PresentationInfo::Flag _PresentationInfo_Flag;
 	MusicalMode::Type mode;
+	MidiPortFlags _MidiPortFlags;
 
 #define REGISTER(e) enum_writer.register_distinct (typeid(e).name(), i, s); i.clear(); s.clear()
 #define REGISTER_BITS(e) enum_writer.register_bits (typeid(e).name(), i, s); i.clear(); s.clear()
 #define REGISTER_ENUM(e) i.push_back (e); s.push_back (#e)
 #define REGISTER_CLASS_ENUM(t,e) i.push_back (t::e); s.push_back (#e)
+
+	/* in mid-2017 the entire code base was changed to use "samples"
+	   instead of frames, which included several enums. This hack table
+	   entry will catch all of them.
+	*/
+	enum_writer.add_to_hack_table ("Frames", "Samples");
 
 	REGISTER_ENUM (NullAutomation);
 	REGISTER_ENUM (GainAutomation);
@@ -169,18 +180,6 @@ setup_enum_writer ()
 	REGISTER_ENUM (TrimAutomation);
 	REGISTER_ENUM (PhaseAutomation);
 	REGISTER_ENUM (MonitoringAutomation);
-	REGISTER_ENUM (EQGain);
-	REGISTER_ENUM (EQFrequency);
-	REGISTER_ENUM (EQQ);
-	REGISTER_ENUM (EQShape);
-	REGISTER_ENUM (EQHPF);
-	REGISTER_ENUM (EQEnable);
-	REGISTER_ENUM (CompThreshold);
-	REGISTER_ENUM (CompSpeed);
-	REGISTER_ENUM (CompMode);
-	REGISTER_ENUM (CompMakeup);
-	REGISTER_ENUM (CompRedux);
-	REGISTER_ENUM (CompEnable);
 	REGISTER_ENUM (BusSendLevel);
 	REGISTER_ENUM (BusSendEnable);
 	REGISTER (_AutomationType);
@@ -189,11 +188,8 @@ setup_enum_writer ()
 	REGISTER_ENUM (Write);
 	REGISTER_ENUM (Touch);
 	REGISTER_ENUM (Play);
+	REGISTER_ENUM (Latch);
 	REGISTER_BITS (_AutoState);
-
-	REGISTER_ENUM (Absolute);
-	REGISTER_ENUM (Trim);
-	REGISTER_BITS (_AutoStyle);
 
 	REGISTER_ENUM (CaptureTime);
 	REGISTER_ENUM (ExistingMaterial);
@@ -210,6 +206,11 @@ setup_enum_writer ()
 	REGISTER_ENUM (MeterOutput);
 	REGISTER_ENUM (MeterCustom);
 	REGISTER (_MeterPoint);
+
+	REGISTER_ENUM (DiskIOPreFader);
+	REGISTER_ENUM (DiskIOPostFader);
+	REGISTER_ENUM (DiskIOCustom);
+	REGISTER (_DiskIOPoint);
 
 	REGISTER_ENUM (MeterMaxSignal);
 	REGISTER_ENUM (MeterMaxPeak);
@@ -319,6 +320,11 @@ setup_enum_writer ()
 	REGISTER_ENUM (AFLFromAfterProcessors);
 	REGISTER (_AFLPosition);
 
+	REGISTER_ENUM (NoDelta);
+	REGISTER_ENUM (DeltaEditPoint);
+	REGISTER_ENUM (DeltaOriginMarker);
+	REGISTER (_ClockDeltaMode);
+
 	REGISTER_ENUM (DenormalNone);
 	REGISTER_ENUM (DenormalFTZ);
 	REGISTER_ENUM (DenormalDAZ);
@@ -375,12 +381,16 @@ setup_enum_writer ()
 	REGISTER_ENUM (RF64);
 	REGISTER_ENUM (RF64_WAV);
 	REGISTER_ENUM (MBWF);
+	REGISTER_ENUM (FLAC);
 	REGISTER (_HeaderFormat);
 
 	REGISTER_ENUM (AudioUnit);
 	REGISTER_ENUM (LADSPA);
+	REGISTER_ENUM (LV2);
 	REGISTER_ENUM (Windows_VST);
 	REGISTER_ENUM (LXVST);
+	REGISTER_ENUM (MacVST);
+	REGISTER_ENUM (Lua);
 	REGISTER (_PluginType);
 
 	REGISTER_ENUM (MTC);
@@ -389,6 +399,12 @@ setup_enum_writer ()
 	REGISTER_ENUM (MIDIClock);
 	REGISTER_ENUM (LTC);
 	REGISTER (_SyncSource);
+
+	REGISTER_ENUM (TR_Stop);
+	REGISTER_ENUM (TR_Start);
+	REGISTER_ENUM (TR_Speed);
+	REGISTER_ENUM (TR_Locate);
+	REGISTER (_TransportRequestType);
 
 	REGISTER_ENUM (Sprung);
 	REGISTER_ENUM (Wheel);
@@ -404,7 +420,6 @@ setup_enum_writer ()
 	REGISTER (_Session_RecordState);
 
 	REGISTER_CLASS_ENUM (SessionEvent, SetTransportSpeed);
-	REGISTER_CLASS_ENUM (SessionEvent, SetTrackSpeed);
 	REGISTER_CLASS_ENUM (SessionEvent, Locate);
 	REGISTER_CLASS_ENUM (SessionEvent, LocateRoll);
 	REGISTER_CLASS_ENUM (SessionEvent, LocateRollLocate);
@@ -414,9 +429,7 @@ setup_enum_writer ()
 	REGISTER_CLASS_ENUM (SessionEvent, RangeStop);
 	REGISTER_CLASS_ENUM (SessionEvent, RangeLocate);
 	REGISTER_CLASS_ENUM (SessionEvent, Overwrite);
-	REGISTER_CLASS_ENUM (SessionEvent, SetSyncSource);
 	REGISTER_CLASS_ENUM (SessionEvent, Audition);
-	REGISTER_CLASS_ENUM (SessionEvent, InputConfigurationChange);
 	REGISTER_CLASS_ENUM (SessionEvent, SetPlayAudioRange);
 	REGISTER_CLASS_ENUM (SessionEvent, CancelPlayAudioRange);
 	REGISTER_CLASS_ENUM (SessionEvent, RealTimeOperation);
@@ -424,9 +437,9 @@ setup_enum_writer ()
 	REGISTER_CLASS_ENUM (SessionEvent, AdjustCaptureBuffering);
 	REGISTER_CLASS_ENUM (SessionEvent, SetTimecodeTransmission);
 	REGISTER_CLASS_ENUM (SessionEvent, Skip);
+	REGISTER_CLASS_ENUM (SessionEvent, SetTransportMaster);
 	REGISTER_CLASS_ENUM (SessionEvent, StopOnce);
 	REGISTER_CLASS_ENUM (SessionEvent, AutoLoop);
-	REGISTER_CLASS_ENUM (SessionEvent, AutoLoopDeclick);
 	REGISTER (_SessionEvent_Type);
 
 	REGISTER_CLASS_ENUM (SessionEvent, Add);
@@ -434,11 +447,6 @@ setup_enum_writer ()
 	REGISTER_CLASS_ENUM (SessionEvent, Replace);
 	REGISTER_CLASS_ENUM (SessionEvent, Clear);
 	REGISTER (_SessionEvent_Action);
-
-	REGISTER_CLASS_ENUM (Session, Stopped);
-	REGISTER_CLASS_ENUM (Session, Waiting);
-	REGISTER_CLASS_ENUM (Session, Running);
-	REGISTER (_Session_SlaveState);
 
 	REGISTER_ENUM (MTC_Stopped);
 	REGISTER_ENUM (MTC_Forward);
@@ -451,11 +459,8 @@ setup_enum_writer ()
 	REGISTER_CLASS_ENUM (Session, PostTransportRoll);
 	REGISTER_CLASS_ENUM (Session, PostTransportAbort);
 	REGISTER_CLASS_ENUM (Session, PostTransportOverWrite);
-	REGISTER_CLASS_ENUM (Session, PostTransportSpeed);
 	REGISTER_CLASS_ENUM (Session, PostTransportAudition);
 	REGISTER_CLASS_ENUM (Session, PostTransportReverse);
-	REGISTER_CLASS_ENUM (Session, PostTransportInputChange);
-	REGISTER_CLASS_ENUM (Session, PostTransportCurveRealloc);
 	REGISTER_CLASS_ENUM (Session, PostTransportClearSubstate);
 	REGISTER_BITS (_Session_PostTransportWork);
 
@@ -518,11 +523,12 @@ setup_enum_writer ()
 	REGISTER_ENUM(ExistingNewlyCreatedRight);
 	REGISTER_ENUM(ExistingNewlyCreatedBoth);
 	REGISTER (_RegionSelectionAfterSplit);
+	REGISTER (_RangeSelectionAfterSplit);
 
-	REGISTER_CLASS_ENUM (Diskstream, Recordable);
-	REGISTER_CLASS_ENUM (Diskstream, Hidden);
-	REGISTER_CLASS_ENUM (Diskstream, Destructive);
-	REGISTER_BITS (_Diskstream_Flag);
+	REGISTER_CLASS_ENUM (DiskIOProcessor, Recordable);
+	REGISTER_CLASS_ENUM (DiskIOProcessor, Hidden);
+	REGISTER_CLASS_ENUM (DiskIOProcessor, Destructive);
+	REGISTER_BITS (_DiskIOProcessor_Flag);
 
 	REGISTER_CLASS_ENUM (Location, IsMark);
 	REGISTER_CLASS_ENUM (Location, IsAutoPunch);
@@ -532,6 +538,7 @@ setup_enum_writer ()
 	REGISTER_CLASS_ENUM (Location, IsSessionRange);
 	REGISTER_CLASS_ENUM (Location, IsRangeMarker);
 	REGISTER_CLASS_ENUM (Location, IsSkip);
+	REGISTER_CLASS_ENUM (Location, IsClockOrigin);
 	REGISTER_BITS (_Location_Flags);
 
 	REGISTER_CLASS_ENUM (TempoSection, Ramp);
@@ -546,11 +553,13 @@ setup_enum_writer ()
 	REGISTER_CLASS_ENUM (AutomationList, Discrete);
 	REGISTER_CLASS_ENUM (AutomationList, Linear);
 	REGISTER_CLASS_ENUM (AutomationList, Curved);
+	REGISTER_CLASS_ENUM (AutomationList, Logarithmic);
+	REGISTER_CLASS_ENUM (AutomationList, Exponential);
 	REGISTER (_AutomationList_InterpolationStyle);
 
 	REGISTER_CLASS_ENUM (AnyTime, Timecode);
 	REGISTER_CLASS_ENUM (AnyTime, BBT);
-	REGISTER_CLASS_ENUM (AnyTime, Frames);
+	REGISTER_CLASS_ENUM (AnyTime, Samples);
 	REGISTER_CLASS_ENUM (AnyTime, Seconds);
 	REGISTER (_AnyTime_Type);
 
@@ -568,6 +577,7 @@ setup_enum_writer ()
 
 	REGISTER_CLASS_ENUM (ExportFormatBase, T_None);
 	REGISTER_CLASS_ENUM (ExportFormatBase, T_Sndfile);
+	REGISTER_CLASS_ENUM (ExportFormatBase, T_FFMPEG);
 	REGISTER (_ExportFormatBase_Type);
 
 	REGISTER_CLASS_ENUM (ExportFormatBase, F_None);
@@ -580,6 +590,7 @@ setup_enum_writer ()
 	REGISTER_CLASS_ENUM (ExportFormatBase, F_FLAC);
 	REGISTER_CLASS_ENUM (ExportFormatBase, F_Ogg);
 	REGISTER_CLASS_ENUM (ExportFormatBase, F_CAF);
+	REGISTER_CLASS_ENUM (ExportFormatBase, F_FFMPEG);
 	REGISTER (_ExportFormatBase_FormatId);
 
 	REGISTER_CLASS_ENUM (ExportFormatBase, E_FileDefault);
@@ -633,7 +644,7 @@ setup_enum_writer ()
 	REGISTER_CLASS_ENUM (ExportProfileManager, Timecode);
 	REGISTER_CLASS_ENUM (ExportProfileManager, BBT);
 	REGISTER_CLASS_ENUM (ExportProfileManager, MinSec);
-	REGISTER_CLASS_ENUM (ExportProfileManager, Frames);
+	REGISTER_CLASS_ENUM (ExportProfileManager, Samples);
 	REGISTER (_ExportProfileManager_TimeFormat);
 
 	REGISTER_CLASS_ENUM (RegionExportChannelFactory, None);
@@ -647,6 +658,7 @@ setup_enum_writer ()
 	REGISTER_CLASS_ENUM (Delivery, Listen);
 	REGISTER_CLASS_ENUM (Delivery, Main);
 	REGISTER_CLASS_ENUM (Delivery, Aux);
+	REGISTER_CLASS_ENUM (Delivery, Foldback);
 	REGISTER_BITS (_Delivery_Role);
 
 	REGISTER_CLASS_ENUM (MuteMaster, PreFader);
@@ -673,6 +685,16 @@ setup_enum_writer ()
 	REGISTER_CLASS_ENUM (MidiModel::PatchChangeDiffCommand, Program);
 	REGISTER_CLASS_ENUM (MidiModel::PatchChangeDiffCommand, Bank);
 	REGISTER (_MidiModel_PatchChangeDiffCommand_Property);
+
+	REGISTER_ENUM(MidiPortMusic);
+	REGISTER_ENUM(MidiPortControl);
+	REGISTER_ENUM(MidiPortSelection);
+	REGISTER_BITS(_MidiPortFlags);
+
+	REGISTER_ENUM(Exact);
+	REGISTER_ENUM(Enclosed);
+	REGISTER_ENUM(Overlap);
+	REGISTER(_RegionEquivalence);
 
 	REGISTER_ENUM(Linear);
 	REGISTER_ENUM(Logarithmic);
@@ -713,9 +735,9 @@ setup_enum_writer ()
 	REGISTER_CLASS_ENUM (PresentationInfo, MasterOut);
 	REGISTER_CLASS_ENUM (PresentationInfo, MonitorOut);
 	REGISTER_CLASS_ENUM (PresentationInfo, Auditioner);
-	REGISTER_CLASS_ENUM (PresentationInfo, Selected);
 	REGISTER_CLASS_ENUM (PresentationInfo, Hidden);
 	REGISTER_CLASS_ENUM (PresentationInfo, OrderSet);
+	REGISTER_CLASS_ENUM (PresentationInfo, FoldbackBus);
 	REGISTER_BITS (_PresentationInfo_Flag);
 
 	REGISTER_CLASS_ENUM (MusicalMode,Dorian);
@@ -759,374 +781,3 @@ setup_enum_writer ()
 }
 
 } /* namespace ARDOUR */
-
-/* deserializing types from ardour/types.h */
-
-std::istream& operator>>(std::istream& o, HeaderFormat& var)
-{
-	std::string s;
-	o >> s;
-	var = (HeaderFormat) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const HeaderFormat& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-
-std::istream& operator>>(std::istream& o, SampleFormat& var)
-{
-	std::string s;
-	o >> s;
-	var = (SampleFormat) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const SampleFormat& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-
-std::istream& operator>>(std::istream& o, AutoConnectOption& var)
-{
-	std::string s;
-	o >> s;
-	var = (AutoConnectOption) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const AutoConnectOption& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-
-std::istream& operator>>(std::istream& o, TracksAutoNamingRule& var)
-{
-	std::string s;
-	o >> s;
-	var = (TracksAutoNamingRule) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const TracksAutoNamingRule& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-
-std::istream& operator>>(std::istream& o, MonitorModel& var)
-{
-	std::string s;
-	o >> s;
-	var = (MonitorModel) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const MonitorModel& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-
-std::istream& operator>>(std::istream& o, VUMeterStandard& var)
-{
-	std::string s;
-	o >> s;
-	var = (VUMeterStandard) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const VUMeterStandard& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-
-std::istream& operator>>(std::istream& o, MeterLineUp& var)
-{
-	std::string s;
-	o >> s;
-	var = (MeterLineUp) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const MeterLineUp& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-
-std::istream& operator>>(std::istream& o, PFLPosition& var)
-{
-	std::string s;
-	o >> s;
-	var = (PFLPosition) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const PFLPosition& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-
-std::istream& operator>>(std::istream& o, AFLPosition& var)
-{
-	std::string s;
-	o >> s;
-	var = (AFLPosition) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const AFLPosition& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-
-std::istream& operator>>(std::istream& o, EditMode& var)
-{
-	std::string s;
-	o >> s;
-	var = (EditMode) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const EditMode& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-std::istream& operator>>(std::istream& o, ListenPosition& var)
-{
-	std::string s;
-	o >> s;
-	var = (ListenPosition) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const ListenPosition& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-std::istream& operator>>(std::istream& o, LayerModel& var)
-{
-	std::string s;
-	o >> s;
-	var = (LayerModel) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const LayerModel& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-
-std::istream& operator>>(std::istream& o, InsertMergePolicy& var)
-{
-	std::string s;
-	o >> s;
-	var = (InsertMergePolicy) string_2_enum (s, var);
-	return o;
-}
-std::ostream& operator<<(std::ostream& o, const InsertMergePolicy& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-
-std::istream& operator>>(std::istream& o, SyncSource& var)
-{
-	std::string s;
-	o >> s;
-	var = (SyncSource) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const SyncSource& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-std::istream& operator>>(std::istream& o, ShuttleBehaviour& var)
-{
-	std::string s;
-	o >> s;
-	var = (ShuttleBehaviour) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const ShuttleBehaviour& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-std::istream& operator>>(std::istream& o, ShuttleUnits& var)
-{
-	std::string s;
-	o >> s;
-	var = (ShuttleUnits) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const ShuttleUnits& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-std::istream& operator>>(std::istream& o, TimecodeFormat& var)
-{
-	std::string s;
-	o >> s;
-	var = (TimecodeFormat) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const TimecodeFormat& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-std::istream& operator>>(std::istream& o, DenormalModel& var)
-{
-	std::string s;
-	o >> s;
-	var = (DenormalModel) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const DenormalModel& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-std::istream& operator>>(std::istream& o, WaveformScale& var)
-{
-	std::string s;
-	o >> s;
-	var = (WaveformScale) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const WaveformScale& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-std::istream& operator>>(std::istream& o, WaveformShape& var)
-{
-	std::string s;
-	o >> s;
-	var = (WaveformShape) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const WaveformShape& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-
-std::istream& operator>>(std::istream& o, PositionLockStyle& var)
-{
-	std::string s;
-	o >> s;
-	var = (PositionLockStyle) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const PositionLockStyle& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-
-std::istream& operator>>(std::istream& o, Evoral::OverlapType& var)
-{
-	std::string s;
-	o >> s;
-	var = (Evoral::OverlapType) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const Evoral::OverlapType& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-
-std::istream& operator>>(std::istream& o, FadeShape& var)
-{
-	std::string s;
-	o >> s;
-	var = (FadeShape) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const FadeShape& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-
-std::istream& operator>>(std::istream& o, RegionSelectionAfterSplit& var)
-{
-	std::string s;
-	o >> s;
-	var = (RegionSelectionAfterSplit) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const RegionSelectionAfterSplit& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-
-std::istream& operator>>(std::istream& o, ARDOUR::BufferingPreset& var)
-{
-	std::string s;
-	o >> s;
-	var = (ARDOUR::BufferingPreset) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const ARDOUR::BufferingPreset& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-
-std::istream& operator>>(std::istream& o, AutoReturnTarget& var)
-{
-	std::string s;
-	o >> s;
-	var = (AutoReturnTarget) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const AutoReturnTarget& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}
-
-std::istream& operator>>(std::istream& o, MeterType& var)
-{
-	std::string s;
-	o >> s;
-	var = (MeterType) string_2_enum (s, var);
-	return o;
-}
-
-std::ostream& operator<<(std::ostream& o, const MeterType& var)
-{
-	std::string s = enum_2_string (var);
-	return o << s;
-}

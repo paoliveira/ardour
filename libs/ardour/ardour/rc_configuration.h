@@ -26,6 +26,7 @@
 #include "ardour/libardour_visibility.h"
 #include "ardour/types.h"
 #include "ardour/utils.h"
+#include "ardour/types_convert.h"
 
 #include "pbd/configuration.h"
 
@@ -54,6 +55,7 @@ class LIBARDOUR_API RCConfiguration : public PBD::Configuration
 	XMLNode * instant_xml (const std::string& str);
 
 	XMLNode* control_protocol_state () { return _control_protocol_state; }
+	XMLNode* transport_master_state () { return _transport_master_state; }
 
 	/* define accessor methods */
 
@@ -82,6 +84,7 @@ class LIBARDOUR_API RCConfiguration : public PBD::Configuration
 #undef  CONFIG_VARIABLE_SPECIAL
 
 	XMLNode* _control_protocol_state;
+	XMLNode* _transport_master_state;
 };
 
 /* XXX: rename this */

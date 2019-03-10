@@ -20,6 +20,8 @@
 #include <iostream>
 #include <list>
 #include <string>
+#include <vector>
+#include <algorithm>
 
 #include <gtkmm/comboboxtext.h>
 #include <gtkmm/label.h>
@@ -54,6 +56,7 @@ private:
 	Gtk::ComboBoxText map_combo;
 	Gtk::Adjustment bank_adjustment;
 	Gtk::SpinButton bank_spinner;
+	Gtk::CheckButton feedback_enable;
 	Gtk::CheckButton motorised_button;
 	Gtk::Adjustment threshold_adjustment;
 	Gtk::SpinButton threshold_spinner;
@@ -65,6 +68,7 @@ private:
 	void bank_changed ();
 	void motorised_changed ();
 	void threshold_changed ();
+	void toggle_feedback_enable ();
 
 	void update_port_combos ();
 	PBD::ScopedConnection connection_change_connection;
@@ -128,17 +132,21 @@ GMCPGUI::GMCPGUI (GenericMidiControlProtocol& p)
 	: cp (p)
 	, bank_adjustment (1, 1, 100, 1, 10)
 	, bank_spinner (bank_adjustment)
-	, motorised_button ("Motorised")
+	, feedback_enable (_("Enable Feedback"))
+	, motorised_button (_("Motorised"))
 	, threshold_adjustment (p.threshold(), 1, 127, 1, 10)
 	, threshold_spinner (threshold_adjustment)
 	, ignore_active_change (false)
 {
 	vector<string> popdowns;
-	popdowns.push_back (_("Reset All"));
 
 	for (list<GenericMidiControlProtocol::MapInfo>::iterator x = cp.map_info.begin(); x != cp.map_info.end(); ++x) {
 		popdowns.push_back (x->name);
 	}
+
+	sort (popdowns.begin(), popdowns.end(), less<string>());
+
+	popdowns.insert (popdowns.begin(), _("Reset All"));
 
 	set_popdown_strings (map_combo, popdowns);
 
@@ -202,6 +210,12 @@ GMCPGUI::GMCPGUI (GenericMidiControlProtocol& p)
 	bank_spinner.show ();
 	label->show ();
 
+	feedback_enable.signal_toggled().connect (sigc::mem_fun (*this, &GMCPGUI::toggle_feedback_enable));
+	table->attach (feedback_enable, 0, 2, n, n + 1);
+	++n;
+	feedback_enable.show ();
+	feedback_enable.set_active (p.get_feedback ());
+
 	motorised_button.signal_toggled().connect (sigc::mem_fun (*this, &GMCPGUI::motorised_changed));
 	table->attach (motorised_button, 0, 2, n, n + 1);
 	++n;
@@ -264,6 +278,12 @@ GMCPGUI::binding_changed ()
 			}
 		}
 	}
+}
+
+void
+GMCPGUI::toggle_feedback_enable ()
+{
+	cp.set_feedback (feedback_enable.get_active ());
 }
 
 void

@@ -26,10 +26,12 @@
 #include <gtkmm/scrolledwindow.h>
 #include <gtkmm/eventbox.h>
 #include <gtkmm/label.h>
+#include <gtkmm/comboboxtext.h>
 #include <gtkmm/button.h>
 #include <gtkmm/frame.h>
 #include <gtkmm/menu.h>
 #include <gtkmm/treeview.h>
+#include <gtkmm/treestore.h>
 #include <gtkmm/liststore.h>
 
 #include "pbd/stateful.h"
@@ -43,11 +45,14 @@
 
 #include <gtkmm2ext/bindings.h>
 #include "gtkmm2ext/dndtreeview.h"
-#include <gtkmm2ext/pane.h>
-#include "gtkmm2ext/tabbable.h"
 #include "gtkmm2ext/treeutils.h"
 
+#include "widgets/pane.h"
+#include "widgets/tabbable.h"
+
+#include "axis_provider.h"
 #include "enums.h"
+#include "monitor_section.h"
 #include "route_processor_selection.h"
 
 namespace ARDOUR {
@@ -76,9 +81,9 @@ protected:
 	virtual bool row_drop_possible_vfunc (const Gtk::TreeModel::Path&, const Gtk::SelectionData&) const;
 };
 
-class Mixer_UI : public Gtkmm2ext::Tabbable, public PBD::ScopedConnectionList, public ARDOUR::SessionHandlePtr
+class Mixer_UI : public ArdourWidgets::Tabbable, public PBD::ScopedConnectionList, public ARDOUR::SessionHandlePtr, public AxisViewProvider
 {
-  public:
+public:
 	static Mixer_UI* instance();
 	~Mixer_UI();
 
@@ -86,7 +91,6 @@ class Mixer_UI : public Gtkmm2ext::Tabbable, public PBD::ScopedConnectionList, p
 	void show_window ();
 
 	void set_session (ARDOUR::Session *);
-	void track_editor_selection ();
 
 	PluginSelector* plugin_selector();
 
@@ -96,8 +100,7 @@ class Mixer_UI : public Gtkmm2ext::Tabbable, public PBD::ScopedConnectionList, p
 	XMLNode& get_state ();
 	int set_state (const XMLNode&, int /* version */);
 
-	void show_mixer_list (bool yn);
-	void show_monitor_section (bool);
+	void save_plugin_order_file ();
 
 	void show_strip (MixerStrip *);
 	void hide_strip (MixerStrip *);
@@ -105,32 +108,50 @@ class Mixer_UI : public Gtkmm2ext::Tabbable, public PBD::ScopedConnectionList, p
 	void maximise_mixer_space();
 	void restore_mixer_space();
 
-        MonitorSection* monitor_section() const { return _monitor_section; }
+	MonitorSection& monitor_section() { return _monitor_section; }
 
 	void deselect_all_strip_processors();
 	void delete_processors();
-	void select_strip (MixerStrip&, bool add=false);
 	void select_none ();
 
-	bool window_not_visible () const;
+	void select_next_strip ();
+	void select_prev_strip ();
 
 	void do_vca_assign (boost::shared_ptr<ARDOUR::VCA>);
 	void do_vca_unassign (boost::shared_ptr<ARDOUR::VCA>);
-	void show_vca_slaves (boost::shared_ptr<ARDOUR::VCA>);
-	bool showing_vca_slaves_for (boost::shared_ptr<ARDOUR::VCA>) const;
+	void show_spill (boost::shared_ptr<ARDOUR::Stripable>);
+	bool showing_spill_for (boost::shared_ptr<ARDOUR::Stripable>) const;
 
-	sigc::signal1<void,boost::shared_ptr<ARDOUR::VCA> > show_vca_change;
+	sigc::signal1<void,boost::shared_ptr<ARDOUR::Stripable> > show_spill_change;
 
 	RouteProcessorSelection& selection() { return _selection; }
+
+	void show_editor_window () const;
+
 	void register_actions ();
 
-        void load_bindings ();
-        Gtkmm2ext::Bindings*  bindings;
+	void load_bindings ();
+	Gtkmm2ext::Bindings*  bindings;
 
-  protected:
+	void toggle_mixer_list ();
+	void showhide_mixer_list (bool yn);
+
+	void toggle_monitor_section ();
+	void showhide_monitor_section (bool);
+
+	void toggle_vcas ();
+	void showhide_vcas (bool on);
+	
+#ifdef MIXBUS
+	void toggle_mixbuses ();
+	void showhide_mixbusses (bool on);
+#endif
+
+protected:
 	void set_axis_targets_for_operation ();
+	ARDOUR::AutomationControlSet selected_gaincontrols ();
 
-  private:
+private:
 	Mixer_UI ();
 	static Mixer_UI*     _instance;
 	Gtk::VBox            _content;
@@ -142,7 +163,6 @@ class Mixer_UI : public Gtkmm2ext::Tabbable, public PBD::ScopedConnectionList, p
 	Gtk::VBox             mixer_scroller_vpacker;
 	Gtk::VBox             list_vpacker;
 	Gtk::Label            group_display_button_label;
-	Gtk::Button           group_display_button;
 	Gtk::ScrolledWindow   track_display_scroller;
 	Gtk::ScrolledWindow   group_display_scroller;
 	Gtk::ScrolledWindow   favorite_plugins_scroller;
@@ -150,9 +170,11 @@ class Mixer_UI : public Gtkmm2ext::Tabbable, public PBD::ScopedConnectionList, p
 	Gtk::Frame            track_display_frame;
 	Gtk::Frame            group_display_frame;
 	Gtk::Frame            favorite_plugins_frame;
-	Gtkmm2ext::VPane      rhs_pane1;
-	Gtkmm2ext::VPane      rhs_pane2;
-	Gtkmm2ext::HPane      inner_pane;
+	Gtk::VBox             favorite_plugins_vbox;
+	Gtk::ComboBoxText     favorite_plugins_tag_combo;
+	ArdourWidgets::VPane  rhs_pane1;
+	ArdourWidgets::VPane  rhs_pane2;
+	ArdourWidgets::HPane  inner_pane;
 	Gtk::HBox             strip_packer;
 	Gtk::ScrolledWindow   vca_scroller;
 	Gtk::HBox             vca_hpacker;
@@ -161,7 +183,9 @@ class Mixer_UI : public Gtkmm2ext::Tabbable, public PBD::ScopedConnectionList, p
 	Gtk::Label            vca_label;
 	Gtk::EventBox         vca_scroller_base;
 	Gtk::HBox             out_packer;
-	Gtkmm2ext::HPane      list_hpane;
+	ArdourWidgets::HPane  list_hpane;
+	Gtk::Button           add_button; // should really be an ArdourButton
+	Gtk::Button           add_vca_button;
 
 	MixerGroupTabs* _group_tabs;
 
@@ -174,7 +198,9 @@ class Mixer_UI : public Gtkmm2ext::Tabbable, public PBD::ScopedConnectionList, p
 	bool masters_scroller_button_release (GdkEventButton*);
 	void scroll_left ();
 	void scroll_right ();
-        void toggle_midi_input_active (bool flip_others);
+	void toggle_midi_input_active (bool flip_others);
+
+	void move_stripable_into_view (boost::shared_ptr<ARDOUR::Stripable>);
 
 	void add_stripables (ARDOUR::StripableList&);
 
@@ -183,20 +209,13 @@ class Mixer_UI : public Gtkmm2ext::Tabbable, public PBD::ScopedConnectionList, p
 
 	void add_masters (ARDOUR::VCAList&);
 	void remove_master (VCAMasterStrip*);
+	void new_masters_created ();
 
 	MixerStrip* strip_by_route (boost::shared_ptr<ARDOUR::Route>) const;
-	AxisView* axis_by_stripable (boost::shared_ptr<ARDOUR::Stripable>) const;
+	MixerStrip* strip_by_stripable (boost::shared_ptr<ARDOUR::Stripable>) const;
 
-	void hide_all_strips (bool with_select);
-	void unselect_all_strips();
-	void select_all_strips ();
-	void unselect_all_audiotrack_strips ();
-	void select_all_audiotrack_strips ();
-	void unselect_all_audiobus_strips ();
-	void select_all_audiobus_strips ();
-
-	void strip_select_op (bool audiotrack, bool select);
-	void select_strip_op (MixerStrip*, bool select);
+	AxisView* axis_view_by_stripable (boost::shared_ptr<ARDOUR::Stripable>) const;
+	AxisView* axis_view_by_control (boost::shared_ptr<ARDOUR::AutomationControl>) const;
 
 	gint start_updating ();
 	gint stop_updating ();
@@ -236,12 +255,11 @@ class Mixer_UI : public Gtkmm2ext::Tabbable, public PBD::ScopedConnectionList, p
 	ARDOUR::PluginPresetPtr selected_plugin ();
 
 	void initial_track_display ();
-	void show_track_list_menu ();
 
 	void set_all_strips_visibility (bool yn);
 	void set_all_audio_midi_visibility (int, bool);
-        void track_visibility_changed (std::string const & path);
-        void update_track_visibility ();
+	void track_visibility_changed (std::string const & path);
+	void update_track_visibility ();
 
 	void hide_all_routes ();
 	void show_all_routes ();
@@ -271,8 +289,8 @@ class Mixer_UI : public Gtkmm2ext::Tabbable, public PBD::ScopedConnectionList, p
 	void track_column_click (gint);
 	void build_track_menu ();
 
-        MonitorSection* _monitor_section;
-	PluginSelector    *_plugin_selector;
+	MonitorSection   _monitor_section;
+	PluginSelector *_plugin_selector;
 
 	void stripable_property_changed (const PBD::PropertyChange& what_changed, boost::weak_ptr<ARDOUR::Stripable> ws);
 	void route_group_property_changed (ARDOUR::RouteGroup *, const PBD::PropertyChange &);
@@ -331,13 +349,16 @@ class Mixer_UI : public Gtkmm2ext::Tabbable, public PBD::ScopedConnectionList, p
 	void group_display_selection_changed ();
 
 	bool strip_button_release_event (GdkEventButton*, MixerStrip*);
+	bool vca_button_release_event (GdkEventButton*, VCAMasterStrip*);
 
 	Width _strip_width;
+	double _spill_scroll_position;
 
-        void sync_presentation_info_from_treeview ();
-        void sync_treeview_from_presentation_info ();
+	void presentation_info_changed (PBD::PropertyChange const &);
+	void sync_treeview_from_presentation_info (PBD::PropertyChange const &);
+	void sync_presentation_info_from_treeview ();
 
-        bool ignore_reorder;
+	bool ignore_reorder;
 
 	void parameter_changed (std::string const &);
 	void set_route_group_activation (ARDOUR::RouteGroup *, bool);
@@ -349,27 +370,30 @@ class Mixer_UI : public Gtkmm2ext::Tabbable, public PBD::ScopedConnectionList, p
 	static const int32_t default_height = 765;
 
 	/** true if we are rebuilding the route group list, or clearing
-	    it during a session teardown.
-	*/
+	 * it during a session teardown.
+	 */
 	bool _in_group_rebuild_or_clear;
-        bool _route_deletion_in_progress;
+	bool _route_deletion_in_progress;
 
 	void update_title ();
 	MixerStrip* strip_by_x (int x);
 
 	friend class MixerGroupTabs;
 
-	void follow_editor_selection ();
-	bool _following_editor_selection;
-
 	void monitor_section_going_away ();
-
 	void monitor_section_attached ();
 	void monitor_section_detached ();
 
 	void store_current_favorite_order();
 	void refiller (ARDOUR::PluginInfoList& result, const ARDOUR::PluginInfoList& plugs);
+
+	void plugin_list_changed ();
+
 	void refill_favorite_plugins ();
+	void refill_tag_combo ();
+
+	void tag_combo_changed ();
+
 	void sync_treeview_from_favorite_order ();
 	void sync_treeview_favorite_ui_state (const Gtk::TreeModel::Path&, const Gtk::TreeModel::iterator&);
 	void save_favorite_ui_state (const Gtk::TreeModel::iterator& iter, const Gtk::TreeModel::Path& path);
@@ -377,14 +401,12 @@ class Mixer_UI : public Gtkmm2ext::Tabbable, public PBD::ScopedConnectionList, p
 	/// true if we are in fullscreen mode
 	bool _maximised;
 
-	// true if mixer list is visible
-	bool _show_mixer_list;
+	bool _strip_selection_change_without_scroll;
 
-	mutable boost::weak_ptr<ARDOUR::VCA> spilled_vca;
+	mutable boost::weak_ptr<ARDOUR::Stripable> spilled_strip;
 
 	void escape ();
 
-	Gtkmm2ext::ActionMap myactions;
 	RouteProcessorSelection _selection;
 	AxisViewSelection _axis_targets;
 

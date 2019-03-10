@@ -43,7 +43,7 @@ Session::set_controls (boost::shared_ptr<ControlList> cl, double val, Controllab
 
 	for (ControlList::iterator ci = cl->begin(); ci != cl->end(); ++ci) {
 		/* as of july 2017 this is a no-op for everything except record enable */
-		(*ci)->do_pre_realtime_queue_stuff (val);
+		(*ci)->pre_realtime_queue_stuff (val, gcd);
 	}
 
 	queue_event (get_rt_event (cl, val, gcd));
@@ -64,8 +64,27 @@ Session::set_control (boost::shared_ptr<AutomationControl> ac, double val, Contr
 void
 Session::rt_set_controls (boost::shared_ptr<ControlList> cl, double val, Controllable::GroupControlDisposition gcd)
 {
+	/* Note that we require that all controls in the ControlList are of the
+	   same type.
+	*/
+	if (cl->empty()) {
+		return;
+	}
+
 	for (ControlList::iterator c = cl->begin(); c != cl->end(); ++c) {
 		(*c)->set_value (val, gcd);
+	}
+
+	/* some controls need global work to take place after they are set. Do
+	 * that here.
+	 */
+
+	switch (cl->front()->parameter().type()) {
+	case SoloAutomation:
+		update_route_solo_state ();
+		break;
+	default:
+		break;
 	}
 }
 
@@ -87,7 +106,7 @@ Session::rt_clear_all_solo_state (boost::shared_ptr<RouteList> rl, bool /* yn */
 
 	_vca_manager->clear_all_solo_state ();
 
-	set_dirty();
+	update_route_solo_state ();
 }
 
 void

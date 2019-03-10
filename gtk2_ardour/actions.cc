@@ -52,6 +52,10 @@ RelatedActions ActionManager::write_sensitive_actions;
 RelatedActions ActionManager::region_list_selection_sensitive_actions;
 RelatedActions ActionManager::plugin_selection_sensitive_actions;
 RelatedActions ActionManager::track_selection_sensitive_actions;
+RelatedActions ActionManager::stripable_selection_sensitive_actions;
+RelatedActions ActionManager::route_selection_sensitive_actions;
+RelatedActions ActionManager::bus_selection_sensitive_actions;
+RelatedActions ActionManager::vca_selection_sensitive_actions;
 RelatedActions ActionManager::point_selection_sensitive_actions;
 RelatedActions ActionManager::time_selection_sensitive_actions;
 RelatedActions ActionManager::line_selection_sensitive_actions;
@@ -61,14 +65,7 @@ RelatedActions ActionManager::range_sensitive_actions;
 RelatedActions ActionManager::engine_sensitive_actions;
 RelatedActions ActionManager::engine_opposite_sensitive_actions;
 RelatedActions ActionManager::transport_sensitive_actions;
-RelatedActions ActionManager::edit_point_in_region_sensitive_actions;
 RelatedActions ActionManager::rec_sensitive_actions;
-
-void
-ActionManager::init ()
-{
-	ui_manager = UIManager::create ();
-}
 
 void
 ActionManager::load_menus (const string& menus_file)
@@ -174,7 +171,7 @@ ActionManager::toggle_config_state_foo (const char* group, const char* action, s
 void
 ActionManager::map_some_state (const char* group, const char* action, bool (RCConfiguration::*get)() const)
 {
-	Glib::RefPtr<Action> act = ActionManager::get_action (group, action);
+	Glib::RefPtr<Action> act = ActionManager::get_action (group, action, false);
 	if (act) {
 		Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
 
@@ -197,7 +194,7 @@ ActionManager::map_some_state (const char* group, const char* action, bool (RCCo
 void
 ActionManager::map_some_state (const char* group, const char* action, bool (UIConfiguration::*get)() const)
 {
-	Glib::RefPtr<Action> act = ActionManager::get_action (group, action);
+	Glib::RefPtr<Action> act = ActionManager::get_action (group, action, false);
 	if (act) {
 		Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
 
@@ -215,7 +212,7 @@ ActionManager::map_some_state (const char* group, const char* action, bool (UICo
 void
 ActionManager::map_some_state (const char* group, const char* action, sigc::slot<bool> get)
 {
-	Glib::RefPtr<Action> act = ActionManager::get_action (group, action);
+	Glib::RefPtr<Action> act = ActionManager::get_action (group, action, false);
 	if (act) {
 		Glib::RefPtr<ToggleAction> tact = Glib::RefPtr<ToggleAction>::cast_dynamic(act);
 

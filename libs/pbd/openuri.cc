@@ -34,15 +34,20 @@
 #endif
 
 #ifdef PLATFORM_WINDOWS
-	#include <windows.h>
-	#include <shellapi.h>
+# include <windows.h>
+# include <shellapi.h>
+#else
+# include <sys/types.h>
+# include <unistd.h>
 #endif
 
 bool
 PBD::open_uri (const char* uri)
 {
 #ifdef PLATFORM_WINDOWS
-	ShellExecute(NULL, "open", uri, NULL, NULL, SW_SHOWNORMAL);
+	gunichar2* wuri = g_utf8_to_utf16 (uri, -1, NULL, NULL, NULL);
+	ShellExecuteW(NULL, L"open", (LPCWSTR)wuri, NULL, NULL, SW_SHOWNORMAL);
+	g_free (wuri);
 	return true;
 #elif __APPLE__
 	return cocoa_open_url (uri);
@@ -64,13 +69,20 @@ PBD::open_uri (const char* uri)
 	while (s.find("\"") != std::string::npos)
 		s.replace(s.find("\\"), 1, "\\\"");
 
+#ifdef NO_VFORK
 	std::string command = "xdg-open ";
 	command += '"' + s + '"';
 	command += " &";
 	(void) system (command.c_str());
-
-	return true;
+#else
+	if (::vfork () == 0) {
+		::execlp ("xdg-open", "xdg-open", s.c_str(), (char*)NULL);
+		exit (0);
+	}
 #endif
+
+#endif /* not PLATFORM_WINDOWS and not __APPLE__ */
+	return true;
 }
 
 bool

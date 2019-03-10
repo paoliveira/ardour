@@ -78,7 +78,12 @@ protected:
 class LIBPBD_API Connection : public boost::enable_shared_from_this<Connection>
 {
 public:
-	Connection (SignalBase* b) : _signal (b) {}
+	Connection (SignalBase* b, PBD::EventLoop::InvalidationRecord* ir) : _signal (b), _invalidation_record (ir)
+	{
+		if (_invalidation_record) {
+			_invalidation_record->ref ();
+		}
+	}
 
 	void disconnect ()
 	{
@@ -89,15 +94,26 @@ public:
 		}
 	}
 
+	void disconnected ()
+	{
+		if (_invalidation_record) {
+			_invalidation_record->unref ();
+		}
+	}
+
 	void signal_going_away ()
 	{
 		Glib::Threads::Mutex::Lock lm (_mutex);
+		if (_invalidation_record) {
+			_invalidation_record->unref ();
+		}
 		_signal = 0;
 	}
 
 private:
         Glib::Threads::Mutex _mutex;
 	SignalBase* _signal;
+	PBD::EventLoop::InvalidationRecord* _invalidation_record;
 };
 
 template<typename R>
@@ -175,10 +191,10 @@ class LIBPBD_API ScopedConnectionList  : public boost::noncopyable
 	       one from another.
 	 */
 
-	Glib::Threads::Mutex _lock;
+	Glib::Threads::Mutex _scoped_connection_lock;
 
 	typedef std::list<ScopedConnection*> ConnectionList;
-	ConnectionList _list;
+	ConnectionList _scoped_connection_list;
 };
 
 #include "pbd/signals_generated.h"

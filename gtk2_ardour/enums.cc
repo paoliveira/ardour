@@ -19,6 +19,8 @@
 
 #include "pbd/enumwriter.h"
 
+#include "widgets/ardour_icon.h"
+
 #include "audio_clock.h"
 #include "editing.h"
 #include "enums.h"
@@ -28,6 +30,7 @@ using namespace std;
 using namespace PBD;
 using namespace ARDOUR;
 using namespace Editing;
+using namespace ArdourWidgets;
 
 void
 setup_gtk_ardour_enums ()
@@ -42,7 +45,7 @@ setup_gtk_ardour_enums ()
 	EditPoint edit_point;
 	LayerDisplay layer_display;
 	RegionListSortType region_list_sort_type;
-	SnapType snap_type;
+	GridType grid_type;
 	SnapMode snap_mode;
 	ZoomFocus zoom_focus;
 	ItemType item_type;
@@ -56,7 +59,8 @@ setup_gtk_ardour_enums ()
 	REGISTER_CLASS_ENUM (AudioClock, Timecode);
 	REGISTER_CLASS_ENUM (AudioClock, BBT);
 	REGISTER_CLASS_ENUM (AudioClock, MinSec);
-	REGISTER_CLASS_ENUM (AudioClock, Frames);
+	REGISTER_CLASS_ENUM (AudioClock, Seconds);
+	REGISTER_CLASS_ENUM (AudioClock, Samples);
 	REGISTER (clock_mode);
 
 	REGISTER_ENUM (Wide);
@@ -90,37 +94,28 @@ setup_gtk_ardour_enums ()
 	REGISTER_ENUM (ByTimestamp);
 	REGISTER (region_list_sort_type);
 
-	REGISTER_ENUM (SnapToCDFrame);
-	REGISTER_ENUM (SnapToTimecodeFrame);
-	REGISTER_ENUM (SnapToTimecodeSeconds);
-	REGISTER_ENUM (SnapToTimecodeMinutes);
-	REGISTER_ENUM (SnapToSeconds);
-	REGISTER_ENUM (SnapToMinutes);
-	REGISTER_ENUM (SnapToBeatDiv128);
-	REGISTER_ENUM (SnapToBeatDiv64);
-	REGISTER_ENUM (SnapToBeatDiv32);
-	REGISTER_ENUM (SnapToBeatDiv28);
-	REGISTER_ENUM (SnapToBeatDiv24);
-	REGISTER_ENUM (SnapToBeatDiv20);
-	REGISTER_ENUM (SnapToBeatDiv16);
-	REGISTER_ENUM (SnapToBeatDiv14);
-	REGISTER_ENUM (SnapToBeatDiv12);
-	REGISTER_ENUM (SnapToBeatDiv10);
-	REGISTER_ENUM (SnapToBeatDiv8);
-	REGISTER_ENUM (SnapToBeatDiv7);
-	REGISTER_ENUM (SnapToBeatDiv6);
-	REGISTER_ENUM (SnapToBeatDiv5);
-	REGISTER_ENUM (SnapToBeatDiv4);
-	REGISTER_ENUM (SnapToBeatDiv3);
-	REGISTER_ENUM (SnapToBeatDiv2);
-	REGISTER_ENUM (SnapToBeat);
-	REGISTER_ENUM (SnapToBar);
-	REGISTER_ENUM (SnapToMark);
-	REGISTER_ENUM (SnapToRegionStart);
-	REGISTER_ENUM (SnapToRegionEnd);
-	REGISTER_ENUM (SnapToRegionSync);
-	REGISTER_ENUM (SnapToRegionBoundary);
-	REGISTER (snap_type);
+	REGISTER_ENUM (GridTypeNone);
+	REGISTER_ENUM (GridTypeBar);
+	REGISTER_ENUM (GridTypeBeat);
+	REGISTER_ENUM (GridTypeBeatDiv2);
+	REGISTER_ENUM (GridTypeBeatDiv4);
+	REGISTER_ENUM (GridTypeBeatDiv8);
+	REGISTER_ENUM (GridTypeBeatDiv16);
+	REGISTER_ENUM (GridTypeBeatDiv32);
+	REGISTER_ENUM (GridTypeBeatDiv3);
+	REGISTER_ENUM (GridTypeBeatDiv6);
+	REGISTER_ENUM (GridTypeBeatDiv12);
+	REGISTER_ENUM (GridTypeBeatDiv24);
+	REGISTER_ENUM (GridTypeBeatDiv5);
+	REGISTER_ENUM (GridTypeBeatDiv10);
+	REGISTER_ENUM (GridTypeBeatDiv20);
+	REGISTER_ENUM (GridTypeBeatDiv7);
+	REGISTER_ENUM (GridTypeBeatDiv14);
+	REGISTER_ENUM (GridTypeBeatDiv28);
+	REGISTER_ENUM (GridTypeTimecode);
+	REGISTER_ENUM (GridTypeMinSec);
+	REGISTER_ENUM (GridTypeCDFrame);
+	REGISTER (grid_type);
 
 	REGISTER_ENUM (SnapOff);
 	REGISTER_ENUM (SnapNormal);
@@ -165,8 +160,8 @@ setup_gtk_ardour_enums ()
 	REGISTER_ENUM (FadeOutHandleItem);
 	REGISTER_ENUM (NoteItem);
 	REGISTER_ENUM (FeatureLineItem);
-        REGISTER_ENUM (LeftFrameHandle);
-        REGISTER_ENUM (RightFrameHandle);
+	REGISTER_ENUM (LeftFrameHandle);
+	REGISTER_ENUM (RightFrameHandle);
 	REGISTER_ENUM (StartCrossFadeItem);
 	REGISTER_ENUM (EndCrossFadeItem);
 	REGISTER_ENUM (CrossfadeViewItem);
@@ -184,5 +179,38 @@ setup_gtk_ardour_enums ()
 	REGISTER_ENUM(MouseCut);
 	REGISTER_ENUM(MouseContent);
 	REGISTER (mouse_mode);
+
+	ArdourIcon::Icon icons;
+
+	REGISTER_ENUM (ArdourIcon::NoIcon);
+	REGISTER_ENUM (ArdourIcon::RecButton);
+	REGISTER_ENUM (ArdourIcon::RecTapeMode);
+	REGISTER_ENUM (ArdourIcon::CloseCross);
+	REGISTER_ENUM (ArdourIcon::StripWidth);
+	REGISTER_ENUM (ArdourIcon::DinMidi);
+	REGISTER_ENUM (ArdourIcon::TransportStop);
+	REGISTER_ENUM (ArdourIcon::TransportPlay);
+	REGISTER_ENUM (ArdourIcon::TransportLoop);
+	REGISTER_ENUM (ArdourIcon::TransportRange);
+	REGISTER_ENUM (ArdourIcon::TransportStart);
+	REGISTER_ENUM (ArdourIcon::TransportEnd);
+	REGISTER_ENUM (ArdourIcon::TransportPanic);
+	REGISTER_ENUM (ArdourIcon::TransportMetronom);
+	REGISTER_ENUM (ArdourIcon::NudgeLeft);
+	REGISTER_ENUM (ArdourIcon::NudgeRight);
+	REGISTER_ENUM (ArdourIcon::ZoomIn);
+	REGISTER_ENUM (ArdourIcon::ZoomOut);
+	REGISTER_ENUM (ArdourIcon::ZoomFull);
+	REGISTER_ENUM (ArdourIcon::ZoomExpand);
+	REGISTER_ENUM (ArdourIcon::TimeAxisShrink);
+	REGISTER_ENUM (ArdourIcon::TimeAxisExpand);
+	REGISTER_ENUM (ArdourIcon::ToolGrab);
+	REGISTER_ENUM (ArdourIcon::ToolRange);
+	REGISTER_ENUM (ArdourIcon::ToolCut);
+	REGISTER_ENUM (ArdourIcon::ToolStretch);
+	REGISTER_ENUM (ArdourIcon::ToolAudition);
+	REGISTER_ENUM (ArdourIcon::ToolDraw);
+	REGISTER_ENUM (ArdourIcon::ToolContent);
+	REGISTER (icons);
 
 }

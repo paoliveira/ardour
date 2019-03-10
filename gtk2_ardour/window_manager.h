@@ -52,7 +52,7 @@ class ProxyBase;
 
 class Manager : public ARDOUR::SessionHandlePtr
 {
-  public:
+public:
 	static Manager& instance();
 
 	void register_window (ProxyBase*);
@@ -66,7 +66,7 @@ class Manager : public ARDOUR::SessionHandlePtr
 	void set_transient_for (Gtk::Window*);
 	Gtk::Window* transient_parent() const { return current_transient_parent; }
 
-                                        private:
+private:
 	typedef std::list<ProxyBase*> Windows;
 	Windows _windows;
 	Glib::RefPtr<Gtk::ActionGroup> window_actions;
@@ -76,28 +76,27 @@ class Manager : public ARDOUR::SessionHandlePtr
 	~Manager();
 
 	static Manager* _instance;
-  private:
+private:
 	void window_proxy_was_mapped (ProxyBase*);
 	void window_proxy_was_unmapped (ProxyBase*);
 };
 
 class ProxyBase : public ARDOUR::SessionHandlePtr, public Gtkmm2ext::WindowProxy
 {
-  public:
+public:
 	ProxyBase (const std::string& name, const std::string& menu_name);
 	ProxyBase (const std::string& name, const std::string& menu_name, const XMLNode&);
 
 	virtual ARDOUR::SessionHandlePtr* session_handle () = 0;
 
-  protected:
+protected:
 	void setup ();
 };
 
 class ProxyTemporary: public ProxyBase
 {
-  public:
+public:
 	ProxyTemporary (const std::string& name, Gtk::Window* win);
-	~ProxyTemporary();
 
 	Gtk::Window* get (bool create = false) {
 		(void) create;
@@ -109,12 +108,14 @@ class ProxyTemporary: public ProxyBase
 	}
 
 	ARDOUR::SessionHandlePtr* session_handle ();
+
+	void explicit_delete () { _window = 0 ; delete this; }
 };
 
 template<typename T>
 class ProxyWithConstructor: public ProxyBase
 {
-  public:
+public:
 	ProxyWithConstructor (const std::string& name, const std::string& menu_name, const boost::function<T*()>& c)
 		: ProxyBase (name, menu_name) , creator (c) {}
 
@@ -155,14 +156,14 @@ class ProxyWithConstructor: public ProxyBase
 		}
 	}
 
-                                        private:
+private:
 	boost::function<T*()>	creator;
 };
 
 template<typename T>
 class Proxy : public ProxyBase
 {
-  public:
+public:
 	Proxy (const std::string& name, const std::string& menu_name)
 		: ProxyBase (name, menu_name) {}
 
@@ -203,7 +204,7 @@ class Proxy : public ProxyBase
 		}
 	}
 
-  private:
+private:
 	boost::function<T*()>	creator;
 };
 

@@ -8,7 +8,7 @@ import subprocess
 import sys
 
 # default state file version for this build
-CURRENT_SESSION_FILE_VERSION = 3002
+CURRENT_SESSION_FILE_VERSION = 5990
 
 I18N_PACKAGE = 'ardour'
 
@@ -25,7 +25,6 @@ libardour_sources = [
         'async_midi_port.cc',
         'audio_backend.cc',
         'audio_buffer.cc',
-        'audio_diskstream.cc',
         'audio_library.cc',
         'audio_playlist.cc',
         'audio_playlist_importer.cc',
@@ -46,7 +45,7 @@ libardour_sources = [
         'automation_control.cc',
         'automation_list.cc',
         'automation_watch.cc',
-        'beats_frames_converter.cc',
+        'beats_samples_converter.cc',
         'broadcast_info.cc',
         'buffer.cc',
         'buffer_manager.cc',
@@ -57,9 +56,9 @@ libardour_sources = [
         'chan_count.cc',
         'chan_mapping.cc',
         'config_text.cc',
-        'controllable_descriptor.cc',
         'control_group.cc',
         'control_protocol_manager.cc',
+        'convolver.cc',
         'cycle_timer.cc',
         'data_type.cc',
         'default_click.cc',
@@ -67,7 +66,9 @@ libardour_sources = [
         'delayline.cc',
         'delivery.cc',
         'directory_names.cc',
-        'diskstream.cc',
+        'disk_io.cc',
+        'disk_reader.cc',
+        'disk_writer.cc',
         'dsp_filter.cc',
         'ebur128_analysis.cc',
         'element_import_handler.cc',
@@ -103,6 +104,7 @@ libardour_sources = [
         'iec1ppmdsp.cc',
         'iec2ppmdsp.cc',
         'import.cc',
+        'import_pt.cc',
         'instrument_info.cc',
         'internal_return.cc',
         'internal_send.cc',
@@ -111,6 +113,7 @@ libardour_sources = [
         'io_processor.cc',
         'kmeterdsp.cc',
         'ladspa_plugin.cc',
+        'latent.cc',
         'legatize.cc',
         'location.cc',
         'location_importer.cc',
@@ -125,7 +128,6 @@ libardour_sources = [
         'midi_buffer.cc',
         'midi_channel_filter.cc',
         'midi_clock_slave.cc',
-        'midi_diskstream.cc',
         'midi_model.cc',
         'midi_patch_manager.cc',
         'midi_playlist.cc',
@@ -160,7 +162,6 @@ libardour_sources = [
         'panner_manager.cc',
         'panner_shell.cc',
         'parameter_descriptor.cc',
-        'pcm_utils.cc',
         'phase_control.cc',
         'playlist.cc',
         'playlist_factory.cc',
@@ -168,6 +169,7 @@ libardour_sources = [
         'plugin.cc',
         'plugin_insert.cc',
         'plugin_manager.cc',
+        'polarity_processor.cc',
         'port.cc',
         'port_insert.cc',
         'port_manager.cc',
@@ -178,6 +180,8 @@ libardour_sources = [
         'progress.cc',
         'quantize.cc',
         'rc_configuration.cc',
+        'readonly_control.cc',
+        'raw_midi_parser.cc',
         'recent_sessions.cc',
         'record_enable_control.cc',
         'record_safe_control.cc',
@@ -191,8 +195,10 @@ libardour_sources = [
         'route_group.cc',
         'route_group_member.cc',
         'rb_effect.cc',
+        'rt_tasklist.cc',
         'scene_change.cc',
         'search_paths.cc',
+        'selection.cc',
         'send.cc',
         'session.cc',
         'session_butler.cc',
@@ -215,7 +221,6 @@ libardour_sources = [
         'session_time.cc',
         'session_transport.cc',
         'sidechain.cc',
-        'slave.cc',
         'slavable.cc',
         'slavable_automation_control.cc',
         'smf_source.cc',
@@ -243,12 +248,15 @@ libardour_sources = [
         'track.cc',
         'transient_detector.cc',
         'transform.cc',
+        'transport_master.cc',
+        'transport_master_manager.cc',
         'transpose.cc',
         'unknown_processor.cc',
         'user_bundle.cc',
         'utils.cc',
         'vca.cc',
         'vca_manager.cc',
+        'video_tools_paths.cc',
         'vumeterdsp.cc',
         'worker.cc'
 ]
@@ -291,30 +299,23 @@ def configure(conf):
     autowaf.check_pkg(conf, 'sigc++-2.0', uselib_store='SIGCPP',
                       atleast_version='2.0')
 
-    if Options.options.lv2:
-        autowaf.check_pkg(conf, 'lv2', uselib_store='LV2',
-                          atleast_version='1.0.0', mandatory=True)
-        autowaf.check_pkg(conf, 'lv2', uselib_store='LV2_1_2_0',
-                          atleast_version='1.2.0', mandatory=False)
-        autowaf.check_pkg(conf, 'lv2', uselib_store='LV2_1_10_0',
-                          atleast_version='1.10.0', mandatory=False)
-        autowaf.check_pkg(conf, 'serd-0', uselib_store='SERD',
-                          atleast_version='0.14.0', mandatory=True)
-        autowaf.check_pkg(conf, 'sord-0', uselib_store='SORD',
-                          atleast_version='0.8.0', mandatory=True)
-        autowaf.check_pkg(conf, 'sratom-0', uselib_store='SRATOM',
-                          atleast_version='0.2.0', mandatory=True)
-        autowaf.check_pkg(conf, 'lilv-0', uselib_store='LILV',
-                          atleast_version='0.14.0', mandatory=True)
-        autowaf.check_pkg(conf, 'lilv-0', uselib_store='LILV_0_16_0',
-                          atleast_version='0.16.0', mandatory=False)
-        autowaf.check_pkg(conf, 'lilv-0', uselib_store='LILV_0_19_2',
-                          atleast_version='0.19.2', mandatory=False)
-        autowaf.check_pkg(conf, 'lilv-0', uselib_store='LILV_0_21_3',
-                          atleast_version='0.21.3', mandatory=False)
-        autowaf.check_pkg(conf, 'suil-0', uselib_store='SUIL',
-                          atleast_version='0.6.0', mandatory=False)
-        conf.define ('LV2_SUPPORT', 1)
+    autowaf.check_pkg(conf, 'lv2', uselib_store='LV2',
+                      atleast_version='1.0.0', mandatory=True)
+    autowaf.check_pkg(conf, 'lv2', uselib_store='LV2_1_2_0',
+                      atleast_version='1.2.0', mandatory=False)
+    autowaf.check_pkg(conf, 'lv2', uselib_store='LV2_1_10_0',
+                      atleast_version='1.10.0', mandatory=False)
+    autowaf.check_pkg(conf, 'serd-0', uselib_store='SERD',
+                      atleast_version='0.14.0', mandatory=True)
+    autowaf.check_pkg(conf, 'sord-0', uselib_store='SORD',
+                      atleast_version='0.8.0', mandatory=True)
+    autowaf.check_pkg(conf, 'sratom-0', uselib_store='SRATOM',
+                      atleast_version='0.2.0', mandatory=True)
+    autowaf.check_pkg(conf, 'lilv-0', uselib_store='LILV',
+                      atleast_version='0.24.2', mandatory=False)
+    autowaf.check_pkg(conf, 'suil-0', uselib_store='SUIL',
+                      atleast_version='0.6.0', mandatory=False)
+    conf.define ('LV2_SUPPORT', 1)
 
     # non-standard LV2 extention -- TODO: add option to disable??
     if conf.is_defined ('HAVE_LV2_1_10_0'):
@@ -392,15 +393,18 @@ def build(bld):
                         'OSX','BOOST','CURL','TAGLIB','VAMPSDK','VAMPHOSTSDK','RUBBERBAND']
     obj.use          = ['libpbd','libmidipp','libevoral',
                         'libaudiographer',
-                        'libtimecode',
+                        'libtemporal',
                         'liblua',
+                        'libptformat',
+                        'zita-resampler',
+                        'zita-convolver',
                         ]
     if bld.env['build_target'] != 'mingw':
         obj.uselib += ['DL']
     if bld.is_defined('USE_EXTERNAL_LIBS'):
         obj.uselib.extend(['VAMPSDK', 'LIBLTC', 'LIBFLUIDSYNTH'])
     else:
-        obj.use.extend(['librubberband', 'libltc_includes', 'libltc', 'libfluidsynth_includes', 'libfluidsynth'])
+        obj.use.extend(['librubberband', 'libltc_includes', 'libltc', 'libfluidsynth_includes', 'libfluidsynth', 'libptformat'])
 
     obj.vnum         = LIBARDOUR_LIB_VERSION
     obj.install_path = bld.env['LIBDIR']
@@ -409,8 +413,7 @@ def build(bld):
         'DATA_DIR="' + os.path.normpath(bld.env['DATADIR']) + '"',
         'CONFIG_DIR="' + os.path.normpath(bld.env['SYSCONFDIR']) + '"',
         'LOCALEDIR="' + os.path.normpath(bld.env['LOCALEDIR']) + '"',
-        'LIBARDOUR="' + bld.env['lwrcase_dirname'] + '"',
-        'EVORAL_MIDI_XML=1',
+        'LIBARDOUR="' + bld.env['lwrcase_dirname'] + '"'
         ]
 
     #obj.source += ' st_stretch.cc st_pitch.cc '
@@ -435,8 +438,12 @@ def build(bld):
         obj.source += [ 'lxvst_plugin.cc', 'linux_vst_support.cc' ]
         obj.defines += [ 'LXVST_SUPPORT' ]
 
-    if bld.is_defined('WINDOWS_VST_SUPPORT') or bld.is_defined('LXVST_SUPPORT'):
-        obj.source += [ 'session_vst.cc', 'vst_plugin.cc', 'vst_info_file.cc' ]
+    if bld.is_defined('WINDOWS_VST_SUPPORT') or bld.is_defined('LXVST_SUPPORT') or bld.is_defined('MACVST_SUPPORT'):
+        obj.source += [ 'session_vst.cc', 'vst_plugin.cc', 'vst_info_file.cc', 'vst_state.cc' ]
+
+    if bld.is_defined('MACVST_SUPPORT'):
+        obj.source += [ 'mac_vst_plugin.cc', 'mac_vst_support.cc' ]
+        obj.defines += [ 'MACVST_SUPPORT' ]
 
     if bld.is_defined('HAVE_COREAUDIO'):
         obj.source += [ 'coreaudiosource.cc', 'caimportable.cc' ]
@@ -473,7 +480,7 @@ def build(bld):
                 source   = avx_sources,
                 cxxflags = avx_cxxflags,
                 includes = [ '.' ],
-                use = [ 'libtimecode', 'libpbd', 'libevoral', 'liblua' ],
+                use = [ 'libtemporal', 'libpbd', 'libevoral', 'liblua' ],
                 uselib = [ 'GLIBMM', 'XML' ],
                 target   = 'sse_avx_functions')
 
@@ -515,11 +522,11 @@ def build(bld):
             create_ardour_test_program(bld, obj.includes, 'automation_list_property_test', 'test_automation_list_property', ['test/automation_list_property_test.cc'])
             create_ardour_test_program(bld, obj.includes, 'bbt', 'test_bbt', ['test/bbt_test.cc'])
             create_ardour_test_program(bld, obj.includes, 'tempo', 'test_tempo', ['test/tempo_test.cc'])
-            create_ardour_test_program(bld, obj.includes, 'interpolation', 'test_interpolation', ['test/interpolation_test.cc'])
+            create_ardour_test_program(bld, obj.includes, 'lua_script', 'test_lua_script', ['test/lua_script_test.cc'])
             create_ardour_test_program(bld, obj.includes, 'midi_clock_slave', 'test_midi_clock_slave', ['test/midi_clock_slave_test.cc'])
             create_ardour_test_program(bld, obj.includes, 'resampled_source', 'test_resampled_source', ['test/resampled_source_test.cc'])
-            create_ardour_test_program(bld, obj.includes, 'framewalk_to_beats', 'test_framewalk_to_beats', ['test/framewalk_to_beats_test.cc'])
-            create_ardour_test_program(bld, obj.includes, 'framepos_plus_beats', 'test_framepos_plus_beats', ['test/framepos_plus_beats_test.cc'])
+            create_ardour_test_program(bld, obj.includes, 'samplewalk_to_beats', 'test_samplewalk_to_beats', ['test/samplewalk_to_beats_test.cc'])
+            create_ardour_test_program(bld, obj.includes, 'samplepos_plus_beats', 'test_samplepos_plus_beats', ['test/samplepos_plus_beats_test.cc'])
             create_ardour_test_program(bld, obj.includes, 'playlist_equivalent_regions', 'test_playlist_equivalent_regions', ['test/playlist_equivalent_regions_test.cc'])
             create_ardour_test_program(bld, obj.includes, 'playlist_layering', 'test_playlist_layering', ['test/playlist_layering_test.cc'])
             create_ardour_test_program(bld, obj.includes, 'plugins_test', 'test_plugins', ['test/plugins_test.cc'])
@@ -536,11 +543,11 @@ def build(bld):
             test/bbt_test.cc
             test/dsp_load_calculator_test.cc
             test/tempo_test.cc
-            test/interpolation_test.cc
+            test/lua_script_test.cc
             test/midi_clock_slave_test.cc
             test/resampled_source_test.cc
-            test/framewalk_to_beats_test.cc
-            test/framepos_plus_beats_test.cc
+            test/samplewalk_to_beats_test.cc
+            test/samplepos_plus_beats_test.cc
             test/playlist_equivalent_regions_test.cc
             test/playlist_layering_test.cc
             test/plugins_test.cc

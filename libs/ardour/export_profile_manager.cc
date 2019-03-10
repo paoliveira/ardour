@@ -29,8 +29,8 @@
 #include <glibmm/miscutils.h>
 
 #include "pbd/enumwriter.h"
+#include "pbd/enum_convert.h"
 #include "pbd/xml++.h"
-#include "pbd/convert.h"
 
 #include "ardour/export_profile_manager.h"
 #include "ardour/export_format_specification.h"
@@ -49,6 +49,10 @@
 #include "ardour/broadcast_info.h"
 
 #include "pbd/i18n.h"
+
+namespace PBD {
+	DEFINE_ENUM_CONVERT(ARDOUR::ExportProfileManager::TimeFormat);
+}
 
 using namespace std;
 using namespace Glib;
@@ -145,6 +149,7 @@ ExportProfileManager::prepare_for_export ()
 	FormatStateList::const_iterator format_it;
 	FilenameStateList::const_iterator filename_it;
 
+	handler->reset ();
 	// For each timespan
 	for (TimespanList::iterator ts_it = ts_list->begin(); ts_it != ts_list->end(); ++ts_it) {
 		// ..., each format-filename pair
@@ -349,7 +354,7 @@ ExportProfileManager::find_file (std::string const & pattern)
 }
 
 void
-ExportProfileManager::set_selection_range (framepos_t start, framepos_t end)
+ExportProfileManager::set_selection_range (samplepos_t start, samplepos_t end)
 {
 
 	if (start || end) {
@@ -366,7 +371,7 @@ ExportProfileManager::set_selection_range (framepos_t start, framepos_t end)
 }
 
 std::string
-ExportProfileManager::set_single_range (framepos_t start, framepos_t end, string name)
+ExportProfileManager::set_single_range (samplepos_t start, samplepos_t end, string name)
 {
 	single_range_mode = true;
 
@@ -423,14 +428,14 @@ ExportProfileManager::TimespanStatePtr
 ExportProfileManager::deserialize_timespan (XMLNode & root)
 {
 	TimespanStatePtr state (new TimespanState (selection_range, ranges));
-	XMLProperty const * prop;
 
 	XMLNodeList spans = root.children ("Range");
 	for (XMLNodeList::iterator node_it = spans.begin(); node_it != spans.end(); ++node_it) {
 
-		prop = (*node_it)->property ("id");
-		if (!prop) { continue; }
-		string id = prop->value();
+		std::string id;
+		if (!(*node_it)->get_property ("id", id)) {
+			continue;
+		}
 
 		Location * location = 0;
 		for (LocationList::iterator it = ranges->begin(); it != ranges->end(); ++it) {
@@ -450,9 +455,7 @@ ExportProfileManager::deserialize_timespan (XMLNode & root)
 		state->timespans->push_back (timespan);
 	}
 
-	if ((prop = root.property ("format"))) {
-		state->time_format = (TimeFormat) string_2_enum (prop->value(), TimeFormat);
-	}
+	root.get_property ("format", state->time_format);
 
 	if (state->timespans->empty()) {
 		return TimespanStatePtr();
@@ -470,11 +473,11 @@ ExportProfileManager::serialize_timespan (TimespanStatePtr state)
 	update_ranges ();
 	for (TimespanList::iterator it = state->timespans->begin(); it != state->timespans->end(); ++it) {
 		if ((span = root.add_child ("Range"))) {
-			span->add_property ("id", (*it)->range_id());
+			span->set_property ("id", (*it)->range_id());
 		}
 	}
 
-	root.add_property ("format", enum_2_string (state->time_format));
+	root.set_property ("format", state->time_format);
 
 	return root;
 }
@@ -658,6 +661,23 @@ ExportProfileManager::remove_format_profile (ExportFormatSpecPtr format)
 	FormatListChanged ();
 }
 
+void
+ExportProfileManager::revert_format_profile (ExportFormatSpecPtr format)
+{
+	FileMap::iterator it;
+	if ((it = format_file_map.find (format->id())) == format_file_map.end()) {
+		return;
+	}
+
+	XMLTree tree;
+	if (!tree.read (it->second.c_str())) {
+		return;
+	}
+
+	format->set_state (*tree.root());
+	FormatListChanged ();
+}
+
 ExportFormatSpecPtr
 ExportProfileManager::get_new_format (ExportFormatSpecPtr original)
 {
@@ -727,7 +747,7 @@ ExportProfileManager::serialize_format (FormatStatePtr state)
 	XMLNode * root = new XMLNode ("ExportFormat");
 
 	string id = state->format ? state->format->id().to_s() : "";
-	root->add_property ("id", id);
+	root->set_property ("id", id);
 
 	return *root;
 }
@@ -760,6 +780,13 @@ ExportProfileManager::load_format_from_disk (std::string const & path)
 
 	ExportFormatSpecPtr format = handler->add_format (*root);
 
+	if (format->format_id() == ExportFormatBase::F_FFMPEG) {
+		std::string unused;
+		if (!ArdourVideoToolPaths::transcoder_exe (unused, unused)) {
+			error << string_compose (_("Ignored format '%1': encoder is not avilable"), path) << endmsg;
+			return;
+		}
+	}
 	/* Handle id to filename mapping and don't add duplicates to list */
 
 	FilePair pair (format->id(), path);
@@ -862,6 +889,8 @@ ExportProfileManager::get_warnings ()
 
 	/*** Check files ***/
 
+	bool folder_ok = true;
+
 	if (channel_config_state) {
 		FormatStateList::const_iterator format_it;
 		FilenameStateList::const_iterator filename_it;
@@ -869,7 +898,16 @@ ExportProfileManager::get_warnings ()
 		     format_it != formats.end() && filename_it != filenames.end();
 		     ++format_it, ++filename_it) {
 			check_config (warnings, timespan_state, channel_config_state, *format_it, *filename_it);
+
+			if (!Glib::file_test ((*filename_it)->filename->get_folder(), Glib::FileTest (G_FILE_TEST_EXISTS | G_FILE_TEST_IS_DIR))) {
+				folder_ok = false;
+			}
+
 		}
+	}
+
+	if (!folder_ok) {
+		warnings->errors.push_back (_("Destination folder does not exist."));
 	}
 
 	return warnings;
@@ -940,6 +978,8 @@ ExportProfileManager::check_format (ExportFormatSpecPtr format, uint32_t channel
 	switch (format->type()) {
 	  case ExportFormatBase::T_Sndfile:
 		return check_sndfile_format (format, channels);
+	  case ExportFormatBase::T_FFMPEG:
+		return true;
 
 	  default:
 		throw ExportFailed (X_("Invalid format given for ExportFileFactory::check!"));

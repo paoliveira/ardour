@@ -38,6 +38,7 @@
 #include <glibmm.h>
 
 #include <boost/scoped_array.hpp>
+#include <boost/scoped_ptr.hpp>
 #include <boost/shared_array.hpp>
 
 #include "pbd/basename.h"
@@ -47,7 +48,6 @@
 
 #include "ardour/analyser.h"
 #include "ardour/ardour.h"
-#include "ardour/audio_diskstream.h"
 #include "ardour/audioengine.h"
 #include "ardour/audioregion.h"
 #include "ardour/import_status.h"
@@ -74,7 +74,7 @@ using namespace ARDOUR;
 using namespace PBD;
 
 static boost::shared_ptr<ImportableSource>
-open_importable_source (const string& path, framecnt_t samplerate, ARDOUR::SrcQuality quality)
+open_importable_source (const string& path, samplecnt_t samplerate, ARDOUR::SrcQuality quality)
 {
 	/* try libsndfile first, because it can get BWF info from .wav, which ExtAudioFile cannot.
 	   We don't necessarily need that information in an ImportableSource, but it keeps the
@@ -118,7 +118,9 @@ open_importable_source (const string& path, framecnt_t samplerate, ARDOUR::SrcQu
 }
 
 vector<string>
-Session::get_paths_for_new_sources (bool /*allow_replacing*/, const string& import_file_path, uint32_t channels)
+Session::get_paths_for_new_sources (bool /*allow_replacing*/, const string& import_file_path, uint32_t channels,
+                                    vector<string> const & smf_track_names)
+
 {
 	vector<string> new_paths;
 	const string basename = basename_nosuffix (import_file_path);
@@ -129,13 +131,19 @@ Session::get_paths_for_new_sources (bool /*allow_replacing*/, const string& impo
 		string filepath;
 
 		switch (type) {
-		  case DataType::MIDI:
-				if (channels > 1) {
-					string mchn_name = string_compose ("%1-t%2", basename, n);
-					filepath = new_midi_source_path (mchn_name);
+		case DataType::MIDI:
+			assert (smf_track_names.empty() || smf_track_names.size() == channels);
+			if (channels > 1) {
+				string mchn_name;
+				if (smf_track_names.empty() || smf_track_names[n].empty()) {
+					mchn_name = string_compose ("%1-t%2", basename, n);
 				} else {
-					filepath = new_midi_source_path (basename);
+					mchn_name = string_compose ("%1-%2", basename, smf_track_names[n]);
 				}
+				filepath = new_midi_source_path (mchn_name);
+			} else {
+				filepath = new_midi_source_path (basename);
+			}
 			break;
 		case DataType::AUDIO:
 			filepath = new_audio_source_path (basename, channels, n, false, false);
@@ -176,7 +184,7 @@ static bool
 create_mono_sources_for_writing (const vector<string>& new_paths,
                                  Session& sess, uint32_t samplerate,
                                  vector<boost::shared_ptr<Source> >& newfiles,
-                                 framepos_t timeline_position)
+                                 samplepos_t timeline_position)
 {
 	for (vector<string>::const_iterator i = new_paths.begin(); i != new_paths.end(); ++i) {
 
@@ -231,7 +239,7 @@ static void
 write_audio_data_to_new_files (ImportableSource* source, ImportStatus& status,
                                vector<boost::shared_ptr<Source> >& newfiles)
 {
-	const framecnt_t nframes = ResampledImportableSource::blocksize;
+	const samplecnt_t nframes = ResampledImportableSource::blocksize;
 	boost::shared_ptr<AudioFileSource> afs;
 	uint32_t channels = source->channels();
 	if (channels == 0) {
@@ -253,6 +261,7 @@ write_audio_data_to_new_files (ImportableSource* source, ImportStatus& status,
 	status.progress = 0.0f;
 	float progress_multiplier = 1;
 	float progress_base = 0;
+	const float progress_length = source->ratio() * source->length();
 
 	if (!source->clamped_at_unity() && s->clamped_at_unity()) {
 
@@ -265,15 +274,15 @@ write_audio_data_to_new_files (ImportableSource* source, ImportStatus& status,
 		uint32_t read_count = 0;
 
 		while (!status.cancel) {
-			framecnt_t const nread = source->read (data.get(), nframes * channels);
+			samplecnt_t const nread = source->read (data.get(), nframes * channels);
 			if (nread == 0) {
 				break;
 			}
 
-			peak = compute_peak (data.get(), nread * channels, peak);
+			peak = compute_peak (data.get(), nread, peak);
 
 			read_count += nread / channels;
-			status.progress = 0.5 * read_count / (source->ratio() * source->length() * channels);
+			status.progress = 0.5 * read_count / progress_length;
 		}
 
 		if (peak >= 1) {
@@ -286,11 +295,11 @@ write_audio_data_to_new_files (ImportableSource* source, ImportStatus& status,
 		progress_base = 0.5;
 	}
 
-	framecnt_t read_count = 0;
+	samplecnt_t read_count = 0;
 
 	while (!status.cancel) {
 
-		framecnt_t nread, nfread;
+		samplecnt_t nread, nfread;
 		uint32_t x;
 		uint32_t chn;
 
@@ -317,7 +326,7 @@ write_audio_data_to_new_files (ImportableSource* source, ImportStatus& status,
 
 		for (chn = 0; chn < channels; ++chn) {
 
-			framecnt_t n;
+			samplecnt_t n;
 			for (x = chn, n = 0; n < nfread; x += channels, ++n) {
 				channel_data[chn][n] = (Sample) data[x];
 			}
@@ -331,8 +340,8 @@ write_audio_data_to_new_files (ImportableSource* source, ImportStatus& status,
 			}
 		}
 
-		read_count += nread;
-		status.progress = progress_base + progress_multiplier * read_count / (source->ratio () * source->length() * channels);
+		read_count += nfread;
+		status.progress = progress_base + progress_multiplier * read_count / progress_length;
 	}
 }
 
@@ -417,9 +426,9 @@ write_midi_data_to_new_files (Evoral::SMF* source, ImportStatus& status,
 
 				smfs->append_event_beats(
 					source_lock,
-					Evoral::Event<Evoral::Beats>(
-						0,
-						Evoral::Beats::ticks_at_rate(t, source->ppqn()),
+					Evoral::Event<Temporal::Beats>(
+						Evoral::MIDI_EVENT,
+						Temporal::Beats::ticks_at_rate(t, source->ppqn()),
 						size,
 						buf));
 
@@ -432,9 +441,9 @@ write_midi_data_to_new_files (Evoral::SMF* source, ImportStatus& status,
 
 				/* we wrote something */
 
-				const framepos_t     pos          = 0;
-				const Evoral::Beats  length_beats = Evoral::Beats::ticks_at_rate(t, source->ppqn());
-				BeatsFramesConverter converter(smfs->session().tempo_map(), pos);
+				const samplepos_t     pos          = 0;
+				const Temporal::Beats  length_beats = Temporal::Beats::ticks_at_rate(t, source->ppqn());
+				BeatsSamplesConverter converter(smfs->session().tempo_map(), pos);
 				smfs->update_length(pos + converter.to(length_beats.round_up_to_beat()));
 				smfs->mark_streaming_write_completed (source_lock);
 
@@ -484,6 +493,7 @@ Session::import_files (ImportStatus& status)
 	boost::shared_ptr<AudioFileSource> afs;
 	boost::shared_ptr<SMFSource> smfs;
 	uint32_t channels = 0;
+	vector<string> smf_names;
 
 	status.sources.clear ();
 
@@ -492,12 +502,13 @@ Session::import_files (ImportStatus& status)
 	     ++p)
 	{
 		boost::shared_ptr<ImportableSource> source;
-		std::auto_ptr<Evoral::SMF>          smf_reader;
+
 		const DataType type = SMFSource::safe_midi_file_extension (*p) ? DataType::MIDI : DataType::AUDIO;
+		boost::scoped_ptr<Evoral::SMF> smf_reader;
 
 		if (type == DataType::AUDIO) {
 			try {
-				source = open_importable_source (*p, frame_rate(), status.quality);
+				source = open_importable_source (*p, sample_rate(), status.quality);
 				channels = source->channels();
 			} catch (const failed_constructor& err) {
 				error << string_compose(_("Import: cannot open input sound file \"%1\""), (*p)) << endmsg;
@@ -507,13 +518,26 @@ Session::import_files (ImportStatus& status)
 
 		} else {
 			try {
-				smf_reader = std::auto_ptr<Evoral::SMF>(new Evoral::SMF());
-				smf_reader->open(*p);
+				smf_reader.reset (new Evoral::SMF());
+
+				if (smf_reader->open(*p)) {
+					throw Evoral::SMF::FileError (*p);
+				}
 
 				if (smf_reader->is_type0 () && status.split_midi_channels) {
 					channels = smf_reader->channels().size();
 				} else {
 					channels = smf_reader->num_tracks();
+					switch (status.midi_track_name_source) {
+					case SMFTrackNumber:
+						break;
+					case SMFTrackName:
+						smf_reader->track_names (smf_names);
+						break;
+					case SMFInstrumentName:
+						smf_reader->instrument_names (smf_names);
+						break;
+					}
 				}
 			} catch (...) {
 				error << _("Import: error opening MIDI file") << endmsg;
@@ -527,16 +551,16 @@ Session::import_files (ImportStatus& status)
 			continue;
 		}
 
-		vector<string> new_paths = get_paths_for_new_sources (status.replace_existing_source, *p, channels);
+		vector<string> new_paths = get_paths_for_new_sources (status.replace_existing_source, *p, channels, smf_names);
 		Sources newfiles;
-		framepos_t natural_position = source ? source->natural_position() : 0;
+		samplepos_t natural_position = source ? source->natural_position() : 0;
 
 
 		if (status.replace_existing_source) {
 			fatal << "THIS IS NOT IMPLEMENTED YET, IT SHOULD NEVER GET CALLED!!! DYING!" << endmsg;
-			status.cancel = !map_existing_mono_sources (new_paths, *this, frame_rate(), newfiles, this);
+			status.cancel = !map_existing_mono_sources (new_paths, *this, sample_rate(), newfiles, this);
 		} else {
-			status.cancel = !create_mono_sources_for_writing (new_paths, *this, frame_rate(), newfiles, natural_position);
+			status.cancel = !create_mono_sources_for_writing (new_paths, *this, sample_rate(), newfiles, natural_position);
 		}
 
 		// copy on cancel/failure so that any files that were created will be removed below
@@ -554,9 +578,9 @@ Session::import_files (ImportStatus& status)
 
 		if (source) { // audio
 			status.doing_what = compose_status_message (*p, source->samplerate(),
-			                                            frame_rate(), status.current, status.total);
+			                                            sample_rate(), status.current, status.total);
 			write_audio_data_to_new_files (source.get(), status, newfiles);
-		} else if (smf_reader.get()) { // midi
+		} else if (smf_reader) { // midi
 			status.doing_what = string_compose(_("Loading MIDI file %1"), *p);
 			write_midi_data_to_new_files (smf_reader.get(), status, newfiles, status.split_midi_channels);
 		}

@@ -22,12 +22,19 @@
 
 #include "gtkmm2ext/cairo_widget.h"
 #include "gtkmm2ext/gui_thread.h"
+#include "gtkmm2ext/rgb_macros.h"
+
+#ifdef __APPLE__
+#include <gdk/gdk.h>
+#include "gtkmm2ext/nsglview.h"
+#endif
 
 #include "pbd/i18n.h"
 
 static const char* has_cairo_widget_background_info = "has_cairo_widget_background_info";
 
 bool CairoWidget::_flat_buttons = false;
+bool CairoWidget::_boxy_buttons = false;
 bool CairoWidget::_widget_prelight = true;
 
 sigc::slot<void,Gtk::Widget*> CairoWidget::focus_handler;
@@ -48,14 +55,69 @@ CairoWidget::CairoWidget ()
 	, _grabbed (false)
 	, _name_proxy (this, X_("name"))
 	, _current_parent (0)
+	, _canvas_widget (false)
+	, _nsglview (0)
 {
 	_name_proxy.connect (sigc::mem_fun (*this, &CairoWidget::on_name_changed));
 }
 
 CairoWidget::~CairoWidget ()
 {
+	if (_canvas_widget) {
+		gtk_widget_set_realized (GTK_WIDGET(gobj()), false);
+	}
 	if (_parent_style_change) _parent_style_change.disconnect();
 }
+
+void
+CairoWidget::set_canvas_widget ()
+{
+	assert (!_nsglview);
+	assert (!_canvas_widget);
+	ensure_style ();
+	gtk_widget_set_realized (GTK_WIDGET(gobj()), true);
+	_canvas_widget = true;
+}
+
+void
+CairoWidget::use_nsglview ()
+{
+	assert (!_nsglview);
+	assert (!_canvas_widget);
+	assert (!is_realized());
+#ifdef ARDOUR_CANVAS_NSVIEW_TAG // patched gdkquartz.h
+	_nsglview = Gtkmm2ext::nsglview_create (this);
+#endif
+}
+
+int
+CairoWidget::get_width () const
+{
+	if (_canvas_widget) {
+		return _allocation.get_width ();
+	}
+	return Gtk::EventBox::get_width ();
+}
+
+int
+CairoWidget::get_height () const
+{
+	if (_canvas_widget) {
+		return _allocation.get_height ();
+	}
+	return Gtk::EventBox::get_height ();
+}
+
+void
+CairoWidget::size_allocate (Gtk::Allocation& alloc)
+{
+	if (_canvas_widget) {
+		memcpy (&_allocation, &alloc, sizeof(Gtk::Allocation));
+		return;
+	}
+	Gtk::EventBox::size_allocate (alloc);
+}
+
 
 bool
 CairoWidget::on_button_press_event (GdkEventButton*)
@@ -64,6 +126,16 @@ CairoWidget::on_button_press_event (GdkEventButton*)
 	return false;
 }
 
+uint32_t
+CairoWidget::background_color ()
+{
+	if (_need_bg) {
+		Gdk::Color bg (get_parent_bg());
+		return RGBA_TO_UINT (bg.get_red() / 255, bg.get_green() / 255, bg.get_blue() / 255, 255);
+	} else {
+		return 0;
+	}
+}
 
 #ifdef USE_TRACKS_CODE_FEATURES
 
@@ -122,7 +194,7 @@ CairoWidget::on_expose_event (GdkEventExpose *ev)
         cr->fill ();
     }
 
-	render (cr->cobj(), &expose_area);
+	render (cr, &expose_area);
 
 #ifdef USE_CAIRO_IMAGE_SURFACE_FOR_CAIRO_WIDGET
 	if(get_visible_window ()) {
@@ -160,6 +232,12 @@ CairoWidget::on_expose_event (GdkEventExpose *ev)
 bool
 CairoWidget::on_expose_event (GdkEventExpose *ev)
 {
+#ifdef __APPLE__
+	if (_nsglview) {
+		Gtkmm2ext::nsglview_queue_draw (_nsglview, ev->area.x, ev->area.y, ev->area.width, ev->area.height);
+		return true;
+	}
+#endif
 #ifdef OPTIONAL_CAIRO_IMAGE_SURFACE
 	Cairo::RefPtr<Cairo::Context> cr;
 	if (getenv("ARDOUR_IMAGE_SURFACE")) {
@@ -204,7 +282,7 @@ CairoWidget::on_expose_event (GdkEventExpose *ev)
 	expose_area.width = ev->area.width;
 	expose_area.height = ev->area.height;
 
-	render (cr->cobj(), &expose_area);
+	render (cr, &expose_area);
 
 #ifdef OPTIONAL_CAIRO_IMAGE_SURFACE
 	if (getenv("ARDOUR_IMAGE_SURFACE")) {
@@ -241,8 +319,30 @@ CairoWidget::set_dirty (cairo_rectangle_t *area)
 	if (!area) {
 		queue_draw ();
 	} else {
+		// TODO emit QueueDrawArea -> ArdourCanvas::Widget
+		if (QueueDraw ()) {
+			return;
+		}
 		queue_draw_area (area->x, area->y, area->width, area->height);
 	}
+}
+
+void
+CairoWidget::queue_draw ()
+{
+	if (QueueDraw ()) {
+		return;
+	}
+	Gtk::EventBox::queue_draw ();
+}
+
+void
+CairoWidget::queue_resize ()
+{
+	if (QueueResize ()) {
+		return;
+	}
+	Gtk::EventBox::queue_resize ();
 }
 
 /** Handle a size allocation.
@@ -251,7 +351,11 @@ CairoWidget::set_dirty (cairo_rectangle_t *area)
 void
 CairoWidget::on_size_allocate (Gtk::Allocation& alloc)
 {
-	Gtk::EventBox::on_size_allocate (alloc);
+	if (!_canvas_widget) {
+		Gtk::EventBox::on_size_allocate (alloc);
+	} else {
+		memcpy (&_allocation, &alloc, sizeof(Gtk::Allocation));
+	}
 
 #ifdef OPTIONAL_CAIRO_IMAGE_SURFACE
 	if (getenv("ARDOUR_IMAGE_SURFACE")) {
@@ -263,6 +367,19 @@ CairoWidget::on_size_allocate (Gtk::Allocation& alloc)
 	}
 #endif
 
+	if (_canvas_widget) {
+		return;
+	}
+#ifdef __APPLE__
+	if (_nsglview) {
+		gint xx, yy;
+		gtk_widget_translate_coordinates(
+				GTK_WIDGET(gobj()),
+				GTK_WIDGET(get_toplevel()->gobj()),
+				0, 0, &xx, &yy);
+		Gtkmm2ext::nsglview_resize (_nsglview, xx, yy, alloc.get_width(), alloc.get_height());
+	}
+#endif
 	set_dirty ();
 }
 
@@ -340,7 +457,47 @@ CairoWidget::set_active (bool yn)
 void
 CairoWidget::on_style_changed (const Glib::RefPtr<Gtk::Style>&)
 {
-	queue_draw();
+	set_dirty ();
+}
+
+void
+CairoWidget::on_realize ()
+{
+	Gtk::EventBox::on_realize();
+#ifdef __APPLE__
+	if (_nsglview) {
+		Gtkmm2ext::nsglview_overlay (_nsglview, get_window()->gobj());
+	}
+#endif
+}
+
+void
+CairoWidget::on_map ()
+{
+	Gtk::EventBox::on_map();
+#ifdef __APPLE__
+	if (_nsglview) {
+		Gtkmm2ext::nsglview_set_visible (_nsglview, true);
+		Gtk::Allocation a = get_allocation();
+		gint xx, yy;
+		gtk_widget_translate_coordinates(
+				GTK_WIDGET(gobj()),
+				GTK_WIDGET(get_toplevel()->gobj()),
+				0, 0, &xx, &yy);
+		Gtkmm2ext::nsglview_resize (_nsglview, xx, yy, a.get_width(), a.get_height());
+	}
+#endif
+}
+
+void
+CairoWidget::on_unmap ()
+{
+	Gtk::EventBox::on_unmap();
+#ifdef __APPLE__
+	if (_nsglview) {
+		Gtkmm2ext::nsglview_set_visible (_nsglview, false);
+	}
+#endif
 }
 
 void
@@ -356,7 +513,7 @@ CairoWidget::on_state_changed (Gtk::StateType)
 		set_visual_state (Gtkmm2ext::VisualState (visual_state() & ~Gtkmm2ext::Insensitive));
 	}
 
-	queue_draw ();
+	set_dirty ();
 }
 
 void
@@ -385,6 +542,13 @@ CairoWidget::set_flat_buttons (bool yn)
 {
 	_flat_buttons = yn;
 }
+
+void
+CairoWidget::set_boxy_buttons (bool yn)
+{
+	_boxy_buttons = yn;
+}
+
 
 void
 CairoWidget::set_widget_prelight (bool yn)

@@ -31,6 +31,13 @@
 # define M_PI 3.1415926
 #endif
 
+#ifdef COMPILER_MSVC
+#include <float.h>
+#define isfinite_local(val) (bool)_finite((double)val)
+#else
+#define isfinite_local isfinite
+#endif
+
 typedef enum {
 	ADELAY_INPUT = 0,
 	ADELAY_OUTPUT,
@@ -211,9 +218,17 @@ connect_port(LV2_Handle instance,
 }
 
 static inline float
-sanitize_denormal(float value) {
+sanitize_denormal(const float value) {
 	if (!isnormal(value)) {
-		value = 0.f;
+		return 0.f;
+	}
+	return value;
+}
+
+static inline float
+sanitize_input(const float value) {
+	if (!isfinite_local (value)) {
+		return 0.f;
 	}
 	return value;
 }
@@ -296,12 +311,11 @@ static void lpfRbj(LV2_Handle instance, float fc, float srate)
 	adelay->B5 = adelay->B3;
 }
 
-static float runfilter(LV2_Handle instance, float in)
+static float runfilter(LV2_Handle instance, const float in)
 {
 	ADelay* a = (ADelay*)instance;
 
 	float out;
-	in = sanitize_denormal(in);
 
 	out = a->B0/a->A0*in + a->B1/a->A0*a->state[0] + a->B2/a->A0*a->state[1]
 			-a->A1/a->A0*a->state[2] - a->A2/a->A0*a->state[3] + 1e-20;
@@ -309,13 +323,14 @@ static float runfilter(LV2_Handle instance, float in)
 	a->state[1] = a->state[0];
 	a->state[0] = in;
 	a->state[3] = a->state[2];
-	a->state[2] = out;
+	a->state[2] = sanitize_input (out);
 	return out;
 }
 
-static void
+static bool
 update_bpm(ADelay* self, const LV2_Atom_Object* obj)
 {
+	bool changed = false;
 	const DelayURIs* uris = &self->uris;
 
 	// Received new transport bpm/beatunit
@@ -326,25 +341,22 @@ update_bpm(ADelay* self, const LV2_Atom_Object* obj)
 	                    NULL);
 	// Tempo changed, update BPM
 	if (bpm && bpm->type == uris->atom_Float) {
-		self->bpm = ((LV2_Atom_Float*)bpm)->body;
+		float b = ((LV2_Atom_Float*)bpm)->body;
+		if (self->bpm != b) {
+			changed = true;
+		}
+		self->bpm = b;
 	}
 	// Time signature changed, update beatunit
 	if (beatunit && beatunit->type == uris->atom_Int) {
 		int b = ((LV2_Atom_Int*)beatunit)->body;
-		self->beatunit = (float)b;
-	}
-	if (beatunit && beatunit->type == uris->atom_Double) {
-		double b = ((LV2_Atom_Double*)beatunit)->body;
-		self->beatunit = (float)b;
-	}
-	if (beatunit && beatunit->type == uris->atom_Float) {
-		self->beatunit = ((LV2_Atom_Float*)beatunit)->body;
-	}
-	if (beatunit && beatunit->type == uris->atom_Long) {
-		long int b = ((LV2_Atom_Long*)beatunit)->body;
-		self->beatunit = (float)b;
+		if (self->beatunit != b) {
+			changed = true;
+		}
+		self->beatunit = b;
 	}
 	self->bpmvalid = 1;
+	return changed;
 }
 
 static void
@@ -374,7 +386,7 @@ run(LV2_Handle instance, uint32_t n_samples)
 	unsigned int tmp;
 	float inv;
 	float xfade;
-	int recalc;
+	bool recalc = false;
 
 	// TODO LPF
 	if (*(adelay->inv) < 0.5) {
@@ -382,29 +394,44 @@ run(LV2_Handle instance, uint32_t n_samples)
 	} else {
 		inv = 1.f;
 	}
-	
-	recalc = 0;
+
+	if (adelay->atombpm) {
+		LV2_Atom_Event* ev = lv2_atom_sequence_begin(&(adelay->atombpm)->body);
+		while(!lv2_atom_sequence_is_end(&(adelay->atombpm)->body, (adelay->atombpm)->atom.size, ev)) {
+			if (ev->body.type == adelay->uris.atom_Blank || ev->body.type == adelay->uris.atom_Object) {
+				const LV2_Atom_Object* obj = (LV2_Atom_Object*)&ev->body;
+				if (obj->body.otype == adelay->uris.time_Position) {
+					recalc = update_bpm(adelay, obj);
+					// TODO: split process on BPM change. (independent of buffer-size)
+				}
+			}
+			ev = lv2_atom_sequence_next(ev);
+		}
+	}
+
 	if (*(adelay->inv) != adelay->invertold) {
-		recalc = 1;
+		recalc = true;
 	}
 	if (*(adelay->sync) != adelay->syncold) {
-		recalc = 1;
+		recalc = true;
 	}
 	if (*(adelay->time) != adelay->timeold) {
-		recalc = 1;
+		recalc = true;
 	}
 	if (*(adelay->feedback) != adelay->feedbackold) {
-		recalc = 1;
+		recalc = true;
 	}
 	if (*(adelay->divisor) != adelay->divisorold) {
-		recalc = 1;
+		recalc = true;
 	}
 	if (!is_eq(adelay->lpfold, *adelay->lpf, 0.1)) {
 		float  tc = (1.0 - exp (-2.f * M_PI * n_samples * 25.f / adelay->srate));
 		adelay->lpfold += tc * (*adelay->lpf - adelay->lpfold);
-		recalc = 1;
+		recalc = true;
 	}
 	
+	// rg says: in case the delay-time changes, oversampling/interpolate + LPF
+	// would me more appropriate.
 	if (recalc) {
 		lpfRbj(adelay, adelay->lpfold, srate);
 		if (*(adelay->sync) > 0.5f && adelay->bpmvalid) {
@@ -417,27 +444,30 @@ run(LV2_Handle instance, uint32_t n_samples)
 	}
 
 	xfade = 0.f;
+
+	float fbstate = adelay->fbstate;
+	const float feedback = *adelay->feedback;
+
 	for (i = 0; i < n_samples; i++) {
-		in = input[i];
-		adelay->z[adelay->posz] = in + *adelay->feedback / 100. * adelay->fbstate;
-		adelay->fbstate = 0.f;
+		in = sanitize_input (input[i]);
+		adelay->z[adelay->posz] = sanitize_denormal (in + feedback / 100.f * fbstate);
 		int p = adelay->posz - adelay->tap[adelay->active]; // active line
 		if (p<0) p += MAX_DELAY;
-		adelay->fbstate += adelay->z[p];
+		fbstate = adelay->z[p];
 		
 		if (recalc) {
 			xfade += 1.0f / (float)n_samples;
-			adelay->fbstate *= (1.-xfade);
+			fbstate *= (1.-xfade);
 			p = adelay->posz - adelay->tap[adelay->next]; // next line
 			if (p<0) p += MAX_DELAY;
-			adelay->fbstate += adelay->z[p] * xfade;
+			fbstate += adelay->z[p] * xfade;
 		}
 
 		wetdry += tau * (wetdry_target - wetdry) + 1e-12;
 		gain += tau * (gain_target - gain) + 1e-12;
 
 		output[i] = (1.f - wetdry) * in;
-		output[i] += wetdry * -inv * runfilter(adelay, adelay->fbstate);
+		output[i] += wetdry * -inv * runfilter(adelay, fbstate);
 		output[i] *= gain;
 
 		if (++(adelay->posz) >= MAX_DELAY) {
@@ -445,6 +475,7 @@ run(LV2_Handle instance, uint32_t n_samples)
 		}
 	}
 
+	adelay->fbstate = fbstate;
 	adelay->feedbackold = *(adelay->feedback);
 	adelay->divisorold = *(adelay->divisor);
 	adelay->invertold = *(adelay->inv);
@@ -460,19 +491,7 @@ run(LV2_Handle instance, uint32_t n_samples)
 		adelay->active = adelay->next;
 		adelay->next = tmp;
 	}
-	
-	if (adelay->atombpm) {
-		LV2_Atom_Event* ev = lv2_atom_sequence_begin(&(adelay->atombpm)->body);
-		while(!lv2_atom_sequence_is_end(&(adelay->atombpm)->body, (adelay->atombpm)->atom.size, ev)) {
-			if (ev->body.type == adelay->uris.atom_Blank || ev->body.type == adelay->uris.atom_Object) {
-				const LV2_Atom_Object* obj = (LV2_Atom_Object*)&ev->body;
-				if (obj->body.otype == adelay->uris.time_Position) {
-					update_bpm(adelay, obj);
-				}
-			}
-			ev = lv2_atom_sequence_next(ev);
-		}
-	}
+
 }
 
 static void

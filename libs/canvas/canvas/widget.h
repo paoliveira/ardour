@@ -37,6 +37,8 @@ public:
 	void render (Rect const &, Cairo::RefPtr<Cairo::Context>) const;
 	void compute_bounding_box () const;
 
+	void size_allocate (Rect const &);
+
 	CairoWidget const & get () const {
 		return _widget;
 	}
@@ -44,6 +46,8 @@ public:
 private:
 	CairoWidget& _widget;
 	bool event_proxy (GdkEvent*);
+	bool queue_draw ();
+	bool queue_resize ();
 };
 
 }

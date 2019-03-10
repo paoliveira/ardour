@@ -27,6 +27,9 @@
 #include <glibmm/threads.h>
 
 #include "pbd/stateful.h"
+
+#include "control_protocol/types.h"
+
 #include "ardour/session_handle.h"
 
 namespace ARDOUR {
@@ -80,11 +83,14 @@ class LIBARDOUR_API ControlProtocolManager : public PBD::Stateful, public ARDOUR
 
         PBD::Signal1<void,ControlProtocolInfo*> ProtocolStatusChange;
 
+        void stripable_selection_changed (ARDOUR::StripableNotificationListPtr);
+        static PBD::Signal1<void,ARDOUR::StripableNotificationListPtr> StripableSelectionChanged;
+
   private:
 	ControlProtocolManager ();
 	static ControlProtocolManager* _instance;
 
-	Glib::Threads::Mutex protocols_lock;
+	Glib::Threads::RWLock protocols_lock;
 	std::list<ControlProtocol*>    control_protocols;
 
 	void session_going_away ();
@@ -93,7 +99,7 @@ class LIBARDOUR_API ControlProtocolManager : public PBD::Stateful, public ARDOUR
 	ControlProtocolDescriptor* get_descriptor (std::string path);
 	ControlProtocolInfo* cpi_by_name (std::string);
 	ControlProtocol* instantiate (ControlProtocolInfo&);
-	int teardown (ControlProtocolInfo&);
+	int teardown (ControlProtocolInfo&, bool lock_required);
 };
 
 } // namespace

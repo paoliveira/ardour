@@ -93,11 +93,6 @@ class LIBARDOUR_API PresentationInfo : public PBD::Stateful
 	 * change after construction (not strictly the constructor itself, but
 	 * a more generalized notion of construction, as in "ready to use").
 	 *
-	 * SELECTION
-	 *
-	 * When an object is selected, its _flags member will have the Selected
-	 * bit set.
-	 *
 	 * VISIBILITY
 	 *
 	 * When an object is hidden, its _flags member will have the Hidden
@@ -119,19 +114,22 @@ class LIBARDOUR_API PresentationInfo : public PBD::Stateful
 		/* These are for sharing Stripable states between the GUI and other
 		 * user interfaces/control surfaces
 		 */
-		Selected = 0x100,
-		Hidden = 0x200,
+		Hidden = 0x100,
 		/* single bit indicates that the group order is set */
 		OrderSet = 0x400,
+		/* bus type for monitor mixes */
+		FoldbackBus = 0x2000,
 
 		/* special mask to delect out "state" bits */
-		StatusMask = (Selected|Hidden),
+		StatusMask = (Hidden),
 		/* special mask to delect select type bits */
-		TypeMask = (AudioBus|AudioTrack|MidiTrack|MidiBus|VCA|MasterOut|MonitorOut|Auditioner)
+		TypeMask = (AudioBus|AudioTrack|MidiTrack|MidiBus|VCA|MasterOut|MonitorOut|Auditioner|FoldbackBus)
 	};
 
 	static const Flag AllStripables; /* mask to use for any route or VCA (but not auditioner) */
+	static const Flag MixerStripables; /* mask to use for any route or VCA (but not auditioner or foldbackbus) */
 	static const Flag AllRoutes; /* mask to use for any route include master+monitor, but not auditioner */
+	static const Flag MixerRoutes; /* mask to use for any route include master+monitor, but not auditioner or foldbackbus*/
 	static const Flag Route;     /* mask for any route (bus or track */
 	static const Flag Track;     /* mask to use for any track */
 	static const Flag Bus;       /* mask to use for any bus */
@@ -152,15 +150,15 @@ class LIBARDOUR_API PresentationInfo : public PBD::Stateful
 	bool color_set() const;
 
 	void set_color (color_t);
-	void set_selected (bool yn);
 	void set_hidden (bool yn);
 	void set_flags (Flag f) { _flags = f; }
 
 	bool order_set() const { return _flags & OrderSet; }
 
+	int selection_cnt() const { return _selection_cnt; }
+
 	bool hidden() const { return _flags & Hidden; }
-	bool selected() const { return _flags & Selected; }
-	bool special() const { return _flags & (MasterOut|MonitorOut|Auditioner); }
+	bool special(bool with_master = true) const { return _flags & ((with_master ? MasterOut : 0)|MonitorOut|Auditioner); }
 
 	bool flag_match (Flag f) const {
 		/* no flags, match all */
@@ -232,14 +230,29 @@ class LIBARDOUR_API PresentationInfo : public PBD::Stateful
 	static Flag get_flags (XMLNode const& node);
 	static std::string state_node_name;
 
-	/* for things concerned about *any* PresentationInfo. This is emitted
-	 * only at the request of another object that has finished making some
-	 * changes (e.g. reordering things)
+	/* for things concerned about *any* PresentationInfo.
 	 */
 
-	static PBD::Signal0<void> Change;
+	static PBD::Signal1<void,PBD::PropertyChange const &> Change;
+	static void send_static_change (const PBD::PropertyChange&);
 
 	static void make_property_quarks ();
+
+  protected:
+	friend class ChangeSuspender;
+	static void suspend_change_signal ();
+	static void unsuspend_change_signal ();
+
+  public:
+	class ChangeSuspender {
+          public:
+		ChangeSuspender() {
+			PresentationInfo::suspend_change_signal ();
+		}
+		~ChangeSuspender() {
+			PresentationInfo::unsuspend_change_signal ();
+		}
+	};
 
   protected:
 	friend class Stripable;
@@ -249,6 +262,13 @@ class LIBARDOUR_API PresentationInfo : public PBD::Stateful
 	order_t _order;
 	Flag    _flags;
 	color_t _color;
+	int     _selection_cnt;
+
+	static PBD::PropertyChange _pending_static_changes;
+	static Glib::Threads::Mutex static_signal_lock;
+	static int _change_signal_suspended;
+
+	static int selection_counter;
 };
 
 }

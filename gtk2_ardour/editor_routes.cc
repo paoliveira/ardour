@@ -31,6 +31,7 @@
 #include "ardour/audio_track.h"
 #include "ardour/midi_track.h"
 #include "ardour/route.h"
+#include "ardour/selection.h"
 #include "ardour/session.h"
 #include "ardour/solo_isolate_control.h"
 #include "ardour/utils.h"
@@ -40,6 +41,8 @@
 #include "gtkmm2ext/cell_renderer_pixbuf_multi.h"
 #include "gtkmm2ext/cell_renderer_pixbuf_toggle.h"
 #include "gtkmm2ext/treeutils.h"
+
+#include "widgets/tooltips.h"
 
 #include "actions.h"
 #include "ardour_ui.h"
@@ -53,7 +56,6 @@
 #include "mixer_strip.h"
 #include "plugin_setup_dialog.h"
 #include "route_sorter.h"
-#include "tooltips.h"
 #include "vca_time_axis.h"
 #include "utils.h"
 
@@ -61,6 +63,7 @@
 
 using namespace std;
 using namespace ARDOUR;
+using namespace ArdourWidgets;
 using namespace ARDOUR_UI_UTILS;
 using namespace PBD;
 using namespace Gtk;
@@ -77,6 +80,7 @@ struct ColumnInfo {
 EditorRoutes::EditorRoutes (Editor* e)
 	: EditorComponent (e)
 	, _ignore_reorder (false)
+	, _ignore_selection_change (false)
 	, _no_redisplay (false)
 	, _adding_routes (false)
 	, _route_deletion_in_progress (false)
@@ -85,7 +89,6 @@ EditorRoutes::EditorRoutes (Editor* e)
 	, _queue_tv_update (0)
 	, _menu (0)
 	, old_focus (0)
-	, selection_countdown (0)
 	, name_editable (0)
 {
 	static const int column_width = 22;
@@ -192,7 +195,7 @@ EditorRoutes::EditorRoutes (Editor* e)
 	TreeViewColumn* solo_isolate_state_column = manage (new TreeViewColumn("SI", *solo_iso_renderer));
 
 	solo_isolate_state_column->add_attribute(solo_iso_renderer->property_state(), _columns.solo_isolate_state);
-	solo_isolate_state_column->add_attribute(solo_iso_renderer->property_visible(), _columns.solo_visible);
+	solo_isolate_state_column->add_attribute(solo_iso_renderer->property_visible(), _columns.solo_lock_iso_visible);
 	solo_isolate_state_column->set_sizing(TREE_VIEW_COLUMN_FIXED);
 	solo_isolate_state_column->set_alignment(ALIGN_CENTER);
 	solo_isolate_state_column->set_expand(false);
@@ -207,7 +210,7 @@ EditorRoutes::EditorRoutes (Editor* e)
 
 	TreeViewColumn* solo_safe_state_column = manage (new TreeViewColumn(_("SS"), *solo_safe_renderer));
 	solo_safe_state_column->add_attribute(solo_safe_renderer->property_state(), _columns.solo_safe_state);
-	solo_safe_state_column->add_attribute(solo_safe_renderer->property_visible(), _columns.solo_visible);
+	solo_safe_state_column->add_attribute(solo_safe_renderer->property_visible(), _columns.solo_lock_iso_visible);
 	solo_safe_state_column->set_sizing(TREE_VIEW_COLUMN_FIXED);
 	solo_safe_state_column->set_alignment(ALIGN_CENTER);
 	solo_safe_state_column->set_expand(false);
@@ -252,14 +255,13 @@ EditorRoutes::EditorRoutes (Editor* e)
 	}
 
 	_display.set_headers_visible (true);
-	_display.get_selection()->set_mode (SELECTION_SINGLE);
+	_display.get_selection()->set_mode (SELECTION_MULTIPLE);
 	_display.get_selection()->set_select_function (sigc::mem_fun (*this, &EditorRoutes::selection_filter));
 	_display.get_selection()->signal_changed().connect (sigc::mem_fun (*this, &EditorRoutes::selection_changed));
 	_display.set_reorderable (true);
 	_display.set_name (X_("EditGroupList"));
 	_display.set_rules_hint (true);
 	_display.set_size_request (100, -1);
-	_display.add_object_drag (_columns.stripable.index(), "routes");
 
 	CellRendererText* name_cell = dynamic_cast<CellRendererText*> (_display.get_column_cell_renderer (_name_column));
 
@@ -302,6 +304,7 @@ EditorRoutes::EditorRoutes (Editor* e)
 	active_col->set_sizing (TREE_VIEW_COLUMN_FIXED);
 	active_col->set_fixed_width (30);
 	active_col->set_alignment (ALIGN_CENTER);
+	active_col->add_attribute (active_cell->property_visible(), _columns.no_vca);
 
 	_model->signal_row_deleted().connect (sigc::mem_fun (*this, &EditorRoutes::row_deleted));
 	_model->signal_rows_reordered().connect (sigc::mem_fun (*this, &EditorRoutes::reordered));
@@ -318,7 +321,11 @@ EditorRoutes::EditorRoutes (Editor* e)
 	_display.set_enable_search (false);
 
 	Route::PluginSetup.connect_same_thread (*this, boost::bind (&EditorRoutes::plugin_setup, this, _1, _2, _3));
-	PresentationInfo::Change.connect (*this, MISSING_INVALIDATOR, boost::bind (&EditorRoutes::sync_treeview_from_presentation_info, this), gui_context());
+}
+
+EditorRoutes::~EditorRoutes ()
+{
+	delete _menu;
 }
 
 bool
@@ -359,7 +366,6 @@ EditorRoutes::enter_notify (GdkEventCrossing*)
 	/* arm counter so that ::selection_filter() will deny selecting anything for the
 	 * next two attempts to change selection status.
 	 */
-	selection_countdown = 2;
 	_scroller.grab_focus ();
 	Keyboard::magic_widget_grab_focus ();
 	return false;
@@ -368,8 +374,6 @@ EditorRoutes::enter_notify (GdkEventCrossing*)
 bool
 EditorRoutes::leave_notify (GdkEventCrossing*)
 {
-	selection_countdown = 0;
-
 	if (old_focus) {
 		old_focus->grab_focus ();
 		old_focus = 0;
@@ -424,13 +428,13 @@ EditorRoutes::on_tv_rec_enable_changed (std::string const & path_string)
 	Gtk::TreeModel::Row row = *_model->get_iter (Gtk::TreeModel::Path (path_string));
 
 	TimeAxisView* tv = row[_columns.tv];
-	RouteTimeAxisView *rtv = dynamic_cast<RouteTimeAxisView*> (tv);
+	StripableTimeAxisView* stv = dynamic_cast<StripableTimeAxisView*> (tv);
 
-	if (!rtv) {
+	if (!stv || !stv->stripable()) {
 		return;
 	}
 
-	boost::shared_ptr<AutomationControl> ac = rtv->route()->rec_enable_control();
+	boost::shared_ptr<AutomationControl> ac = stv->stripable()->rec_enable_control();
 
 	if (ac) {
 		ac->set_value (!ac->get_value(), Controllable::UseGroup);
@@ -442,13 +446,13 @@ EditorRoutes::on_tv_rec_safe_toggled (std::string const & path_string)
 {
 	Gtk::TreeModel::Row row = *_model->get_iter (Gtk::TreeModel::Path (path_string));
 	TimeAxisView* tv = row[_columns.tv];
-	RouteTimeAxisView *rtv = dynamic_cast<RouteTimeAxisView*> (tv);
+	StripableTimeAxisView* stv = dynamic_cast<StripableTimeAxisView*> (tv);
 
-	if (!rtv) {
+	if (!stv || !stv->stripable()) {
 		return;
 	}
 
-	boost::shared_ptr<AutomationControl> ac (rtv->route()->rec_safe_control());
+	boost::shared_ptr<AutomationControl> ac (stv->stripable()->rec_safe_control());
 
 	if (ac) {
 		ac->set_value (!ac->get_value(), Controllable::UseGroup);
@@ -462,13 +466,13 @@ EditorRoutes::on_tv_mute_enable_toggled (std::string const & path_string)
 	Gtk::TreeModel::Row row = *_model->get_iter (Gtk::TreeModel::Path (path_string));
 
 	TimeAxisView *tv = row[_columns.tv];
-	RouteTimeAxisView *rtv = dynamic_cast<RouteTimeAxisView*> (tv);
+	StripableTimeAxisView* stv = dynamic_cast<StripableTimeAxisView*> (tv);
 
-	if (!rtv) {
+	if (!stv || !stv->stripable()) {
 		return;
 	}
 
-	boost::shared_ptr<AutomationControl> ac (rtv->route()->mute_control());
+	boost::shared_ptr<AutomationControl> ac (stv->stripable()->mute_control());
 
 	if (ac) {
 		ac->set_value (!ac->get_value(), Controllable::UseGroup);
@@ -482,13 +486,13 @@ EditorRoutes::on_tv_solo_enable_toggled (std::string const & path_string)
 	Gtk::TreeModel::Row row = *_model->get_iter (Gtk::TreeModel::Path (path_string));
 
 	TimeAxisView *tv = row[_columns.tv];
-	RouteTimeAxisView* rtv = dynamic_cast<RouteTimeAxisView*> (tv);
+	StripableTimeAxisView* stv = dynamic_cast<StripableTimeAxisView*> (tv);
 
-	if (!rtv) {
+	if (!stv || !stv->stripable()) {
 		return;
 	}
 
-	boost::shared_ptr<AutomationControl> ac (rtv->route()->solo_control());
+	boost::shared_ptr<AutomationControl> ac (stv->stripable()->solo_control());
 
 	if (ac) {
 		ac->set_value (!ac->get_value(), Controllable::UseGroup);
@@ -502,13 +506,13 @@ EditorRoutes::on_tv_solo_isolate_toggled (std::string const & path_string)
 	Gtk::TreeModel::Row row = *_model->get_iter (Gtk::TreeModel::Path (path_string));
 
 	TimeAxisView *tv = row[_columns.tv];
-	RouteTimeAxisView* rtv = dynamic_cast<RouteTimeAxisView*> (tv);
+	StripableTimeAxisView* stv = dynamic_cast<StripableTimeAxisView*> (tv);
 
-	if (!rtv) {
+	if (!stv || !stv->stripable()) {
 		return;
 	}
 
-	boost::shared_ptr<AutomationControl> ac (rtv->route()->solo_isolate_control());
+	boost::shared_ptr<AutomationControl> ac (stv->stripable()->solo_isolate_control());
 
 	if (ac) {
 		ac->set_value (!ac->get_value(), Controllable::UseGroup);
@@ -522,13 +526,13 @@ EditorRoutes::on_tv_solo_safe_toggled (std::string const & path_string)
 	Gtk::TreeModel::Row row = *_model->get_iter (Gtk::TreeModel::Path (path_string));
 
 	TimeAxisView *tv = row[_columns.tv];
-	RouteTimeAxisView* rtv = dynamic_cast<RouteTimeAxisView*> (tv);
+	StripableTimeAxisView* stv = dynamic_cast<StripableTimeAxisView*> (tv);
 
-	if (!rtv) {
+	if (!stv || !stv->stripable()) {
 		return;
 	}
 
-	boost::shared_ptr<AutomationControl> ac (rtv->route()->solo_safe_control());
+	boost::shared_ptr<AutomationControl> ac (stv->stripable()->solo_safe_control());
 
 	if (ac) {
 		ac->set_value (!ac->get_value(), Controllable::UseGroup);
@@ -550,21 +554,11 @@ EditorRoutes::build_menu ()
 	items.push_back (MenuElem (_("Hide All"), sigc::mem_fun (*this, &EditorRoutes::hide_all_routes)));
 	items.push_back (MenuElem (_("Show All Audio Tracks"), sigc::mem_fun (*this, &EditorRoutes::show_all_audiotracks)));
 	items.push_back (MenuElem (_("Hide All Audio Tracks"), sigc::mem_fun (*this, &EditorRoutes::hide_all_audiotracks)));
-	items.push_back (MenuElem (_("Show All Audio Busses"), sigc::mem_fun (*this, &EditorRoutes::show_all_audiobus)));
-	items.push_back (MenuElem (_("Hide All Audio Busses"), sigc::mem_fun (*this, &EditorRoutes::hide_all_audiobus)));
 	items.push_back (MenuElem (_("Show All Midi Tracks"), sigc::mem_fun (*this, &EditorRoutes::show_all_miditracks)));
 	items.push_back (MenuElem (_("Hide All Midi Tracks"), sigc::mem_fun (*this, &EditorRoutes::hide_all_miditracks)));
+	items.push_back (MenuElem (_("Show All Busses"), sigc::mem_fun (*this, &EditorRoutes::show_all_audiobus)));
+	items.push_back (MenuElem (_("Hide All Busses"), sigc::mem_fun (*this, &EditorRoutes::hide_all_audiobus)));
 	items.push_back (MenuElem (_("Only Show Tracks with Regions Under Playhead"), sigc::mem_fun (*this, &EditorRoutes::show_tracks_with_regions_at_playhead)));
-}
-
-void
-EditorRoutes::show_menu ()
-{
-	if (_menu == 0) {
-		build_menu ();
-	}
-
-	_menu->popup (1, gtk_get_current_event_time());
 }
 
 void
@@ -736,7 +730,10 @@ EditorRoutes::time_axis_views_added (list<TimeAxisView*> tavs)
 		}
 	}
 
-	_display.set_model (Glib::RefPtr<ListStore>());
+	{
+		PBD::Unwinder<bool> uw (_ignore_selection_change, true);
+		_display.set_model (Glib::RefPtr<ListStore>());
+	}
 
 	for (list<TimeAxisView*>::iterator x = tavs.begin(); x != tavs.end(); ++x) {
 
@@ -755,6 +752,7 @@ EditorRoutes::time_axis_views_added (list<TimeAxisView*> tavs)
 			row[_columns.is_track] = false;
 			row[_columns.is_input_active] = false;
 			row[_columns.is_midi] = false;
+			row[_columns.no_vca] = false;
 
 		} else if (rtav) {
 
@@ -762,7 +760,7 @@ EditorRoutes::time_axis_views_added (list<TimeAxisView*> tavs)
 			midi_trk= boost::dynamic_pointer_cast<MidiTrack> (stripable);
 
 			row[_columns.is_track] = (boost::dynamic_pointer_cast<Track> (stripable) != 0);
-
+			row[_columns.no_vca] = true;
 
 			if (midi_trk) {
 				row[_columns.is_input_active] = midi_trk->input_active ();
@@ -784,7 +782,8 @@ EditorRoutes::time_axis_views_added (list<TimeAxisView*> tavs)
 		row[_columns.stripable] = stripable;
 		row[_columns.mute_state] = RouteUI::mute_active_state (_session, stripable);
 		row[_columns.solo_state] = RouteUI::solo_active_state (stripable);
-		row[_columns.solo_visible] = true;
+		row[_columns.solo_visible] = !stripable->is_master ();
+		row[_columns.solo_lock_iso_visible] = row[_columns.solo_visible] && row[_columns.no_vca];
 		row[_columns.solo_isolate_state] = RouteUI::solo_isolate_active_state (stripable);
 		row[_columns.solo_safe_state] = RouteUI::solo_safe_active_state (stripable);
 		row[_columns.name_editable] = true;
@@ -841,7 +840,10 @@ EditorRoutes::time_axis_views_added (list<TimeAxisView*> tavs)
 	update_input_active_display ();
 	update_active_display ();
 
-	_display.set_model (_model);
+	{
+		PBD::Unwinder<bool> uw (_ignore_selection_change, true);
+		_display.set_model (_model);
+	}
 
 	/* now update route order keys from the treeview/track display order */
 
@@ -879,6 +881,8 @@ EditorRoutes::route_removed (TimeAxisView *tv)
 	TreeModel::Children rows = _model->children();
 	TreeModel::Children::iterator ri;
 
+	PBD::Unwinder<bool> uw (_ignore_selection_change, true);
+
 	for (ri = rows.begin(); ri != rows.end(); ++ri) {
 		if ((*ri)[_columns.tv] == tv) {
 			PBD::Unwinder<bool> uw (_route_deletion_in_progress, true);
@@ -886,10 +890,6 @@ EditorRoutes::route_removed (TimeAxisView *tv)
 			break;
 		}
 	}
-
-	/* the deleted signal for the treeview/model will take
-	   care of any updates.
-	*/
 }
 
 void
@@ -925,7 +925,6 @@ EditorRoutes::route_property_changed (const PropertyChange& what_changed, boost:
 
 			if (what_changed.contains (ARDOUR::Properties::hidden)) {
 				(*i)[_columns.visible] = !stripable->presentation_info().hidden();
-				cerr << stripable->name() << " visibility changed, redisplay\n";
 				redisplay ();
 
 			}
@@ -956,8 +955,7 @@ EditorRoutes::update_visibility ()
 		(*i)[_columns.visible] = tv->marked_for_display ();
 	}
 
-	/* force route order keys catch up with visibility changes
-	 */
+	/* force route order keys catch up with visibility changes */
 
 	sync_presentation_info_from_treeview ();
 }
@@ -1010,41 +1008,41 @@ EditorRoutes::sync_presentation_info_from_treeview ()
 
 	DEBUG_TRACE (DEBUG::OrderKeys, "editor sync presentation info from treeview\n");
 
-	TreeModel::Children::iterator ri;
 	bool change = false;
 	PresentationInfo::order_t order = 0;
 
-	for (ri = rows.begin(); ri != rows.end(); ++ri) {
+	PresentationInfo::ChangeSuspender cs;
 
+	for (TreeModel::Children::iterator ri = rows.begin(); ri != rows.end(); ++ri) {
 		boost::shared_ptr<Stripable> stripable = (*ri)[_columns.stripable];
 		bool visible = (*ri)[_columns.visible];
 
-		/* Monitor and Auditioner do not get their presentation
-		 * info reset here.
-		 */
-
+#ifndef NDEBUG // these should not exist in the treeview
+		assert (stripable);
 		if (stripable->is_monitor() || stripable->is_auditioner()) {
+			assert (0);
 			continue;
 		}
+#endif
 
 		stripable->presentation_info().set_hidden (!visible);
 
 		if (order != stripable->presentation_info().order()) {
-			stripable->set_presentation_order (order, false);
+			stripable->set_presentation_order (order);
 			change = true;
 		}
-
 		++order;
 	}
 
+	change |= _session->ensure_stripable_sort_order ();
+
 	if (change) {
-		DEBUG_TRACE (DEBUG::OrderKeys, "... notify PI change from editor GUI\n");
-		_session->notify_presentation_info_change ();
+		_session->set_dirty();
 	}
 }
 
 void
-EditorRoutes::sync_treeview_from_presentation_info ()
+EditorRoutes::sync_treeview_from_presentation_info (PropertyChange const & what_changed)
 {
 	/* Some route order key(s) have been changed, make sure that
 	   we update out tree/list model and GUI to reflect the change.
@@ -1056,42 +1054,78 @@ EditorRoutes::sync_treeview_from_presentation_info ()
 
 	DEBUG_TRACE (DEBUG::OrderKeys, "editor sync model from presentation info.\n");
 
-	vector<int> neworder;
+	PropertyChange hidden_or_order;
+	hidden_or_order.add (Properties::hidden);
+	hidden_or_order.add (Properties::order);
+
 	TreeModel::Children rows = _model->children();
-	uint32_t old_order = 0;
+
 	bool changed = false;
 
-	if (rows.empty()) {
-		return;
-	}
+	if (what_changed.contains (hidden_or_order)) {
+		vector<int> neworder;
+		uint32_t old_order = 0;
 
-	OrderingKeys sorted;
+		if (rows.empty()) {
+			return;
+		}
 
-	for (TreeModel::Children::iterator ri = rows.begin(); ri != rows.end(); ++ri, ++old_order) {
-		boost::shared_ptr<Stripable> stripable = (*ri)[_columns.stripable];
-		/* use global order */
-		sorted.push_back (OrderKeys (old_order, stripable->presentation_info().order()));
-	}
+		TreeOrderKeys sorted;
+		for (TreeModel::Children::iterator ri = rows.begin(); ri != rows.end(); ++ri, ++old_order) {
+			boost::shared_ptr<Stripable> stripable = (*ri)[_columns.stripable];
+			/* use global order */
+			sorted.push_back (TreeOrderKey (old_order, stripable));
+		}
 
-	SortByNewDisplayOrder cmp;
+		TreeOrderKeySorter cmp;
 
-	sort (sorted.begin(), sorted.end(), cmp);
-	neworder.assign (sorted.size(), 0);
+		sort (sorted.begin(), sorted.end(), cmp);
+		neworder.assign (sorted.size(), 0);
 
-	uint32_t n = 0;
+		uint32_t n = 0;
 
-	for (OrderingKeys::iterator sr = sorted.begin(); sr != sorted.end(); ++sr, ++n) {
+		for (TreeOrderKeys::iterator sr = sorted.begin(); sr != sorted.end(); ++sr, ++n) {
 
-		neworder[n] = sr->old_display_order;
+			neworder[n] = sr->old_display_order;
 
-		if (sr->old_display_order != n) {
-			changed = true;
+			if (sr->old_display_order != n) {
+				changed = true;
+			}
+		}
+
+		if (changed) {
+			Unwinder<bool> uw (_ignore_reorder, true);
+			/* prevent traverse_cells: assertion 'row_path != NULL'
+			 * in case of DnD re-order: row-removed + row-inserted.
+			 *
+			 * The rows (stripables) are not actually removed from the model,
+			 * but only from the display in the DnDTreeView.
+			 * ->reorder() will fail to find the row_path.
+			 * (re-order drag -> remove row -> sync PI from TV -> notify -> sync TV from PI -> crash)
+			 */
+			Unwinder<bool> uw2 (_ignore_selection_change, true);
+
+			_display.unset_model();
+			_model->reorder (neworder);
+			_display.set_model (_model);
 		}
 	}
 
-	if (changed) {
-		Unwinder<bool> uw (_ignore_reorder, true);
-		_model->reorder (neworder);
+	if (changed || what_changed.contains (Properties::selected)) {
+		/* by the time this is invoked, the GUI Selection model has
+		 * already updated itself.
+		 */
+		PBD::Unwinder<bool> uw (_ignore_selection_change, true);
+
+		/* set the treeview model selection state */
+		for (TreeModel::Children::iterator ri = rows.begin(); ri != rows.end(); ++ri) {
+			boost::shared_ptr<Stripable> stripable = (*ri)[_columns.stripable];
+			if (stripable && stripable->is_selected()) {
+				_display.get_selection()->select (*ri);
+			} else {
+				_display.get_selection()->unselect (*ri);
+			}
+		}
 	}
 
 	redisplay ();
@@ -1363,7 +1397,10 @@ bool
 EditorRoutes::button_press (GdkEventButton* ev)
 {
 	if (Keyboard::is_context_menu_event (ev)) {
-		show_menu ();
+		if (_menu == 0) {
+			build_menu ();
+		}
+		_menu->popup (ev->button, ev->time);
 		return true;
 	}
 
@@ -1397,6 +1434,10 @@ EditorRoutes::button_press (GdkEventButton* ev)
 void
 EditorRoutes::selection_changed ()
 {
+	if (_ignore_selection_change) {
+		return;
+	}
+
 	_editor->begin_reversible_selection_op (X_("Select Track from Route List"));
 
 	if (_display.get_selection()->count_selected_rows() > 0) {
@@ -1404,8 +1445,6 @@ EditorRoutes::selection_changed ()
 		TreeIter iter;
 		TreeView::Selection::ListHandle_Path rows = _display.get_selection()->get_selected_rows ();
 		TrackViewList selected;
-
-		_editor->get_selection().clear_regions ();
 
 		for (TreeView::Selection::ListHandle_Path::iterator i = rows.begin(); i != rows.end(); ++i) {
 
@@ -1428,209 +1467,149 @@ EditorRoutes::selection_changed ()
 }
 
 bool
-EditorRoutes::selection_filter (Glib::RefPtr<TreeModel> const &, TreeModel::Path const&, bool /*selected*/)
+EditorRoutes::selection_filter (Glib::RefPtr<TreeModel> const& model, TreeModel::Path const& path, bool /*selected*/)
 {
-	if (selection_countdown) {
-		if (--selection_countdown == 0) {
-			return true;
-		} else {
-			/* no selection yet ... */
-			return false;
-		}
+	TreeModel::iterator iter = model->get_iter (path);
+	if (iter) {
+		boost::shared_ptr<Stripable> stripable = (*iter)[_columns.stripable];
 	}
+
 	return true;
 }
-
-struct PresentationInfoRouteSorter
-{
-	bool operator() (boost::shared_ptr<Route> a, boost::shared_ptr<Route> b) {
-		if (a->is_master()) {
-			/* master before everything else */
-			return true;
-		} else if (b->is_master()) {
-			/* everything else before master */
-			return false;
-		}
-		return a->presentation_info().order () < b->presentation_info().order ();
-	}
-};
-
-struct PresentationInfoVCASorter
-{
-	bool operator() (boost::shared_ptr<VCA> a, boost::shared_ptr<VCA> b) {
-		return a->presentation_info().order () < b->presentation_info().order ();
-	}
-};
 
 void
 EditorRoutes::initial_display ()
 {
+
+	if (!_session) {
+		clear ();
+		return;
+	}
+
 	DisplaySuspender ds;
 	_model->clear ();
 
-	if (!_session) {
-		return;
-	}
-
 	StripableList s;
 
-	RouteList r (*_session->get_routes());
-	for (RouteList::iterator ri = r.begin(); ri != r.end(); ++ri) {
-		s.push_back (*ri);
-	}
-
-	VCAList v (_session->vca_manager().vcas());
-	for (VCAList::iterator vi = v.begin(); vi != v.end(); ++vi) {
-		s.push_back (*vi);
-	}
-
+	_session->get_stripables (s);
 	_editor->add_stripables (s);
-}
 
-void
-EditorRoutes::display_drag_data_received (const RefPtr<Gdk::DragContext>& context,
-					     int x, int y,
-					     const SelectionData& data,
-					     guint info, guint time)
-{
-	if (data.get_target() == "GTK_TREE_MODEL_ROW") {
-		_display.on_drag_data_received (context, x, y, data, info, time);
-		return;
-	}
-
-	context->drag_finish (true, false, time);
+	sync_treeview_from_presentation_info (Properties::order);
 }
 
 struct ViewStripable {
 	TimeAxisView* tav;
 	boost::shared_ptr<Stripable> stripable;
-	uint32_t old_order;
 
-	ViewStripable (TimeAxisView* t, boost::shared_ptr<Stripable> s, uint32_t n)
-		: tav (t), stripable (s), old_order (n) {}
+	ViewStripable (TimeAxisView* t, boost::shared_ptr<Stripable> s)
+		: tav (t), stripable (s) {}
 };
 
 void
 EditorRoutes::move_selected_tracks (bool up)
 {
-	if (_editor->selection->tracks.empty()) {
+	TimeAxisView* scroll_to = 0;
+	StripableList sl;
+	_session->get_stripables (sl);
+
+	if (sl.size() < 2) {
+		/* nope */
 		return;
 	}
 
+	sl.sort (Stripable::Sorter());
+
 	std::list<ViewStripable> view_stripables;
-	std::vector<int> neworder;
-	TreeModel::Children rows = _model->children();
-	TreeModel::Children::iterator ri;
-	TreeModel::Children::size_type n;
 
-	for (n = 0, ri = rows.begin(); ri != rows.end(); ++ri, ++n) {
-		TimeAxisView* tv = (*ri)[_columns.tv];
-		boost::shared_ptr<Stripable> stripable = (*ri)[_columns.stripable];
-		view_stripables.push_back (ViewStripable (tv, stripable, n));
+	/* build a list that includes time axis view information */
+
+	for (StripableList::const_iterator sli = sl.begin(); sli != sl.end(); ++sli) {
+		TimeAxisView* tv = _editor->time_axis_view_from_stripable (*sli);
+		view_stripables.push_back (ViewStripable (tv, *sli));
 	}
 
-	list<ViewStripable>::iterator trailing;
-	list<ViewStripable>::iterator leading;
+	/* for each selected stripable, move it above or below the adjacent
+	 * stripable that has a time-axis view representation here. If there's
+	 * no such representation, then
+	 */
 
-	if (up) {
+	list<ViewStripable>::iterator unselected_neighbour;
+	list<ViewStripable>::iterator vsi;
 
-		trailing = view_stripables.begin();
-		leading = view_stripables.begin();
+	{
+		PresentationInfo::ChangeSuspender cs;
 
-		++leading;
+		if (up) {
+			unselected_neighbour = view_stripables.end ();
+			vsi = view_stripables.begin();
 
-		while (leading != view_stripables.end()) {
-			if (_editor->selection->selected (leading->tav)) {
-				view_stripables.insert (trailing, ViewStripable (*leading));
-				leading = view_stripables.erase (leading);
-			} else {
-				++leading;
-				++trailing;
+			while (vsi != view_stripables.end()) {
+
+				if (vsi->stripable->is_selected()) {
+
+					if (unselected_neighbour != view_stripables.end()) {
+
+						PresentationInfo::order_t unselected_neighbour_order = unselected_neighbour->stripable->presentation_info().order();
+						PresentationInfo::order_t my_order = vsi->stripable->presentation_info().order();
+
+						unselected_neighbour->stripable->set_presentation_order (my_order);
+						vsi->stripable->set_presentation_order (unselected_neighbour_order);
+
+						if (!scroll_to) {
+							scroll_to = vsi->tav;
+						}
+					}
+
+				} else {
+
+					if (vsi->tav) {
+						unselected_neighbour = vsi;
+					}
+
+				}
+
+				++vsi;
 			}
+
+		} else {
+
+			unselected_neighbour = view_stripables.end();
+			vsi = unselected_neighbour;
+
+			do {
+
+				--vsi;
+
+				if (vsi->stripable->is_selected()) {
+
+					if (unselected_neighbour != view_stripables.end()) {
+
+						PresentationInfo::order_t unselected_neighbour_order = unselected_neighbour->stripable->presentation_info().order();
+						PresentationInfo::order_t my_order = vsi->stripable->presentation_info().order();
+
+						unselected_neighbour->stripable->set_presentation_order (my_order);
+						vsi->stripable->set_presentation_order (unselected_neighbour_order);
+
+						if (!scroll_to) {
+							scroll_to = vsi->tav;
+						}
+					}
+
+				} else {
+
+					if (vsi->tav) {
+						unselected_neighbour = vsi;
+					}
+
+				}
+
+			} while (vsi != view_stripables.begin());
 		}
-
-	} else {
-
-		/* if we could use reverse_iterator in list::insert, this code
-		   would be a beautiful reflection of the code above. but we can't
-		   and so it looks like a bit of a mess.
-		*/
-
-		trailing = view_stripables.end();
-		leading = view_stripables.end();
-
-		--leading; if (leading == view_stripables.begin()) { return; }
-		--leading;
-		--trailing;
-
-		while (1) {
-
-			if (_editor->selection->selected (leading->tav)) {
-				list<ViewStripable>::iterator tmp;
-
-				/* need to insert *after* trailing, not *before* it,
-				   which is what insert (iter, val) normally does.
-				*/
-
-				tmp = trailing;
-				tmp++;
-
-				view_stripables.insert (tmp, ViewStripable (*leading));
-
-				/* can't use iter = cont.erase (iter); form here, because
-				   we need iter to move backwards.
-				*/
-
-				tmp = leading;
-				--tmp;
-
-				bool done = false;
-
-				if (leading == view_stripables.begin()) {
-					/* the one we've just inserted somewhere else
-					   was the first in the list. erase this copy,
-					   and then break, because we're done.
-					*/
-					done = true;
-				}
-
-				view_stripables.erase (leading);
-
-				if (done) {
-					break;
-				}
-
-				leading = tmp;
-
-			} else {
-				if (leading == view_stripables.begin()) {
-					break;
-				}
-				--leading;
-				--trailing;
-			}
-		};
 	}
 
-	for (leading = view_stripables.begin(); leading != view_stripables.end(); ++leading) {
-		neworder.push_back (leading->old_order);
-#ifndef NDEBUG
-		if (leading->old_order != neworder.size() - 1) {
-			DEBUG_TRACE (DEBUG::OrderKeys, string_compose ("move %1 to %2\n", leading->old_order, neworder.size() - 1));
-		}
-#endif
-
+	if (scroll_to) {
+		_editor->ensure_time_axis_view_is_visible (*scroll_to, false);
 	}
-#ifndef NDEBUG
-	DEBUG_TRACE (DEBUG::OrderKeys, "New order after moving tracks:\n");
-	for (vector<int>::iterator i = neworder.begin(); i != neworder.end(); ++i) {
-		DEBUG_TRACE (DEBUG::OrderKeys, string_compose ("\t%1\n", *i));
-	}
-	DEBUG_TRACE (DEBUG::OrderKeys, "-------\n");
-#endif
-
-
-	_model->reorder (neworder);
 }
 
 void
@@ -1752,6 +1731,7 @@ EditorRoutes::views () const
 void
 EditorRoutes::clear ()
 {
+	PBD::Unwinder<bool> uw (_ignore_selection_change, true);
 	_display.set_model (Glib::RefPtr<Gtk::TreeStore> (0));
 	_model->clear ();
 	_display.set_model (_model);
@@ -1798,11 +1778,11 @@ EditorRoutes::solo_changed_so_update_mute ()
 void
 EditorRoutes::show_tracks_with_regions_at_playhead ()
 {
-	boost::shared_ptr<RouteList> const r = _session->get_routes_with_regions_at (_session->transport_frame ());
+	boost::shared_ptr<RouteList> const r = _session->get_routes_with_regions_at (_session->transport_sample ());
 
 	set<TimeAxisView*> show;
 	for (RouteList::const_iterator i = r->begin(); i != r->end(); ++i) {
-		TimeAxisView* tav = _editor->axis_view_from_stripable (*i);
+		TimeAxisView* tav = _editor->time_axis_view_from_stripable (*i);
 		if (tav) {
 			show.insert (tav);
 		}
@@ -1829,5 +1809,6 @@ int
 EditorRoutes::plugin_setup (boost::shared_ptr<Route> r, boost::shared_ptr<PluginInsert> pi, ARDOUR::Route::PluginSetupOptions flags)
 {
 	PluginSetupDialog psd (r, pi, flags);
-	return psd.run ();
+	int rv = psd.run ();
+	return rv + (psd.fan_out() ? 4 : 0);
 }

@@ -31,9 +31,8 @@
 #include <gtkmm2ext/rgb_macros.h>
 
 #include "canvas/canvas.h"
-#include "canvas/colors.h"
+#include "gtkmm2ext/colors.h"
 #include "canvas/meter.h"
-#include "canvas/utils.h"
 
 using namespace Glib;
 using namespace std;
@@ -172,7 +171,7 @@ void
 Meter::compute_bounding_box () const
 {
 	if (!_canvas) {
-		_bounding_box = boost::optional<Rect> ();
+		_bounding_box = Rect ();
 		_bounding_box_dirty = false;
 		return;
 	}
@@ -703,7 +702,7 @@ Meter::set (float lvl, float peak)
 	if (pixwidth <= 0 || pixheight <=0) return;
 
 	if (peak == -1) {
-		if (lvl >= current_peak) {
+		if (lvl >= current_peak && lvl > 0) {
 			current_peak = lvl;
 			hold_state = hold_cnt;
 		}

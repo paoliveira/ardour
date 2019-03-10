@@ -31,6 +31,9 @@ SessionMetadata *SessionMetadata::_metadata = NULL;  //singleton instance
 SessionMetadata::SessionMetadata ()
 {
 	/*** General ***/
+	map.insert (Property ("description", ""));
+
+	/*** Track/Song Data ***/
 	map.insert (Property ("comment", ""));
 	map.insert (Property ("copyright", ""));
 	map.insert (Property ("isrc", ""));
@@ -222,6 +225,12 @@ SessionMetadata::get_user_state ()
 }
 
 /*** Accessing ***/
+string
+SessionMetadata::description () const
+{
+	return get_value("description");
+}
+
 string
 SessionMetadata::comment () const
 {
@@ -431,6 +440,12 @@ SessionMetadata::country () const
 
 /*** Editing ***/
 void
+SessionMetadata::set_description (const string & v)
+{
+	set_value ("description", v);
+}
+
+void
 SessionMetadata::set_comment (const string & v)
 {
 	set_value ("comment", v);
@@ -631,4 +646,30 @@ void
 SessionMetadata::set_country (const string & v)
 {
 	set_value ("user_country", v);
+}
+
+void
+SessionMetadata::av_export_tag (MetaDataMap& meta) const
+{
+	if (year() > 0) {
+		std::ostringstream osstream; osstream << year();
+		meta["year"] = osstream.str();
+	}
+	if (track_number() > 0) {
+		std::ostringstream osstream; osstream << track_number();
+		meta["track"] = osstream.str();
+	}
+	if (disc_number() > 0) {
+		std::ostringstream osstream; osstream << disc_number();
+		meta["disc"] = osstream.str();
+	}
+	if (!title().empty())        { meta["title"] = title(); }
+	if (!artist().empty())       { meta["author"] = artist(); }
+	if (!album_artist().empty()) { meta["album_artist"] = album_artist(); }
+	if (!album().empty())        { meta["album"] = album(); }
+	if (!genre().empty())        { meta["genre"] = genre(); }
+	if (!composer().empty())     { meta["composer"] = composer(); }
+	if (!comment().empty())      { meta["comment"] = comment(); }
+	if (!copyright().empty())    { meta["copyright"] = copyright(); }
+	if (!subtitle().empty())     { meta["description"] = subtitle(); }
 }

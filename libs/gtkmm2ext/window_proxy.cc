@@ -20,9 +20,7 @@
 #include <gtkmm/action.h>
 #include <gtkmm/window.h>
 
-#include "pbd/convert.h"
 #include "pbd/xml++.h"
-#include "pbd/stacktrace.h"
 
 #include "gtkmm2ext/window_proxy.h"
 #include "gtkmm2ext/visibility_tracker.h"
@@ -70,6 +68,7 @@ WindowProxy::WindowProxy (const std::string& name, const std::string& menu_name,
 	, _width (-1)
 	, _height (-1)
 	, vistracker (0)
+	, _state_mask (StateMask (Position|Size))
 {
 	set_state (node, 0);
 }
@@ -89,8 +88,9 @@ WindowProxy::set_state (const XMLNode& node, int /* version */)
 
 	while (i != children.end()) {
 		child = *i;
-		XMLProperty const * prop = child->property (X_("name"));
-		if (child->name() == X_("Window") && prop && prop->value() == _name) {
+		std::string name;
+		if (child->name () == X_("Window") && child->get_property (X_("name"), name) &&
+		    name == _name) {
 			break;
 		}
 
@@ -99,25 +99,13 @@ WindowProxy::set_state (const XMLNode& node, int /* version */)
 
 	if (i != children.end()) {
 
-		XMLProperty const * prop;
 		child = *i;
 
-		if ((prop = child->property (X_("visible"))) != 0) {
-			_visible = PBD::string_is_affirmative (prop->value ());
-		}
-
-		if ((prop = child->property (X_("x-off"))) != 0) {
-			_x_off = atoi (prop->value());
-		}
-		if ((prop = child->property (X_("y-off"))) != 0) {
-			_y_off = atoi (prop->value());
-		}
-		if ((prop = child->property (X_("x-size"))) != 0) {
-			_width = atoi (prop->value());
-		}
-		if ((prop = child->property (X_("y-size"))) != 0) {
-			_height = atoi (prop->value());
-		}
+		child->get_property (X_("visible"), _visible);
+		child->get_property (X_("x-off"), _x_off);
+		child->get_property (X_("y-off"), _y_off);
+		child->get_property (X_("x-size"), _width);
+		child->get_property (X_("y-size"), _height);
 	}
 
 	if (_window) {
@@ -157,7 +145,11 @@ WindowProxy::toggle()
 			save_pos_and_size();
 		}
 
-		vistracker->cycle_visibility ();
+		if (vistracker) {
+			vistracker->cycle_visibility ();
+		} else {
+			_window->present ();
+		}
 
 		if (_window->is_mapped()) {
 			if (_width != -1 && _height != -1) {
@@ -180,9 +172,8 @@ XMLNode&
 WindowProxy::get_state ()
 {
 	XMLNode* node = new XMLNode (xml_node_name());
-	char buf[32];
 
-	node->add_property (X_("name"), _name);
+	node->set_property (X_("name"), _name);
 
 	if (_window && vistracker) {
 
@@ -211,15 +202,11 @@ WindowProxy::get_state ()
 		h = -1;
 	}
 
-	node->add_property (X_("visible"), _visible? X_("yes") : X_("no"));
-	snprintf (buf, sizeof (buf), "%d", x);
-	node->add_property (X_("x-off"), buf);
-	snprintf (buf, sizeof (buf), "%d", y);
-	node->add_property (X_("y-off"), buf);
-	snprintf (buf, sizeof (buf), "%d", w);
-	node->add_property (X_("x-size"), buf);
-	snprintf (buf, sizeof (buf), "%d", h);
-	node->add_property (X_("y-size"), buf);
+	node->set_property (X_("visible"), _visible);
+	node->set_property (X_("x-off"), x);
+	node->set_property (X_("y-off"), y);
+	node->set_property (X_("x-size"), w);
+	node->set_property (X_("y-size"), h);
 
 	return *node;
 }
@@ -228,11 +215,11 @@ void
 WindowProxy::drop_window ()
 {
 	if (_window) {
+		_window->hide ();
 		delete_connection.disconnect ();
 		configure_connection.disconnect ();
 		map_connection.disconnect ();
 		unmap_connection.disconnect ();
-		_window->hide ();
 		delete _window;
 		_window = 0;
 		delete vistracker;
@@ -253,7 +240,7 @@ WindowProxy::setup ()
 {
 	assert (_window);
 
-	vistracker = new Gtkmm2ext::VisibilityTracker (*_window);
+	assert (_window);
 
 	delete_connection = _window->signal_delete_event().connect (sigc::mem_fun (*this, &WindowProxy::delete_event_handler));
 	configure_connection = _window->signal_configure_event().connect (sigc::mem_fun (*this, &WindowProxy::configure_handler), false);
@@ -266,6 +253,7 @@ WindowProxy::setup ()
 void
 WindowProxy::map_handler ()
 {
+	vistracker = new Gtkmm2ext::VisibilityTracker (*_window);
 	/* emit our own signal */
 	signal_map ();
 }
@@ -286,6 +274,9 @@ WindowProxy::configure_handler (GdkEventConfigure* ev)
 
 	   the difference is generally down to window manager framing.
 	*/
+	if (!visible() || !_window->is_mapped()) {
+		return false;
+	}
 	save_pos_and_size ();
 	return false;
 }

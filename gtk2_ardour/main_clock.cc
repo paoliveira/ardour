@@ -17,16 +17,18 @@
 
 */
 
-#include "main_clock.h"
-#include "public_editor.h"
+#include "pbd/unwind.h"
+#include "ardour/tempo.h"
 
+#include "actions.h"
+#include "main_clock.h"
 #include "ui_config.h"
+#include "public_editor.h"
 
 #include "pbd/i18n.h"
 
-#include "ardour/tempo.h"
-
 using namespace Gtk;
+using namespace ARDOUR;
 
 MainClock::MainClock (
 	const std::string& clock_name,
@@ -34,9 +36,17 @@ MainClock::MainClock (
 	bool primary
 	)
 	: AudioClock (clock_name, false, widget_name, true, true, false, true)
-	  , _primary (primary)
+	, _primary (primary)
+	, _suspend_delta_mode_signal (false)
 {
+}
 
+void
+MainClock::set_session (ARDOUR::Session *s)
+{
+	AudioClock::set_session (s);
+	_left_btn.set_related_action (ActionManager::get_action (X_("Editor"), X_("edit-current-tempo")));
+	_right_btn.set_related_action (ActionManager::get_action (X_("Editor"), X_("edit-current-meter")));
 }
 
 void
@@ -48,45 +58,88 @@ MainClock::build_ops_menu ()
 
 	MenuList& ops_items = ops_menu->items();
 	ops_items.push_back (SeparatorElem ());
-	ops_items.push_back (CheckMenuElem (_("Display delta to edit cursor"), sigc::mem_fun (*this, &MainClock::display_delta_to_edit_cursor)));
-	Gtk::CheckMenuItem* c = dynamic_cast<Gtk::CheckMenuItem *> (&ops_items.back());
+	RadioMenuItem::Group group;
+	PBD::Unwinder<bool> uw (_suspend_delta_mode_signal, true);
+	ClockDeltaMode mode;
 	if (_primary) {
-		if (UIConfiguration::instance().get_primary_clock_delta_edit_cursor ()) {
-			UIConfiguration::instance().set_primary_clock_delta_edit_cursor (false);
-			c->set_active (true);
-		}
+		mode = UIConfiguration::instance().get_primary_clock_delta_mode ();
 	} else {
-		if (UIConfiguration::instance().get_secondary_clock_delta_edit_cursor ()) {
-			UIConfiguration::instance().set_secondary_clock_delta_edit_cursor (false);
-			c->set_active (true);
-		}
+		mode = UIConfiguration::instance().get_secondary_clock_delta_mode ();
+	}
+
+	ops_items.push_back (RadioMenuElem (group, _("Display absolute time"), sigc::bind (sigc::mem_fun (*this, &MainClock::set_display_delta_mode), NoDelta)));
+	if (mode == NoDelta) {
+		RadioMenuItem* i = dynamic_cast<RadioMenuItem *> (&ops_items.back ());
+		i->set_active (true);
+	}
+	ops_items.push_back (RadioMenuElem (group, _("Display delta to edit cursor"), sigc::bind (sigc::mem_fun (*this, &MainClock::set_display_delta_mode), DeltaEditPoint)));
+	if (mode == DeltaEditPoint) {
+		RadioMenuItem* i = dynamic_cast<RadioMenuItem *> (&ops_items.back ());
+		i->set_active (true);
+	}
+	ops_items.push_back (RadioMenuElem (group, _("Display delta to origin marker"), sigc::bind (sigc::mem_fun (*this, &MainClock::set_display_delta_mode), DeltaOriginMarker)));
+	if (mode == DeltaOriginMarker) {
+		RadioMenuItem* i = dynamic_cast<RadioMenuItem *> (&ops_items.back ());
+		i->set_active (true);
 	}
 
 	ops_items.push_back (SeparatorElem());
+
 	ops_items.push_back (MenuElem (_("Edit Tempo"), sigc::mem_fun(*this, &MainClock::edit_current_tempo)));
 	ops_items.push_back (MenuElem (_("Edit Meter"), sigc::mem_fun(*this, &MainClock::edit_current_meter)));
 	ops_items.push_back (MenuElem (_("Insert Tempo Change"), sigc::mem_fun(*this, &MainClock::insert_new_tempo)));
 	ops_items.push_back (MenuElem (_("Insert Meter Change"), sigc::mem_fun(*this, &MainClock::insert_new_meter)));
 }
 
-framepos_t
+samplepos_t
 MainClock::absolute_time () const
 {
 	if (get_is_duration ()) {
-		// delta to edit cursor
-		return current_time () + PublicEditor::instance().get_preferred_edit_position (Editing::EDIT_IGNORE_PHEAD);
+		return current_time () + offset ();
 	} else {
 		return current_time ();
 	}
 }
 
 void
-MainClock::display_delta_to_edit_cursor ()
+MainClock::set (samplepos_t when, bool force, ARDOUR::samplecnt_t /*offset*/)
 {
+	ClockDeltaMode mode;
 	if (_primary) {
-		UIConfiguration::instance().set_primary_clock_delta_edit_cursor (!UIConfiguration::instance().get_primary_clock_delta_edit_cursor ());
+		mode = UIConfiguration::instance().get_primary_clock_delta_mode ();
 	} else {
-		UIConfiguration::instance().set_secondary_clock_delta_edit_cursor (!UIConfiguration::instance().get_secondary_clock_delta_edit_cursor ());
+		mode = UIConfiguration::instance().get_secondary_clock_delta_mode ();
+	}
+	if (!PublicEditor::instance().session()) {
+		mode = NoDelta;
+	}
+
+	switch (mode) {
+		case NoDelta:
+			AudioClock::set (when, force, 0);
+			break;
+		case DeltaEditPoint:
+			AudioClock::set (when, force, PublicEditor::instance().get_preferred_edit_position (Editing::EDIT_IGNORE_PHEAD));
+			break;
+		case DeltaOriginMarker:
+			{
+				Location* loc = PublicEditor::instance().session()->locations()->clock_origin_location ();
+				AudioClock::set (when, force, loc ? loc->start() : 0);
+			}
+			break;
+	}
+}
+
+void
+MainClock::set_display_delta_mode (ClockDeltaMode m)
+{
+	if (_suspend_delta_mode_signal) {
+		return;
+	}
+	if (_primary) {
+		UIConfiguration::instance().set_primary_clock_delta_mode (m);
+	} else {
+		UIConfiguration::instance().set_secondary_clock_delta_mode (m);
 	}
 }
 
@@ -94,7 +147,7 @@ void
 MainClock::edit_current_tempo ()
 {
 	if (!PublicEditor::instance().session()) return;
-	ARDOUR::TempoSection* ts = const_cast<ARDOUR::TempoSection*>(&PublicEditor::instance().session()->tempo_map().tempo_section_at_frame (absolute_time()));
+	ARDOUR::TempoSection* ts = const_cast<ARDOUR::TempoSection*>(&PublicEditor::instance().session()->tempo_map().tempo_section_at_sample (absolute_time()));
 	PublicEditor::instance().edit_tempo_section (ts);
 }
 
@@ -102,7 +155,7 @@ void
 MainClock::edit_current_meter ()
 {
 	if (!PublicEditor::instance().session()) return;
-	ARDOUR::MeterSection* ms = const_cast<ARDOUR::MeterSection*>(&PublicEditor::instance().session()->tempo_map().meter_section_at_frame (absolute_time()));
+	ARDOUR::MeterSection* ms = const_cast<ARDOUR::MeterSection*>(&PublicEditor::instance().session()->tempo_map().meter_section_at_sample (absolute_time()));
 	PublicEditor::instance().edit_meter_section (ms);
 }
 
@@ -117,25 +170,3 @@ MainClock::insert_new_meter ()
 {
 	PublicEditor::instance().mouse_add_new_meter_event (absolute_time ());
 }
-
-bool
-MainClock::on_button_press_event (GdkEventButton *ev)
-{
-	if (ev->button == 1) {
-		if (mode() == BBT) {
-			if (is_lower_layout_click(ev->y)) {
-				if (is_right_layout_click(ev->x)) {
-					// meter on the right
-					edit_current_meter();
-				} else {
-					// tempo on the left
-					edit_current_tempo();
-				}
-				return true;
-			}
-		}
-	}
-
-	return AudioClock::on_button_press_event (ev);
-}
-

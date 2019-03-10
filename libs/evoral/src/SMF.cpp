@@ -97,10 +97,13 @@ SMF::test(const std::string& path)
 	smf_t* test_smf = smf_load(f);
 	fclose(f);
 
-	const bool success = (test_smf != NULL);
-	smf_delete(test_smf);
-
-	return success;
+	if (!test_smf) {
+		return false;
+	}
+	if (test_smf) {
+		smf_delete(test_smf);
+	}
+	return true;
 }
 
 /** Attempt to open the SMF file for reading and/or writing.
@@ -326,6 +329,7 @@ SMF::read_event(uint32_t* delta_t, uint32_t* size, uint8_t** buf, event_id_t* no
 		if (*size < (unsigned)event_size) {
 			*buf = (uint8_t*)realloc(*buf, event_size);
 		}
+		assert (*buf);
 		memcpy(*buf, event->midi_buffer, size_t(event_size));
 		*size = event_size;
 		if (((*buf)[0] & 0xF0) == 0x90 && (*buf)[2] == 0) {
@@ -364,6 +368,26 @@ SMF::append_event_delta(uint32_t delta_t, uint32_t size, const uint8_t* buf, eve
 	   for (size_t i = 0; i < size; ++i) {
 	   printf("%X ", buf[i]);
 	   } printf("\n"); */
+
+	switch (buf[0]) {
+	case 0xf1:
+	case 0xf2:
+	case 0xf3:
+	case 0xf4:
+	case 0xf5:
+	case 0xf6:
+	case 0xf8:
+	case 0xf9:
+	case 0xfa:
+	case 0xfb:
+	case 0xfc:
+	case 0xfd:
+	case 0xfe:
+	case 0xff:
+		/* System Real Time or System Common event: not valid in SMF
+		 */
+		return;
+	}
 
 	if (!midi_event_is_valid(buf, size)) {
 		cerr << "WARNING: SMF ignoring illegal MIDI event" << endl;
@@ -470,6 +494,107 @@ SMF::round_to_file_precision (double val) const
 	double div = ppqn();
 
 	return round (val * div) / div;
+}
+
+void
+SMF::track_names(vector<string>& names) const
+{
+	if (!_smf) {
+		return;
+	}
+
+	names.clear ();
+
+	Glib::Threads::Mutex::Lock lm (_smf_lock);
+
+	for (uint16_t n = 0; n < _smf->number_of_tracks; ++n) {
+		smf_track_t* trk = smf_get_track_by_number (_smf, n+1);
+		if (!trk) {
+			names.push_back (string());
+		} else {
+			if (trk->name) {
+				names.push_back (trk->name);
+			} else {
+				names.push_back (string());
+			}
+		}
+	}
+}
+
+void
+SMF::instrument_names(vector<string>& names) const
+{
+	if (!_smf) {
+		return;
+	}
+
+	names.clear ();
+
+	Glib::Threads::Mutex::Lock lm (_smf_lock);
+
+	for (uint16_t n = 0; n < _smf->number_of_tracks; ++n) {
+		smf_track_t* trk = smf_get_track_by_number (_smf, n+1);
+		if (!trk) {
+			names.push_back (string());
+		} else {
+			if (trk->instrument) {
+				names.push_back (trk->instrument);
+			} else {
+				names.push_back (string());
+			}
+		}
+	}
+}
+
+SMF::Tempo::Tempo (smf_tempo_t* smft)
+	: time_pulses (smft->time_pulses)
+	, time_seconds (smft->time_seconds)
+	, microseconds_per_quarter_note (smft->microseconds_per_quarter_note)
+	, numerator (smft->numerator)
+	, denominator (smft->denominator)
+	, clocks_per_click (smft->clocks_per_click)
+	, notes_per_note (smft->notes_per_note)
+{
+}
+
+int
+SMF::num_tempos () const
+{
+	assert (_smf);
+	return smf_get_tempo_count (_smf);
+}
+
+SMF::Tempo*
+SMF::tempo_at_smf_pulse (size_t smf_pulse) const
+{
+	smf_tempo_t* t = smf_get_tempo_by_seconds (_smf, smf_pulse);
+	if (!t) {
+		return 0;
+	}
+	return new Tempo (t);
+}
+
+SMF::Tempo*
+SMF::tempo_at_seconds (double seconds) const
+{
+	smf_tempo_t* t = smf_get_tempo_by_seconds (_smf, seconds);
+	if (!t) {
+		return 0;
+	}
+	return new Tempo (t);
+}
+
+SMF::Tempo*
+SMF::nth_tempo (size_t n) const
+{
+	assert (_smf);
+
+	smf_tempo_t* t = smf_get_tempo_by_number (_smf, n);
+	if (!t) {
+		return 0;
+	}
+
+	return new Tempo (t);
 }
 
 } // namespace Evoral

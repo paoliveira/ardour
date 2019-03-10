@@ -39,10 +39,11 @@ namespace ArdourCanvas {
 
 class ArdourDialog;
 
-class ColorThemeManager : public Gtk::VBox, public OptionEditorComponent
+class ColorThemeManager : public OptionEditorMiniPage
 {
-  public:
+public:
 	ColorThemeManager();
+	~ColorThemeManager();
 
 	void reset_canvas_colors();
 	void on_color_theme_changed ();
@@ -55,20 +56,19 @@ class ColorThemeManager : public Gtk::VBox, public OptionEditorComponent
 	/** Called to instruct the object to set its UI state from the configuration */
 	void set_state_from_config ();
 
-	/** Called to instruct the object to add itself to an OptionEditorPage */
-	void add_to_page (OptionEditorPage *);
-
 	void set_note (std::string const &);
+
+	void add_to_page (OptionEditorPage*);
 
 	Gtk::Widget& tip_widget();
 
-  private:
+private:
 	Gtk::Button reset_button;
 	Gtk::Notebook notebook;
 
 	/* handls response from color dialog when it is used to
-	   edit a derived color.
-	*/
+	 * edit a derived color.
+	 */
 	void palette_color_response (int, std::string);
 
 	Gtk::ScrolledWindow palette_scroller;
@@ -76,29 +76,29 @@ class ColorThemeManager : public Gtk::VBox, public OptionEditorComponent
 	ArdourCanvas::Container* palette_group;
 
 	/* these methods create and manage a canvas for use in either the
-	   palette tab or in a separate dialog. Different behaviour is
-	   accomplished by changing the event handler passed into the
-	   allocation handler. We do it there because we have to rebuild
-	   the canvas on allocation events, and during the rebuild, connect
-	   each rectangle to the event handler.
-
-	   the alternative is one event handler for the canvas and a map
-	   of where each color rectangle is. nothing wrong with this
-	   but the per-rect event setup is simpler and avoids building
-	   and looking up the map information.
-	*/
+	 * palette tab or in a separate dialog. Different behaviour is
+	 * accomplished by changing the event handler passed into the
+	 * allocation handler. We do it there because we have to rebuild
+	 * the canvas on allocation events, and during the rebuild, connect
+	 * each rectangle to the event handler.
+	 *
+	 * the alternative is one event handler for the canvas and a map
+	 * of where each color rectangle is. nothing wrong with this
+	 * but the per-rect event setup is simpler and avoids building
+	 * and looking up the map information.
+	 */
 	ArdourCanvas::Container* initialize_palette_canvas (ArdourCanvas::Canvas& canvas);
 	void build_palette_canvas (ArdourCanvas::Canvas&, ArdourCanvas::Container&, sigc::slot<bool,GdkEvent*,std::string> event_handler);
 	void palette_canvas_allocated (Gtk::Allocation& alloc, ArdourCanvas::Container* group, ArdourCanvas::Canvas* canvas, sigc::slot<bool,GdkEvent*,std::string> event_handler);
 	void palette_size_request (Gtk::Requisition*);
 
 	/* handles events from a palette canvas inside the palette (derived
-	   colors) tab
-	*/
+	 * colors) tab
+	 */
 	bool palette_event (GdkEvent*, std::string name);
 	/* allows user to edit a named color (e.g. "color 3") after clicking
-	   on it inside the palette tab.
-	*/
+	 * on it inside the palette tab.
+	 */
 	void edit_palette_color (std::string);
 
 	struct ColorAliasModelColumns : public Gtk::TreeModel::ColumnRecord {

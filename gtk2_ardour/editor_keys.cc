@@ -43,23 +43,19 @@ Editor::keyboard_selection_finish (bool /*add*/, Editing::EditIgnoreOption ign)
 {
 	if (_session) {
 
-		framepos_t start = selection->time.start();
-		framepos_t end;
-
+		MusicSample start (selection->time.start(), 0);
+		samplepos_t end;
 		if ((_edit_point == EditAtPlayhead) && _session->transport_rolling()) {
-			end = _session->audible_frame();
+			end = _session->audible_sample();
 		} else {
 			end = get_preferred_edit_position(ign);
 		}
-
-		//snap the selection start/end
-		snap_to(start);
 
 		//if no tracks are selected and we're working from the keyboard, enable all tracks (_something_ has to be selected for any range selection)
 		if ( (_edit_point == EditAtPlayhead) && selection->tracks.empty() )
 			select_all_tracks();
 
-		selection->set (start, end);
+		selection->set (start.sample, end);
 
 		//if session is playing a range, cancel that
 		if (_session->get_play_range())
@@ -73,28 +69,30 @@ Editor::keyboard_selection_begin (Editing::EditIgnoreOption ign)
 {
 	if (_session) {
 
-		framepos_t start;
-		framepos_t end = selection->time.end_frame();  //0 if no current selection
-
+		MusicSample start (0, 0);
+		MusicSample end (selection->time.end_sample(), 0);
 		if ((_edit_point == EditAtPlayhead) && _session->transport_rolling()) {
-			start = _session->audible_frame();
+			start.sample = _session->audible_sample();
 		} else {
-			start = get_preferred_edit_position(ign);
+			start.sample = get_preferred_edit_position(ign);
 		}
 
-		//snap the selection start/end
-		snap_to(start);
-
 		//if there's not already a sensible selection endpoint, go "forever"
-		if ( start > end ) {
-			end = max_framepos;
+		if (start.sample > end.sample) {
+#ifdef MIXBUS
+			// 4hours at most.
+			// This works around a visual glitch in red-bordered selection rect.
+			end.sample = start.sample + _session->nominal_sample_rate() * 60 * 60 * 4;
+#else
+			end.sample = max_samplepos;
+#endif
 		}
 
 		//if no tracks are selected and we're working from the keyboard, enable all tracks (_something_ has to be selected for any range selection)
 		if ( selection->tracks.empty() )
 			select_all_tracks();
 
-		selection->set (start, end);
+		selection->set (start.sample, end.sample);
 
 		//if session is playing a range, cancel that
 		if (_session->get_play_range())

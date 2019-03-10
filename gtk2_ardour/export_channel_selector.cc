@@ -112,7 +112,7 @@ void
 PortExportChannelSelector::fill_route_list ()
 {
 	channel_view.clear_routes ();
-	RouteList routes = *_session->get_routes();
+	RouteList routes = _session->get_routelist();
 
 	/* Add master bus and then everything else */
 
@@ -121,7 +121,7 @@ PortExportChannelSelector::fill_route_list ()
 		channel_view.add_route (master);
 	}
 
-	routes.sort (Stripable::PresentationOrderSorter ());
+	routes.sort (Stripable::Sorter ());
 
 	for (RouteList::iterator it = routes.begin(); it != routes.end(); ++it) {
 		if ((*it)->is_master () || (*it)->is_monitor ()) {
@@ -238,7 +238,7 @@ PortExportChannelSelector::ChannelTreeView::set_config (ChannelConfigPtr c)
 			for (Gtk::ListStore::Children::const_iterator p_it = port_list->children().begin(); p_it != port_list->children().end(); ++p_it) {
 				route_ports.insert ((*p_it)->get_value (route_cols.port_cols.port));
 				port_labels.insert (make_pair ((*p_it)->get_value (route_cols.port_cols.port),
-							       (*p_it)->get_value (route_cols.port_cols.label)));
+			                                       (*p_it)->get_value (route_cols.port_cols.label)));
 			}
 
 			std::set_intersection (pec->get_ports().begin(), pec->get_ports().end(),
@@ -455,15 +455,15 @@ RegionExportChannelSelector::RegionExportChannelSelector (ARDOUR::Session * _ses
                                                           ProfileManagerPtr manager,
                                                           ARDOUR::AudioRegion const & region,
                                                           ARDOUR::AudioTrack & track) :
-  ExportChannelSelector (_session, manager),
-  region (region),
-  track (track),
-  region_chans (region.n_channels()),
-  track_chans (track.n_outputs().n_audio()),
+	ExportChannelSelector (_session, manager),
+	region (region),
+	track (track),
+	region_chans (region.n_channels()),
+	track_chans (track.n_outputs().n_audio()),
 
-  raw_button (type_group),
-  fades_button (type_group),
-  processed_button (type_group)
+	raw_button (type_group),
+	fades_button (type_group),
+	processed_button (type_group)
 {
 	pack_start (vbox);
 
@@ -658,7 +658,7 @@ void
 TrackExportChannelSelector::fill_list()
 {
 	track_list->clear();
-	RouteList routes = *_session->get_routes();
+	RouteList routes = _session->get_routelist();
 
 	for (RouteList::iterator it = routes.begin(); it != routes.end(); ++it) {
 		if (!boost::dynamic_pointer_cast<Track>(*it)) {
@@ -739,7 +739,11 @@ TrackExportChannelSelector::update_config()
 		}
 
 		if (state) {
-			state->config->set_name (route->name());
+			if (_session->config.get_track_name_number() && route->track_number() > 0) {
+				state->config->set_name (string_compose ("%1-%2", route->track_number(), route->name()));
+			} else {
+				state->config->set_name (route->name());
+			}
 		}
 
 	}

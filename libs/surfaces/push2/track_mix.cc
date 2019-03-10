@@ -24,13 +24,13 @@
 #include "pbd/debug.h"
 #include "pbd/failed_constructor.h"
 #include "pbd/file_utils.h"
-#include "pbd/i18n.h"
 #include "pbd/search_path.h"
 #include "pbd/enumwriter.h"
 
 #include "midi++/parser.h"
-#include "timecode/time.h"
-#include "timecode/bbt_time.h"
+
+#include "temporal/time.h"
+#include "temporal/bbt_time.h"
 
 #include "ardour/async_midi_port.h"
 #include "ardour/audioengine.h"
@@ -64,6 +64,8 @@
 #include "push2.h"
 #include "track_mix.h"
 #include "utils.h"
+
+#include "pbd/i18n.h"
 
 #ifdef __APPLE__
 #define Rect ArdourCanvas::Rect
@@ -160,8 +162,6 @@ TrackMixLayout::TrackMixLayout (Push2& p, Session & s, std::string const & name)
 	minsec_text->set_font_description (fd2);
 	minsec_text->set_color (p2.get_color (Push2::LightBackground));
 	minsec_text->set_position (Duple (10 + (4 * Push2Canvas::inter_button_spacing()), 90));
-
-	ControlProtocol::StripableSelectionChanged.connect (selection_connection, invalidator (*this), boost::bind (&TrackMixLayout::selection_changed, this), &p2);
 }
 
 TrackMixLayout::~TrackMixLayout ()
@@ -172,23 +172,13 @@ TrackMixLayout::~TrackMixLayout ()
 }
 
 void
-TrackMixLayout::selection_changed ()
-{
-	boost::shared_ptr<Stripable> s = ControlProtocol::first_selected_stripable();
-
-	if (s) {
-		set_stripable (s);
-	}
-}
-
-void
 TrackMixLayout::show ()
 {
 	Push2::ButtonID lower_buttons[] = { Push2::Lower1, Push2::Lower2, Push2::Lower3, Push2::Lower4,
 	                                    Push2::Lower5, Push2::Lower6, Push2::Lower7, Push2::Lower8 };
 
 	for (size_t n = 0; n < sizeof (lower_buttons) / sizeof (lower_buttons[0]); ++n) {
-		Push2::Button* b = p2.button_by_id (lower_buttons[n]);
+		boost::shared_ptr<Push2::Button> b = p2.button_by_id (lower_buttons[n]);
 		b->set_color (Push2::LED::DarkGray);
 		b->set_state (Push2::LED::OneShot24th);
 		p2.write (b->state_msg());
@@ -300,7 +290,7 @@ TrackMixLayout::simple_control_change (boost::shared_ptr<AutomationControl> ac, 
 		return;
 	}
 
-	Push2::Button* b = p2.button_by_id (bid);
+	boost::shared_ptr<Push2::Button> b = p2.button_by_id (bid);
 
 	if (!b) {
 		return;
@@ -322,7 +312,7 @@ TrackMixLayout::solo_mute_change ()
 		return;
 	}
 
-	Push2::Button* b = p2.button_by_id (Push2::Lower2);
+	boost::shared_ptr<Push2::Button> b = p2.button_by_id (Push2::Lower2);
 
 	if (b) {
 		boost::shared_ptr<SoloControl> sc = stripable->solo_control();
@@ -413,8 +403,8 @@ TrackMixLayout::monitoring_change ()
 		return;
 	}
 
-	Push2::Button* b1 = p2.button_by_id (Push2::Lower4);
-	Push2::Button* b2 = p2.button_by_id (Push2::Lower5);
+	boost::shared_ptr<Push2::Button> b1 = p2.button_by_id (Push2::Lower4);
+	boost::shared_ptr<Push2::Button> b2 = p2.button_by_id (Push2::Lower5);
 	uint8_t b1_color;
 	uint8_t b2_color;
 
@@ -543,7 +533,7 @@ TrackMixLayout::color_changed ()
 		return;
 	}
 
-	Color rgba = stripable->presentation_info().color();
+	Gtkmm2ext::Color rgba = stripable->presentation_info().color();
 	selection_color = p2.get_color_index (rgba);
 
 	name_text->set_color (rgba);
@@ -582,9 +572,9 @@ TrackMixLayout::strip_vpot_touch (int n, bool touching)
 	boost::shared_ptr<AutomationControl> ac = knobs[n]->controllable();
 	if (ac) {
 		if (touching) {
-			ac->start_touch (session.audible_frame());
+			ac->start_touch (session.audible_sample());
 		} else {
-			ac->stop_touch (true, session.audible_frame());
+			ac->stop_touch (session.audible_sample());
 		}
 	}
 }
@@ -602,7 +592,7 @@ TrackMixLayout::update_meters ()
 void
 TrackMixLayout::update_clocks ()
 {
-	framepos_t pos = session.audible_frame();
+	samplepos_t pos = session.audible_sample();
 	bool negative = false;
 
 	if (pos < 0) {
@@ -611,7 +601,7 @@ TrackMixLayout::update_clocks ()
 	}
 
 	char buf[16];
-	Timecode::BBT_Time BBT = session.tempo_map().bbt_at_frame (pos);
+	Timecode::BBT_Time BBT = session.tempo_map().bbt_at_sample (pos);
 
 #define BBT_BAR_CHAR "|"
 
@@ -625,22 +615,22 @@ TrackMixLayout::update_clocks ()
 
 	bbt_text->set (buf);
 
-	framecnt_t left;
+	samplecnt_t left;
 	int hrs;
 	int mins;
 	int secs;
 	int millisecs;
 
-	const double frame_rate = session.frame_rate ();
+	const double sample_rate = session.sample_rate ();
 
 	left = pos;
-	hrs = (int) floor (left / (frame_rate * 60.0f * 60.0f));
-	left -= (framecnt_t) floor (hrs * frame_rate * 60.0f * 60.0f);
-	mins = (int) floor (left / (frame_rate * 60.0f));
-	left -= (framecnt_t) floor (mins * frame_rate * 60.0f);
-	secs = (int) floor (left / (float) frame_rate);
-	left -= (framecnt_t) floor ((double)(secs * frame_rate));
-	millisecs = floor (left * 1000.0 / (float) frame_rate);
+	hrs = (int) floor (left / (sample_rate * 60.0f * 60.0f));
+	left -= (samplecnt_t) floor (hrs * sample_rate * 60.0f * 60.0f);
+	mins = (int) floor (left / (sample_rate * 60.0f));
+	left -= (samplecnt_t) floor (mins * sample_rate * 60.0f);
+	secs = (int) floor (left / (float) sample_rate);
+	left -= (samplecnt_t) floor ((double)(secs * sample_rate));
+	millisecs = floor (left * 1000.0 / (float) sample_rate);
 
 	if (negative) {
 		snprintf (buf, sizeof (buf), "-%02" PRId32 ":%02" PRId32 ":%02" PRId32 ".%03" PRId32, hrs, mins, secs, millisecs);

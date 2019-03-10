@@ -30,8 +30,8 @@
 #include "ardour/libardour_visibility.h"
 #include "ardour/types.h"
 
-#if defined WINDOWS_VST_SUPPORT || defined LXVST_SUPPORT
-#include "evoral/MIDIEvent.hpp"
+#if defined WINDOWS_VST_SUPPORT || defined LXVST_SUPPORT || defined MACVST_SUPPORT
+#include "evoral/Event.hpp"
 struct _VstEvents;
 typedef struct _VstEvents VstEvents;
 struct _VstMidiEvent;
@@ -71,10 +71,10 @@ public:
 	void clear();
 
 	void attach_buffers (PortSet& ports);
-	void get_backend_port_addresses (PortSet &, framecnt_t);
+	void get_backend_port_addresses (PortSet &, samplecnt_t);
 
 	/* the capacity here is a size_t and has a different interpretation depending
-	   on the DataType of the buffers. for audio, its a frame count. for MIDI
+	   on the DataType of the buffers. for audio, its a sample count. for MIDI
 	   its a byte count.
 	*/
 
@@ -87,7 +87,7 @@ public:
 	const ChanCount& count() const { return _count; }
 	ChanCount&       count()       { return _count; }
 
-	void silence (framecnt_t nframes, framecnt_t offset);
+	void silence (samplecnt_t nframes, samplecnt_t offset);
 	bool is_mirror() const { return _is_mirror; }
 
 	void set_count(const ChanCount& count) { assert(count <= _available); _count = count; }
@@ -130,13 +130,13 @@ public:
 	void forward_lv2_midi(LV2_Evbuf*, size_t, bool purge_ardour_buffer = true);
 #endif
 
-#if defined WINDOWS_VST_SUPPORT || defined LXVST_SUPPORT
+#if defined WINDOWS_VST_SUPPORT || defined LXVST_SUPPORT || defined MACVST_SUPPORT
 	VstEvents* get_vst_midi (size_t);
 #endif
 
-	void read_from(const BufferSet& in, framecnt_t nframes);
-	void read_from(const BufferSet& in, framecnt_t nframes, DataType);
-	void merge_from(const BufferSet& in, framecnt_t nframes);
+	void read_from(const BufferSet& in, samplecnt_t nframes);
+	void read_from(const BufferSet& in, samplecnt_t nframes, DataType);
+	void merge_from(const BufferSet& in, samplecnt_t nframes);
 
 	template <typename BS, typename B>
 	class iterator_base {
@@ -189,14 +189,14 @@ private:
 	LV2Buffers _lv2_buffers;
 #endif
 
-#if defined WINDOWS_VST_SUPPORT || defined LXVST_SUPPORT
+#if defined WINDOWS_VST_SUPPORT || defined LXVST_SUPPORT || defined MACVST_SUPPORT
 	class VSTBuffer {
 	public:
 		VSTBuffer (size_t);
 		~VSTBuffer ();
 
 		void clear ();
-		void push_back (Evoral::MIDIEvent<framepos_t> const &);
+		void push_back (Evoral::Event<samplepos_t> const &);
 		VstEvents* events () const {
 			return _events;
 		}

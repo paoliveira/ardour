@@ -52,6 +52,8 @@ class LIBARDOUR_API ExportFormat : public ExportFormatBase, public ExportFormatB
 	Quality get_quality () const { return *qualities.begin(); }
 
 	bool has_sample_format ();
+	bool has_codec_quality ();
+
 	bool sample_format_is_compatible (SampleFormat format) const;
 
 	/* If the format has a specific sample format, this function should be overridden
@@ -76,6 +78,7 @@ class LIBARDOUR_API ExportFormat : public ExportFormatBase, public ExportFormatB
 
 	virtual bool has_broadcast_info () const { return false; }
 
+
   protected:
 
 	void add_sample_rate (SampleRate rate) { sample_rates.insert (rate); }
@@ -83,6 +86,38 @@ class LIBARDOUR_API ExportFormat : public ExportFormatBase, public ExportFormatB
 
 	void set_format_id (FormatId id) { format_ids.clear (); format_ids.insert (id); }
 	void set_quality (Quality value) { qualities.clear(); qualities.insert (value); }
+};
+
+class LIBARDOUR_API HasCodecQuality {
+public:
+	struct CodecQuality {
+		CodecQuality (std::string const& n, int q)
+			: name (n)
+			, quality (q)
+		{}
+
+		std::string name;
+		int         quality;
+	};
+
+	typedef boost::shared_ptr<CodecQuality> CodecQualityPtr;
+	typedef std::list<CodecQualityPtr> CodecQualityList;
+
+	virtual ~HasCodecQuality () {}
+
+	void add_codec_quality (std::string const& name, int q) {
+		CodecQualityPtr ptr (new CodecQuality (name, q));
+		_codec_qualties.push_back (ptr);
+	}
+
+	CodecQualityList const & get_codec_qualities () const {
+		return _codec_qualties;
+	}
+
+	virtual int default_codec_quality () const = 0;
+
+protected:
+	CodecQualityList _codec_qualties;
 };
 
 /// Class to be inherited by export formats that have a selectable sample format
@@ -174,7 +209,7 @@ class LIBARDOUR_API ExportFormatLinear : public ExportFormat, public HasSampleFo
 	SampleFormat _default_sample_format;
 };
 
-class LIBARDOUR_API ExportFormatOggVorbis : public ExportFormat {
+class LIBARDOUR_API ExportFormatOggVorbis : public ExportFormat, public HasCodecQuality {
   public:
 	ExportFormatOggVorbis ();
 	~ExportFormatOggVorbis () {};
@@ -183,6 +218,8 @@ class LIBARDOUR_API ExportFormatOggVorbis : public ExportFormat {
 	Type get_type () const { return T_Sndfile; }
 	SampleFormat get_explicit_sample_format () const { return SF_Vorbis; }
 	virtual bool supports_tagging () const { return true; }
+
+	int default_codec_quality () const { return 40; }
 };
 
 class LIBARDOUR_API ExportFormatFLAC : public ExportFormat, public HasSampleFormat {
@@ -208,6 +245,19 @@ class LIBARDOUR_API ExportFormatBWF : public ExportFormat, public HasSampleForma
 
 	SampleFormat default_sample_format () const { return SF_16; }
 	virtual bool has_broadcast_info () const { return true; }
+};
+
+
+class LIBARDOUR_API ExportFormatFFMPEG : public ExportFormat, public HasCodecQuality {
+  public:
+	ExportFormatFFMPEG (std::string const& name, std::string const& ext);
+	~ExportFormatFFMPEG () {};
+
+	bool set_compatibility_state (ExportFormatCompatibility const & compatibility);
+	Type get_type () const { return T_FFMPEG; }
+	SampleFormat get_explicit_sample_format () const { return SF_Float; }
+	int default_codec_quality () const { return -2; }
+	virtual bool supports_tagging () const { return true; }
 };
 
 } // namespace ARDOUR

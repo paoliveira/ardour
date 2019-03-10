@@ -198,7 +198,6 @@ static int start_engine (uint32_t rate)
 		return -1;
 	}
 
-	init_post_engine ();
 	return 0;
 }
 
@@ -221,10 +220,6 @@ static Session * _create_session (string dir, string state, uint32_t rate) // th
 	// TODO add option/bindings for this
 	BusProfile bus_profile;
 	bus_profile.master_out_channels = 2;
-	bus_profile.input_ac = AutoConnectPhysical;
-	bus_profile.output_ac = AutoConnectMaster;
-	bus_profile.requested_physical_in = 0; // use all available
-	bus_profile.requested_physical_out = 0; // use all available
 
 	AudioEngine* engine = AudioEngine::instance ();
 	Session* session = new Session (*engine, dir, state, &bus_profile);
@@ -239,13 +234,14 @@ static Session * _load_session (string dir, string state) // throws
 
 	float sr;
 	SampleFormat sf;
+	std::string v;
 	std::string s = Glib::build_filename (dir, state + statefile_suffix);
 	if (!Glib::file_test (dir, Glib::FILE_TEST_EXISTS)) {
 		std::cerr << "Cannot find session: " << s << "\n";
 		return 0;
 	}
 
-	if (Session::get_info_from_path (s, sr, sf) != 0) {
+	if (Session::get_info_from_path (s, sr, sf, v) != 0) {
 		std::cerr << "Cannot get samplerate from session.\n";
 		return 0;
 	}
@@ -401,6 +397,19 @@ static void setup_lua ()
 	AudioEngine::instance ()->stop ();
 }
 
+static int
+incomplete (lua_State* L, int status) {
+	if (status == LUA_ERRSYNTAX) {
+		size_t lmsg;
+		const char *msg = lua_tolstring (L, -1, &lmsg);
+		if (lmsg >= 5 && strcmp(msg + lmsg - 5, "<eof>") == 0) {
+			lua_pop(L, 1);
+			return 1;
+		}
+	}
+	return 0;
+}
+
 int main (int argc, char **argv)
 {
 	init ();
@@ -409,6 +418,7 @@ int main (int argc, char **argv)
 	using_history ();
 	std::string histfile = Glib::build_filename (user_config_directory(), "/luahist");
 
+	rl_bind_key ('\t', rl_insert); // disable completion
 	read_history (histfile.c_str());
 
 	char *line = NULL;
@@ -424,8 +434,30 @@ int main (int argc, char **argv)
 			continue;
 		}
 
+		do {
+			LuaState lt;
+			lua_State* L = lt.getState ();
+			int status = luaL_loadbuffer (L, line, strlen(line), "=stdin");
+			if (!incomplete (L, status)) {
+				break;
+			}
+			char *l2 = readline (">> ");
+			if (!l2) {
+				break;
+			}
+			if (strlen (l2) == 0) {
+				continue;
+			}
+			line = (char*) realloc ((void*)line, (strlen(line) + strlen (l2) + 2) * sizeof(char));
+			strcat (line, "\n");
+			strcat (line, l2);
+			free (l2);
+		} while (1);
+
 		if (lua->do_command (line)) {
-			// error
+			/* error */
+			free (line); line = NULL;
+			continue;
 		}
 
 		add_history (line);

@@ -17,20 +17,23 @@
 
 */
 
+#include "evoral/Note.hpp"
+
 #include "ardour/parameter_descriptor.h"
 
-#include "evoral/Note.hpp"
 #include "canvas/container.h"
 #include "canvas/polygon.h"
 #include "canvas/rectangle.h"
-#include "canvas/wave_view.h"
 #include "canvas/debug.h"
+
+#include "waveview/wave_view.h"
 
 #include "automation_time_axis.h"
 #include "ghostregion.h"
 #include "midi_streamview.h"
 #include "midi_time_axis.h"
 #include "region_view.h"
+#include "midi_region_view.h"
 #include "rgb_macros.h"
 #include "note.h"
 #include "hit.h"
@@ -38,8 +41,8 @@
 
 using namespace std;
 using namespace Editing;
-using namespace ArdourCanvas;
 using namespace ARDOUR;
+using ArdourCanvas::Duple;
 
 GhostRegion::GhostRegion(RegionView& rv,
                          ArdourCanvas::Container* parent,
@@ -125,7 +128,7 @@ AudioGhostRegion::AudioGhostRegion(RegionView& rv,
 void
 AudioGhostRegion::set_samples_per_pixel (double fpp)
 {
-	for (vector<WaveView*>::iterator i = waves.begin(); i != waves.end(); ++i) {
+	for (vector<ArdourWaveView::WaveView*>::iterator i = waves.begin(); i != waves.end(); ++i) {
 		(*i)->set_samples_per_pixel (fpp);
 	}
 }
@@ -133,7 +136,7 @@ AudioGhostRegion::set_samples_per_pixel (double fpp)
 void
 AudioGhostRegion::set_height ()
 {
-	vector<WaveView*>::iterator i;
+	vector<ArdourWaveView::WaveView*>::iterator i;
 	uint32_t n;
 
 	GhostRegion::set_height();
@@ -174,17 +177,18 @@ AudioGhostRegion::set_colors ()
  *  @param tv TimeAxisView that this ghost region is on.
  *  @param source_tv TimeAxisView that we are the ghost for.
  */
-MidiGhostRegion::MidiGhostRegion(RegionView& rv,
+MidiGhostRegion::MidiGhostRegion(MidiRegionView& rv,
                                  TimeAxisView& tv,
                                  TimeAxisView& source_tv,
                                  double initial_unit_pos)
     : GhostRegion(rv, tv.ghost_group(), tv, source_tv, initial_unit_pos)
+    , _note_group (new ArdourCanvas::Container (group))
+    ,  parent_mrv (rv)
     , _optimization_iterator(events.end())
 {
-	base_rect->lower_to_bottom();
-	update_range ();
+	_outline = UIConfiguration::instance().color ("ghost track midi outline");
 
-	midi_view()->NoteRangeChanged.connect (sigc::mem_fun (*this, &MidiGhostRegion::update_range));
+	base_rect->lower_to_bottom();
 }
 
 /**
@@ -192,7 +196,7 @@ MidiGhostRegion::MidiGhostRegion(RegionView& rv,
  *  @param msv MidiStreamView that this ghost region is on.
  *  @param source_tv TimeAxisView that we are the ghost for.
  */
-MidiGhostRegion::MidiGhostRegion(RegionView& rv,
+MidiGhostRegion::MidiGhostRegion(MidiRegionView& rv,
                                  MidiStreamView& msv,
                                  TimeAxisView& source_tv,
                                  double initial_unit_pos)
@@ -201,31 +205,39 @@ MidiGhostRegion::MidiGhostRegion(RegionView& rv,
                   msv.trackview(),
                   source_tv,
                   initial_unit_pos)
+    , _note_group (new ArdourCanvas::Container (group))
+    , 	parent_mrv (rv)
     , _optimization_iterator(events.end())
 {
-	base_rect->lower_to_bottom();
-	update_range ();
+	_outline = UIConfiguration::instance().color ("ghost track midi outline");
 
-	midi_view()->NoteRangeChanged.connect (sigc::mem_fun (*this, &MidiGhostRegion::update_range));
+	base_rect->lower_to_bottom();
 }
 
 MidiGhostRegion::~MidiGhostRegion()
 {
 	clear_events ();
+	delete _note_group;
 }
 
 MidiGhostRegion::GhostEvent::GhostEvent (NoteBase* e, ArdourCanvas::Container* g)
 	: event (e)
 {
-	Hit* hit = NULL;
+
 	if (dynamic_cast<Note*>(e)) {
 		item = new ArdourCanvas::Rectangle(
 			g, ArdourCanvas::Rect(e->x0(), e->y0(), e->x1(), e->y1()));
-	} else if ((hit = dynamic_cast<Hit*>(e))) {
+		is_hit = false;
+	} else {
+		Hit* hit = dynamic_cast<Hit*>(e);
+		if (!hit) {
+			return;
+		}
 		ArdourCanvas::Polygon* poly = new ArdourCanvas::Polygon(g);
 		poly->set(Hit::points(e->y1() - e->y0()));
 		poly->set_position(hit->position());
 		item = poly;
+		is_hit = true;
 	}
 
 	CANVAS_DEBUG_NAME (item, "ghost note item");
@@ -258,19 +270,18 @@ void
 MidiGhostRegion::set_height ()
 {
 	GhostRegion::set_height();
-	update_range();
+	update_contents_height ();
 }
 
 void
 MidiGhostRegion::set_colors()
 {
 	GhostRegion::set_colors();
+	_outline = UIConfiguration::instance().color ("ghost track midi outline");
 
 	for (EventList::iterator it = events.begin(); it != events.end(); ++it) {
-		_fill = UIConfiguration::instance().color_mod((*it)->event->base_color(), "ghost track midi fill");
-		_outline = UIConfiguration::instance().color ("ghost track midi outline");
-		(*it)->item->set_fill_color (_fill);
-		(*it)->item->set_outline_color (_outline);
+		it->second->item->set_fill_color (UIConfiguration::instance().color_mod((*it).second->event->base_color(), "ghost track midi fill"));
+		it->second->item->set_outline_color (_outline);
 	}
 }
 
@@ -294,7 +305,7 @@ note_y(TimeAxisView& trackview, MidiStreamView* mv, uint8_t note_num)
 }
 
 void
-MidiGhostRegion::update_range ()
+MidiGhostRegion::update_contents_height ()
 {
 	MidiStreamView* mv = midi_view();
 
@@ -305,24 +316,19 @@ MidiGhostRegion::update_range ()
 	double const h = note_height(trackview, mv);
 
 	for (EventList::iterator it = events.begin(); it != events.end(); ++it) {
-		uint8_t const note_num = (*it)->event->note()->note();
+		uint8_t const note_num = it->second->event->note()->note();
 
-		if (note_num < mv->lowest_note() || note_num > mv->highest_note()) {
-			(*it)->item->hide();
+		double const y = note_y(trackview, mv, note_num);
+
+		if (!it->second->is_hit) {
+			_tmp_rect = static_cast<ArdourCanvas::Rectangle*>(it->second->item);
+			_tmp_rect->set (ArdourCanvas::Rect (_tmp_rect->x0(), y, _tmp_rect->x1(), y + h));
 		} else {
-			(*it)->item->show();
-			double const y = note_y(trackview, mv, note_num);
-			ArdourCanvas::Rectangle* rect = NULL;
-			ArdourCanvas::Polygon*   poly = NULL;
-			if ((rect = dynamic_cast<ArdourCanvas::Rectangle*>((*it)->item))) {
-				rect->set_y0 (y);
-				rect->set_y1 (y + h);
-			} else if ((poly = dynamic_cast<ArdourCanvas::Polygon*>((*it)->item))) {
-				Duple position = poly->position();
-				position.y = y;
-				poly->set_position(position);
-				poly->set(Hit::points(h));
-			}
+			_tmp_poly = static_cast<ArdourCanvas::Polygon*>(it->second->item);
+			ArdourCanvas::Duple position = _tmp_poly->position();
+			position.y = y;
+			_tmp_poly->set_position(position);
+			_tmp_poly->set(Hit::points(h));
 		}
 	}
 }
@@ -330,31 +336,31 @@ MidiGhostRegion::update_range ()
 void
 MidiGhostRegion::add_note (NoteBase* n)
 {
-	GhostEvent* event = new GhostEvent (n, group);
-	events.push_back (event);
+	GhostEvent* event = new GhostEvent (n, _note_group);
+	events.insert (make_pair (n->note(), event));
 
-	event->item->set_fill_color (_fill);
+	event->item->set_fill_color (UIConfiguration::instance().color_mod(n->base_color(), "ghost track midi fill"));
 	event->item->set_outline_color (_outline);
 
 	MidiStreamView* mv = midi_view();
 
 	if (mv) {
-		uint8_t const note_num = n->note()->note();
-		double const  h        = note_height(trackview, mv);
-		double const  y        = note_y(trackview, mv, note_num);
 
-		if (note_num < mv->lowest_note() || note_num > mv->highest_note()) {
+		if (!n->item()->visible()) {
 			event->item->hide();
 		} else {
-			ArdourCanvas::Rectangle* rect = NULL;
-			ArdourCanvas::Polygon*   poly = NULL;
-			if ((rect = dynamic_cast<ArdourCanvas::Rectangle*>(event->item))) {
-				rect->set (ArdourCanvas::Rect (rect->x0(), y, rect->x1(), y + h));
-			} else if ((poly = dynamic_cast<ArdourCanvas::Polygon*>(event->item))) {
-				Duple position = poly->position();
+			uint8_t const note_num = n->note()->note();
+			double const  h        = note_height(trackview, mv);
+			double const  y        = note_y(trackview, mv, note_num);
+			if (!event->is_hit) {
+				_tmp_rect = static_cast<ArdourCanvas::Rectangle*>(event->item);
+				_tmp_rect->set (ArdourCanvas::Rect (_tmp_rect->x0(), y, _tmp_rect->x1(), y + h));
+			} else {
+				_tmp_poly = static_cast<ArdourCanvas::Polygon*>(event->item);
+				Duple position = _tmp_poly->position();
 				position.y = y;
-				poly->set_position(position);
-				poly->set(Hit::points(h));
+				_tmp_poly->set_position(position);
+				_tmp_poly->set(Hit::points(h));
 			}
 		}
 	}
@@ -363,54 +369,96 @@ MidiGhostRegion::add_note (NoteBase* n)
 void
 MidiGhostRegion::clear_events()
 {
-	for (EventList::iterator it = events.begin(); it != events.end(); ++it) {
-		delete *it;
-	}
-
-	events.clear();
-	_optimization_iterator = events.end ();
+	_note_group->clear (true);
+	events.clear ();
+	_optimization_iterator = events.end();
 }
 
-/** Update the x positions of our representation of a parent's note.
- *  @param parent The CanvasNote from the parent MidiRegionView.
+/** Update the  positions of our representation of a note.
+ *  @param ev The GhostEvent from the parent MidiRegionView.
  */
 void
-MidiGhostRegion::update_note (NoteBase* parent)
+MidiGhostRegion::update_note (GhostEvent* ev)
 {
-	GhostEvent* ev = find_event (parent);
-	if (!ev) {
+	MidiStreamView* mv = midi_view();
+
+	if (!mv) {
 		return;
 	}
 
-	Note*                    note = NULL;
-	ArdourCanvas::Rectangle* rect = NULL;
-	Hit*                     hit  = NULL;
-	ArdourCanvas::Polygon*   poly = NULL;
-	if ((note = dynamic_cast<Note*>(parent))) {
-		if ((rect = dynamic_cast<ArdourCanvas::Rectangle*>(ev->item))) {
-			rect->set (ArdourCanvas::Rect (parent->x0(), rect->y0(), parent->x1(), rect->y1()));
-		}
-	} else if ((hit = dynamic_cast<Hit*>(parent))) {
-		if ((poly = dynamic_cast<ArdourCanvas::Polygon*>(ev->item))) {
-			ArdourCanvas::Duple ppos = hit->position();
-			ArdourCanvas::Duple gpos = poly->position();
-			gpos.x = ppos.x;
-			poly->set_position(gpos);
-		}
+	_tmp_rect = static_cast<ArdourCanvas::Rectangle*>(ev->item);
+
+	uint8_t const note_num = ev->event->note()->note();
+	double const y = note_y(trackview, mv, note_num);
+	double const h = note_height(trackview, mv);
+
+	_tmp_rect->set (ArdourCanvas::Rect (ev->event->x0(), y, ev->event->x1(), y + h));
+}
+
+/** Update the positions of our representation of a parent's hit.
+ *  @param ev The GhostEvent from the parent MidiRegionView.
+ */
+void
+MidiGhostRegion::update_hit (GhostEvent* ev)
+{
+	MidiStreamView* mv = midi_view();
+
+	if (!mv) {
+		return;
 	}
+
+	_tmp_poly = static_cast<ArdourCanvas::Polygon*>(ev->item);
+
+	uint8_t const note_num = ev->event->note()->note();
+	double const h = note_height(trackview, mv);
+	double const y = note_y(trackview, mv, note_num);
+
+	ArdourCanvas::Duple ppos = ev->item->position();
+	ArdourCanvas::Duple gpos = _tmp_poly->position();
+	gpos.x = ppos.x;
+	gpos.y = y;
+
+	_tmp_poly->set_position(gpos);
+	_tmp_poly->set(Hit::points(h));
 }
 
 void
 MidiGhostRegion::remove_note (NoteBase* note)
 {
-	GhostEvent* ev = find_event (note);
-	if (!ev) {
+	EventList::iterator f = events.find (note->note());
+	if (f == events.end()) {
 		return;
 	}
 
-	events.remove (ev);
-	delete ev;
+	delete f->second;
+	events.erase (f);
+
 	_optimization_iterator = events.end ();
+}
+void
+MidiGhostRegion::redisplay_model ()
+{
+	/* we rely on the parent MRV having removed notes not in the model */
+	for (EventList::iterator i = events.begin(); i != events.end(); ) {
+
+		boost::shared_ptr<NoteType> note = i->first;
+		GhostEvent* cne = i->second;
+		const bool visible = (note->note() >= parent_mrv._current_range_min) &&
+			(note->note() <= parent_mrv._current_range_max);
+
+		if (visible) {
+			if (cne->is_hit) {
+				update_hit (cne);
+			} else {
+				update_note (cne);
+			}
+			cne->item->show ();
+		} else {
+			cne->item->hide ();
+		}
+
+		++i;
+	}
 }
 
 /** Given a note in our parent region (ie the actual MidiRegionView), find our
@@ -419,7 +467,7 @@ MidiGhostRegion::remove_note (NoteBase* note)
  */
 
 MidiGhostRegion::GhostEvent *
-MidiGhostRegion::find_event (NoteBase* parent)
+MidiGhostRegion::find_event (boost::shared_ptr<NoteType> parent)
 {
 	/* we are using _optimization_iterator to speed up the common case where a caller
 	   is going through our notes in order.
@@ -427,16 +475,14 @@ MidiGhostRegion::find_event (NoteBase* parent)
 
 	if (_optimization_iterator != events.end()) {
 		++_optimization_iterator;
-	}
-
-	if (_optimization_iterator != events.end() && (*_optimization_iterator)->event == parent) {
-		return *_optimization_iterator;
-	}
-
-	for (_optimization_iterator = events.begin(); _optimization_iterator != events.end(); ++_optimization_iterator) {
-		if ((*_optimization_iterator)->event == parent) {
-			return *_optimization_iterator;
+		if (_optimization_iterator != events.end() && _optimization_iterator->first == parent) {
+			return _optimization_iterator->second;
 		}
+	}
+
+	_optimization_iterator = events.find (parent);
+	if (_optimization_iterator != events.end()) {
+		return _optimization_iterator->second;
 	}
 
 	return 0;

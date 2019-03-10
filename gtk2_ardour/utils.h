@@ -33,14 +33,14 @@
 #include "canvas/types.h"
 
 namespace PBD {
-        class Controllable;
-        class ScopedConnectionList;
+	class Controllable;
+	class ScopedConnectionList;
 }
 
 namespace Gtk {
 	class Window;
 	class ComboBoxText;
-        class Adjustment;
+	class Adjustment;
 }
 
 namespace ArdourCanvas {
@@ -51,6 +51,8 @@ namespace ARDOUR_UI_UTILS {
 
 gint   just_hide_it (GdkEventAny*, Gtk::Window*);
 void add_item_with_sensitivity (Gtk::Menu_Helpers::MenuList &, Gtk::Menu_Helpers::MenuElem, bool);
+
+bool engine_is_running ();
 
 unsigned char* xpm2rgb  (const char** xpm, uint32_t& w, uint32_t& h);
 unsigned char* xpm2rgba (const char** xpm, uint32_t& w, uint32_t& h);
@@ -68,8 +70,6 @@ uint32_t gdk_color_to_rgba (Gdk::Color const&);
 
 void set_color_from_rgb (Gdk::Color&, uint32_t);
 void set_color_from_rgba (Gdk::Color&, uint32_t);
-
-uint32_t contrasting_text_color (uint32_t c);
 
 bool relay_key_press (GdkEventKey* ev, Gtk::Window* win);
 bool key_press_focus_accelerator_handler (Gtk::Window& window, GdkEventKey* ev);

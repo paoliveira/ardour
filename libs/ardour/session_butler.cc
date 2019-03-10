@@ -69,17 +69,15 @@ Session::schedule_capture_buffering_adjustment ()
 }
 
 void
-Session::schedule_curve_reallocation ()
+Session::request_overwrite_buffer (boost::shared_ptr<Route> r)
 {
-	add_post_transport_work (PostTransportCurveRealloc);
-	_butler->schedule_transport_work ();
-}
+	boost::shared_ptr<Track> t = boost::dynamic_pointer_cast<Track> (r);
+	if (!t) {
+		return;
+	}
 
-void
-Session::request_overwrite_buffer (Track* t)
-{
 	SessionEvent *ev = new SessionEvent (SessionEvent::Overwrite, SessionEvent::Add, SessionEvent::Immediate, 0, 0, 0.0);
-	ev->set_ptr (t);
+	ev->set_ptr (t.get());
 	queue_event (ev);
 }
 
@@ -93,7 +91,7 @@ Session::overwrite_some_buffers (Track* t)
 
 	if (t) {
 
-		t->set_pending_overwrite (true);
+		t->set_pending_overwrite ();
 
 	} else {
 
@@ -101,7 +99,7 @@ Session::overwrite_some_buffers (Track* t)
 		for (RouteList::iterator i = rl->begin(); i != rl->end(); ++i) {
 			boost::shared_ptr<Track> tr = boost::dynamic_pointer_cast<Track> (*i);
 			if (tr) {
-				tr->set_pending_overwrite (true);
+				tr->set_pending_overwrite ();
 			}
 		}
 	}

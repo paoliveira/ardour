@@ -120,7 +120,7 @@ XMLTree::read_internal(bool validate)
 }
 
 bool
-XMLTree::read_buffer(const string& buffer)
+XMLTree::read_buffer(const string& buffer, bool to_tree_doc)
 {
 	xmlDocPtr doc;
 
@@ -135,7 +135,14 @@ XMLTree::read_buffer(const string& buffer)
 	}
 
 	_root = readnode(xmlDocGetRootElement(doc));
-	xmlFreeDoc(doc);
+	if (to_tree_doc) {
+		if (_doc) {
+			xmlFreeDoc (_doc);
+		}
+		_doc = doc;
+	} else {
+		xmlFreeDoc (doc);
+	}
 
 	return true;
 }
@@ -215,10 +222,13 @@ XMLTree::write_buffer() const
 	return retval;
 }
 
+static const int PROPERTY_RESERVE_COUNT = 16;
+
 XMLNode::XMLNode(const string& n)
 	: _name(n)
 	, _is_content(false)
 {
+	_proplist.reserve (PROPERTY_RESERVE_COUNT);
 }
 
 XMLNode::XMLNode(const string& n, const string& c)
@@ -226,10 +236,12 @@ XMLNode::XMLNode(const string& n, const string& c)
 	, _is_content(true)
 	, _content(c)
 {
+	_proplist.reserve (PROPERTY_RESERVE_COUNT);
 }
 
 XMLNode::XMLNode(const XMLNode& from)
 {
+	_proplist.reserve (PROPERTY_RESERVE_COUNT);
 	*this = from;
 }
 
@@ -245,7 +257,6 @@ XMLNode::clear_lists ()
 	XMLPropertyIterator curprop;
 
 	_selected_children.clear ();
-	_propmap.clear ();
 
 	for (curchild = _children.begin(); curchild != _children.end();	++curchild) {
 		delete *curchild;
@@ -263,30 +274,91 @@ XMLNode::clear_lists ()
 XMLNode&
 XMLNode::operator= (const XMLNode& from)
 {
-	if (&from != this) {
+	if (&from == this) {
+		return *this;
+	}
 
-		XMLPropertyList props;
-		XMLPropertyIterator curprop;
-		XMLNodeList nodes;
-		XMLNodeIterator curnode;
+	clear_lists ();
 
-		clear_lists ();
+	_name = from.name ();
+	set_content (from.content ());
 
-		_name = from.name();
-		set_content(from.content());
+	const XMLPropertyList& props = from.properties ();
 
-		props = from.properties();
-		for (curprop = props.begin(); curprop != props.end(); ++curprop) {
-			add_property((*curprop)->name().c_str(), (*curprop)->value());
-		}
+	for (XMLPropertyConstIterator prop_iter = props.begin (); prop_iter != props.end (); ++prop_iter) {
+		set_property ((*prop_iter)->name ().c_str (), (*prop_iter)->value ());
+	}
 
-		nodes = from.children();
-		for (curnode = nodes.begin(); curnode != nodes.end(); ++curnode) {
-			add_child_copy(**curnode);
-		}
+	const XMLNodeList& nodes = from.children ();
+	for (XMLNodeConstIterator child_iter = nodes.begin (); child_iter != nodes.end (); ++child_iter) {
+		add_child_copy (**child_iter);
 	}
 
 	return *this;
+}
+
+bool
+XMLNode::operator== (const XMLNode& other) const
+{
+	if (is_content () != other.is_content ()) {
+		return false;
+	}
+
+	if (is_content ()) {
+		if (content () != other.content ()) {
+			return false;
+		}
+	} else {
+		if (name () != other.name ()) {
+			return false;
+		}
+	}
+
+	XMLPropertyList const& other_properties = other.properties ();
+
+	if (_proplist.size () != other_properties.size ()) {
+		return false;
+	}
+
+	XMLPropertyConstIterator our_prop_iter = _proplist.begin();
+	XMLPropertyConstIterator other_prop_iter = other_properties.begin();
+
+	while (our_prop_iter != _proplist.end ()) {
+		XMLProperty const* our_prop = *our_prop_iter;
+		XMLProperty const* other_prop = *other_prop_iter;
+		if (our_prop->name () != other_prop->name () || our_prop->value () != other_prop->value ()) {
+			return false;
+		}
+		++our_prop_iter;
+		++other_prop_iter;
+	}
+
+	XMLNodeList const& other_children = other.children();
+
+	if (_children.size() != other_children.size()) {
+		return false;
+	}
+
+	XMLNodeConstIterator our_child_iter = _children.begin ();
+	XMLNodeConstIterator other_child_iter = other_children.begin ();
+
+	while (our_child_iter != _children.end()) {
+		XMLNode const* our_child = *our_child_iter;
+		XMLNode const* other_child = *other_child_iter;
+
+		if (*our_child != *other_child) {
+			return false;
+		}
+		++our_child_iter;
+		++other_child_iter;
+	}
+	return true;
+}
+
+bool
+XMLNode::operator!= (const XMLNode& other) const
+{
+	return !(*this == other);
 }
 
 const string&
@@ -394,10 +466,16 @@ std::string
 XMLNode::attribute_value()
 {
 	XMLNodeList children = this->children();
-	assert(!_is_content);
-	assert(children.size() == 1);
+	if (_is_content)
+		throw XMLException("XMLNode: attribute_value failed (is_content) for requested node: " + name());
+
+	if (children.size() != 1)
+		throw XMLException("XMLNode: attribute_value failed (children.size != 1) for requested node: " + name());
+
 	XMLNode* child = *(children.begin());
-	assert(child->is_content());
+	if (!child->is_content())
+		throw XMLException("XMLNode: attribute_value failed (!child->is_content()) for requested node: " + name());
+
 	return child->content();
 }
 
@@ -408,115 +486,126 @@ XMLNode::add_content(const string& c)
 }
 
 XMLProperty const *
-XMLNode::property(const char* n) const
+XMLNode::property(const char* name) const
 {
-	string ns(n);
-	map<string,XMLProperty*>::const_iterator iter;
+	XMLPropertyConstIterator iter = _proplist.begin();
 
-	if ((iter = _propmap.find(ns)) != _propmap.end()) {
-		return iter->second;
+	while (iter != _proplist.end()) {
+		if ((*iter)->name() == name) {
+			return *iter;
+		}
+		++iter;
 	}
 
 	return 0;
 }
 
 XMLProperty const *
-XMLNode::property(const string& ns) const
+XMLNode::property(const string& name) const
 {
-	map<string,XMLProperty*>::const_iterator iter;
+	XMLPropertyConstIterator iter = _proplist.begin();
 
-	if ((iter = _propmap.find(ns)) != _propmap.end()) {
-		return iter->second;
+	while (iter != _proplist.end()) {
+		if ((*iter)->name() == name) {
+			return *iter;
+		}
+		++iter;
 	}
-
 	return 0;
 }
 
 XMLProperty *
-XMLNode::property(const char* n)
+XMLNode::property(const char* name)
 {
-	string ns(n);
-	map<string,XMLProperty*>::iterator iter;
+	XMLPropertyIterator iter = _proplist.begin();
 
-	if ((iter = _propmap.find(ns)) != _propmap.end()) {
-		return iter->second;
+	while (iter != _proplist.end()) {
+		if ((*iter)->name() == name) {
+			return *iter;
+		}
+		++iter;
 	}
-
 	return 0;
 }
 
 XMLProperty *
-XMLNode::property(const string& ns)
+XMLNode::property(const string& name)
 {
-	map<string,XMLProperty*>::iterator iter;
+	XMLPropertyIterator iter = _proplist.begin();
 
-	if ((iter = _propmap.find(ns)) != _propmap.end()) {
-		return iter->second;
+	while (iter != _proplist.end()) {
+		if ((*iter)->name() == name) {
+			return *iter;
+		}
+		++iter;
 	}
 
 	return 0;
 }
 
 bool
-XMLNode::has_property_with_value (const string& key, const string& value) const
+XMLNode::has_property_with_value (const string& name, const string& value) const
 {
-	map<string,XMLProperty*>::const_iterator iter = _propmap.find(key);
-	if (iter != _propmap.end()) {
-		const XMLProperty* p = (iter->second);
-		return (p && p->value() == value);
+	XMLPropertyConstIterator iter = _proplist.begin();
+
+	while (iter != _proplist.end()) {
+		if ((*iter)->name() == name && (*iter)->value() == value) {
+			return true;
+		}
+		++iter;
 	}
 	return false;
 }
 
-XMLProperty*
-XMLNode::add_property(const char* n, const string& v)
+bool
+XMLNode::set_property(const char* name, const string& value)
 {
-	string ns(n);
-        map<string,XMLProperty*>::iterator iter;
+	XMLPropertyIterator iter = _proplist.begin();
 
-        if ((iter = _propmap.find(ns)) != _propmap.end()) {
-                iter->second->set_value (v);
-                return iter->second;
+	while (iter != _proplist.end()) {
+		if ((*iter)->name() == name) {
+			(*iter)->set_value (value);
+			return *iter;
+		}
+		++iter;
 	}
 
-	XMLProperty* tmp = new XMLProperty(ns, v);
+	XMLProperty* new_property = new XMLProperty(name, value);
 
-	if (!tmp) {
+	if (!new_property) {
 		return 0;
 	}
 
-	_propmap[tmp->name()] = tmp;
-	_proplist.insert(_proplist.end(), tmp);
+	_proplist.insert(_proplist.end(), new_property);
 
-	return tmp;
+	return new_property;
 }
 
-XMLProperty*
-XMLNode::add_property(const char* n, const char* v)
+bool
+XMLNode::get_property(const char* name, std::string& value) const
 {
-	string vs(v);
-	return add_property(n, vs);
-}
+	XMLProperty const* const prop = property (name);
+	if (!prop)
+		return false;
 
-XMLProperty*
-XMLNode::add_property(const char* name, const long value)
-{
-	char str[64];
-	snprintf(str, sizeof(str), "%ld", value);
-	return add_property(name, str);
+	value = prop->value ();
+
+	return true;
 }
 
 void
-XMLNode::remove_property(const string& n)
+XMLNode::remove_property(const string& name)
 {
-	if (_propmap.find(n) != _propmap.end()) {
-		XMLProperty* p = _propmap[n];
-		XMLPropertyIterator i = std::find(_proplist.begin(), _proplist.end(), p);
-		if (i != _proplist.end ()) {
-			_proplist.erase (i);
+	XMLPropertyIterator iter = _proplist.begin();
+
+	while (iter != _proplist.end()) {
+		if ((*iter)->name() == name) {
+			XMLProperty* property = *iter;
+			_proplist.erase (iter);
+			delete property;
+			break;
 		}
-		delete p;
-		_propmap.erase(n);
+		++iter;
 	}
 }
 
@@ -575,16 +664,26 @@ XMLNode::remove_nodes_and_delete(const string& propname, const string& val)
 	}
 }
 
+void
+XMLNode::remove_node_and_delete(const string& n, const string& propname,
+ const string& val)
+{
+	for (XMLNodeIterator i = _children.begin(); i != _children.end(); ++i) {
+		if ((*i)->name() == n) {
+			XMLProperty const * prop = (*i)->property (propname);
+			if (prop && prop->value() == val) {
+				delete *i;
+				_children.erase (i);
+				break;
+			}
+		}
+	}
+}
+
 XMLProperty::XMLProperty(const string& n, const string& v)
 	: _name(n)
 	, _value(v)
 {
-	// Normalize property name (replace '_' with '-' as old session are inconsistent)
-	for (size_t i = 0; i < _name.length(); ++i) {
-		if (_name[i] == '_') {
-			_name[i] = '-';
-		}
-	}
 }
 
 XMLProperty::~XMLProperty()
@@ -610,7 +709,7 @@ readnode(xmlNodePtr node)
 		if (attr->children) {
 			content = (char*)attr->children->content;
 		}
-		tmp->add_property((const char*)attr->name, content);
+		tmp->set_property((const char*)attr->name, content);
 	}
 
 	if (node->content) {
@@ -629,10 +728,6 @@ readnode(xmlNodePtr node)
 static void
 writenode(xmlDocPtr doc, XMLNode* n, xmlNodePtr p, int root = 0)
 {
-	XMLPropertyList props;
-	XMLPropertyIterator curprop;
-	XMLNodeList children;
-	XMLNodeIterator curchild;
 	xmlNodePtr node;
 
 	if (root) {
@@ -646,14 +741,18 @@ writenode(xmlDocPtr doc, XMLNode* n, xmlNodePtr p, int root = 0)
 		xmlNodeSetContentLen(node, (const xmlChar*)n->content().c_str(), n->content().length());
 	}
 
-	props = n->properties();
-	for (curprop = props.begin(); curprop != props.end(); ++curprop) {
-		xmlSetProp(node, (const xmlChar*) (*curprop)->name().c_str(), (const xmlChar*) (*curprop)->value().c_str());
+	const XMLPropertyList& props = n->properties();
+
+	for (XMLPropertyConstIterator prop_iter = props.begin (); prop_iter != props.end ();
+	     ++prop_iter) {
+		xmlSetProp (node, (const xmlChar*)(*prop_iter)->name ().c_str (),
+		            (const xmlChar*)(*prop_iter)->value ().c_str ());
 	}
 
-	children = n->children();
-	for (curchild = children.begin(); curchild != children.end(); ++curchild) {
-		writenode(doc, *curchild, node);
+	const XMLNodeList& children = n->children ();
+	for (XMLNodeConstIterator child_iter = children.begin (); child_iter != children.end ();
+	     ++child_iter) {
+		writenode (doc, *child_iter, node);
 	}
 }
 

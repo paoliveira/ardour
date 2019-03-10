@@ -75,6 +75,13 @@ public:
 	 */
 	virtual void render (Rect const & area, Cairo::RefPtr<Cairo::Context>) const = 0;
 
+	/** Item has changed will be rendered in next render pass so give item a
+	 * chance to perhaps schedule work in another thread etc.
+	 *
+	 *  @param area Area to draw, in **window** coordinates
+	 */
+	virtual void prepare_for_render (Rect const & area) const { }
+
 	/** Adds one or more items to the vector @param items based on their
 	 * covering @param point which is in **window** coordinates
 	 *
@@ -99,7 +106,7 @@ public:
 	void ungrab ();
 
 	void unparent ();
-	void reparent (Item *);
+	void reparent (Item *, bool already_added = false);
 
 	/** @return Parent group, or 0 if this is the root group */
 	Item* parent () const {
@@ -136,7 +143,18 @@ public:
 
 	ScrollGroup* scroll_parent() const { return _scroll_parent; }
 
-	boost::optional<Rect> bounding_box () const;
+	/* item implementations can override this if they need to */
+	virtual Rect size_request() const { return bounding_box (true); }
+	void size_allocate (Rect const&);
+
+	/** bounding box is the public API to get the size of the item.
+	   If @param for_own_purposes is false, then it will return the
+	   allocated bounding box (if there is one) in preference to the
+	   one that would naturally be computed by the item.
+	*/
+	Rect bounding_box (bool for_own_purposes = false) const;
+	Rect allocation() const { return _allocation; }
+
         Coord height() const;
         Coord width() const;
 
@@ -275,12 +293,13 @@ protected:
 	/** true if this item is visible (ie to be drawn), otherwise false */
 	bool _visible;
 	/** our bounding box before any change that is currently in progress */
-	boost::optional<Rect> _pre_change_bounding_box;
+	Rect _pre_change_bounding_box;
 
 	/** our bounding box; may be out of date if _bounding_box_dirty is true */
-	mutable boost::optional<Rect> _bounding_box;
+	mutable Rect _bounding_box;
 	/** true if _bounding_box might be out of date, false if its definitely not */
 	mutable bool _bounding_box_dirty;
+	Rect _allocation;
 
 	/* XXX: this is a bit grubby */
 	std::map<std::string, void *> _data;
@@ -297,6 +316,7 @@ protected:
 
 	void add_child_bounding_boxes (bool include_hidden = false) const;
 	void render_children (Rect const & area, Cairo::RefPtr<Cairo::Context> context) const;
+	void prepare_for_render_children (Rect const & area) const;
 
 	Duple scroll_offset() const;
 	Duple position_offset() const;

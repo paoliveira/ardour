@@ -19,6 +19,7 @@
 */
 
 #include "ardour/export_format_manager.h"
+#include "ardour/filesystem_paths.h"
 
 #include "ardour/export_format_specification.h"
 #include "ardour/export_format_compatibility.h"
@@ -210,6 +211,12 @@ ExportFormatManager::init_formats ()
 		f_ptr.reset (new ExportFormatFLAC ());
 		add_format (f_ptr);
 	} catch (ExportFormatIncompatible & e) {}
+
+	std::string unused;
+	if (ArdourVideoToolPaths::transcoder_exe (unused, unused)) {
+		f_ptr.reset (new ExportFormatFFMPEG ("MP3", "mp3"));
+		add_format (f_ptr);
+	}
 }
 
 void
@@ -222,6 +229,7 @@ ExportFormatManager::init_sample_rates ()
 	add_sample_rate (SampleRatePtr (new SampleRateState (ExportFormatBase::SR_48,    string_compose ("%1%2%3 kHz", std::fixed, std::setprecision(0), 48))));
 	add_sample_rate (SampleRatePtr (new SampleRateState (ExportFormatBase::SR_88_2,  string_compose ("%1%2%3 kHz", std::fixed, std::setprecision(1), 88.2))));
 	add_sample_rate (SampleRatePtr (new SampleRateState (ExportFormatBase::SR_96,    string_compose ("%1%2%3 kHz", std::fixed, std::setprecision(0), 96))));
+	add_sample_rate (SampleRatePtr (new SampleRateState (ExportFormatBase::SR_176_4, string_compose ("%1%2%3 kHz", std::fixed, std::setprecision(0), 176.4))));
 	add_sample_rate (SampleRatePtr (new SampleRateState (ExportFormatBase::SR_192,   string_compose ("%1%2%3 kHz", std::fixed, std::setprecision(0), 192))));
 }
 
@@ -276,6 +284,13 @@ void
 ExportFormatManager::select_src_quality (ExportFormatBase::SRCQuality value)
 {
 	current_selection->set_src_quality (value);
+	check_for_description_change ();
+}
+
+void
+ExportFormatManager::select_codec_quality (int value)
+{
+	current_selection->set_codec_quality (value);
 	check_for_description_change ();
 }
 

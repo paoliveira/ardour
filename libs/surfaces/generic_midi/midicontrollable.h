@@ -30,10 +30,6 @@
 
 #include "ardour/types.h"
 
-namespace ARDOUR {
-	class ControllableDescriptor;
-}
-
 namespace MIDI {
 	class Channel;
 	class Parser;
@@ -59,6 +55,12 @@ class MIDIControllable : public PBD::Stateful
 	uint32_t rid() const { return _rid; }
 	std::string what() const { return _what; }
 
+	enum CtlType {
+		Ctl_Momentary,
+		Ctl_Toggle,
+		Ctl_Dial,
+	};
+
 	enum Encoder {
 		No_enc,
 		Enc_R,
@@ -75,13 +77,13 @@ class MIDIControllable : public PBD::Stateful
 	void stop_learning ();
 	void drop_external_control ();
 
-	bool get_midi_feedback () { return feedback; }
-	void set_midi_feedback (bool val) { feedback = val; }
-
 	int control_to_midi(float val);
 	float midi_to_control(int val);
 
 	bool learned() const { return _learned; }
+
+	CtlType get_ctltype() const { return _ctltype; }
+	void set_ctltype (CtlType val) { _ctltype = val; }
 
 	Encoder get_encoder() const { return _encoder; }
 	void set_encoder (Encoder val) { _encoder = val; }
@@ -90,8 +92,6 @@ class MIDIControllable : public PBD::Stateful
 	PBD::Controllable* get_controllable() const { return controllable; }
 	void set_controllable (PBD::Controllable*);
 	const std::string& current_uri() const { return _current_uri; }
-
-	ARDOUR::ControllableDescriptor& descriptor() const { return *_descriptor; }
 
 	std::string control_description() const { return _control_description; }
 
@@ -116,15 +116,16 @@ class MIDIControllable : public PBD::Stateful
 
 	GenericMidiControlProtocol* _surface;
 	PBD::Controllable* controllable;
-	ARDOUR::ControllableDescriptor* _descriptor;
 	std::string     _current_uri;
         MIDI::Parser&   _parser;
 	bool             setting;
 	int              last_value;
+	int              last_incoming;
 	float            last_controllable_value;
 	bool            _momentary;
 	bool            _is_gain_controller;
 	bool            _learned;
+	CtlType         _ctltype;
 	Encoder			_encoder;
 	int              midi_msg_id;      /* controller ID or note number */
 	PBD::ScopedConnection midi_sense_connection[2];
@@ -137,12 +138,11 @@ class MIDIControllable : public PBD::Stateful
 	std::string     _control_description;
 	int16_t          control_rpn;
 	int16_t          control_nrpn;
-	bool             feedback;
 	uint32_t        _rid;
 	std::string     _what;
 	bool            _bank_relative;
 
-  void drop_controllable (PBD::Controllable*);
+	void drop_controllable (PBD::Controllable*);
 
 	void midi_receiver (MIDI::Parser &p, MIDI::byte *, size_t);
 	void midi_sense_note (MIDI::Parser &, MIDI::EventTwoBytes *, bool is_on);
@@ -156,7 +156,6 @@ class MIDIControllable : public PBD::Stateful
 	void rpn_value_change (MIDI::Parser&, uint16_t nrpn, float val);
 	void rpn_change (MIDI::Parser&, uint16_t nrpn, int direction);
 	void nrpn_change (MIDI::Parser&, uint16_t nrpn, int direction);
-
 };
 
 #endif // __gm_midicontrollable_h__

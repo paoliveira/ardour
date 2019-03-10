@@ -16,6 +16,7 @@
  * 51 Franklin St, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <cassert>
 #include <iostream>
 #include <limits>
 #include <glib.h>
@@ -23,15 +24,14 @@
 #include "evoral/Note.hpp"
 #endif
 
-#include "evoral/Beats.hpp"
+#include "temporal/beats.h"
 
 namespace Evoral {
 
 template<typename Time>
 Note<Time>::Note(uint8_t chan, Time t, Time l, uint8_t n, uint8_t v)
-	// FIXME: types?
-	: _on_event (0xDE, t, 3, NULL, true)
-	, _off_event (0xAD, t + l, 3, NULL, true)
+	: _on_event (MIDI_EVENT, t, 3, NULL, true)
+	, _off_event (MIDI_EVENT, t + l, 3, NULL, true)
 {
 	assert(chan < 16);
 
@@ -57,8 +57,6 @@ Note<Time>::Note(const Note<Time>& copy)
 	: _on_event(copy._on_event, true)
 	, _off_event(copy._off_event, true)
 {
-	set_id (copy.id());
-
 	assert(_on_event.buffer());
 	assert(_off_event.buffer());
 	/*
@@ -92,25 +90,7 @@ Note<Time>::set_id (event_id_t id)
 	_off_event.set_id (id);
 }
 
-template<typename Time>
-const Note<Time>&
-Note<Time>::operator=(const Note<Time>& other)
-{
-	_on_event = other._on_event;
-	_off_event = other._off_event;
-
-	assert(time() == other.time());
-	assert(end_time() == other.end_time());
-	assert(length() == other.length());
-	assert(note() == other.note());
-	assert(velocity() == other.velocity());
-	assert(_on_event.channel() == _off_event.channel());
-	assert(channel() == other.channel());
-
-	return *this;
-}
-
-template class Note<Evoral::Beats>;
+template class Note<Temporal::Beats>;
 
 } // namespace Evoral
 

@@ -1,3 +1,8 @@
+This is a stripped down version of the Queen Mary DSP library
+
+https://github.com/c4dm/qm-dsp  -- see gitrev.txt for version
+
+---
 
 
 QM-DSP library
@@ -28,5 +33,3 @@ modify it under the terms of the GNU General Public License as
 published by the Free Software Foundation; either version 2 of the
 License, or (at your option) any later version.  See the file
 COPYING included with this distribution for more information.
-
-

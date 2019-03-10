@@ -39,6 +39,7 @@ namespace AudioGrapher {
 	template <typename T> class SampleFormatConverter;
 	template <typename T> class Interleaver;
 	template <typename T> class SndfileWriter;
+	template <typename T> class CmdPipeWriter;
 	template <typename T> class SilenceTrimmer;
 	template <typename T> class TmpFile;
 	template <typename T> class Threader;
@@ -67,7 +68,7 @@ class LIBARDOUR_API ExportGraphBuilder
 	ExportGraphBuilder (Session const & session);
 	~ExportGraphBuilder ();
 
-	int process (framecnt_t frames, bool last_cycle);
+	int process (samplecnt_t samples, bool last_cycle);
 	bool post_process (); // returns true when finished
 	bool need_postprocessing () const { return !intermediates.empty(); }
 	bool realtime() const { return _realtime; }
@@ -102,7 +103,11 @@ class LIBARDOUR_API ExportGraphBuilder
 		typedef boost::shared_ptr<AudioGrapher::SndfileWriter<int> >    IntWriterPtr;
 		typedef boost::shared_ptr<AudioGrapher::SndfileWriter<short> >  ShortWriterPtr;
 
+		typedef boost::shared_ptr<AudioGrapher::CmdPipeWriter<Sample> > FloatPipePtr;
+
 		template<typename T> void init_writer (boost::shared_ptr<AudioGrapher::SndfileWriter<T> > & writer);
+		template<typename T> void init_writer (boost::shared_ptr<AudioGrapher::CmdPipeWriter<T> > & writer);
+
 		void copy_files (std::string orig_path);
 
 		FileSpec               config;
@@ -115,13 +120,14 @@ class LIBARDOUR_API ExportGraphBuilder
 		FloatWriterPtr float_writer;
 		IntWriterPtr   int_writer;
 		ShortWriterPtr short_writer;
+		FloatPipePtr   pipe_writer;
 	};
 
 	// sample format converter
 	class SFC {
             public:
 		// This constructor so that this can be constructed like a Normalizer
-		SFC (ExportGraphBuilder &, FileSpec const & new_config, framecnt_t max_frames);
+		SFC (ExportGraphBuilder &, FileSpec const & new_config, samplecnt_t max_samples);
 		FloatSinkPtr sink ();
 		void add_child (FileSpec const & new_config);
 		void remove_children (bool remove_out_files);
@@ -149,7 +155,7 @@ class LIBARDOUR_API ExportGraphBuilder
 
 	class Intermediate {
 	                                        public:
-		Intermediate (ExportGraphBuilder & parent, FileSpec const & new_config, framecnt_t max_frames);
+		Intermediate (ExportGraphBuilder & parent, FileSpec const & new_config, samplecnt_t max_samples);
 		FloatSinkPtr sink ();
 		void add_child (FileSpec const & new_config);
 		void remove_children (bool remove_out_files);
@@ -174,7 +180,7 @@ class LIBARDOUR_API ExportGraphBuilder
 		ExportGraphBuilder & parent;
 
 		FileSpec        config;
-		framecnt_t      max_frames_out;
+		samplecnt_t      max_samples_out;
 		bool            use_loudness;
 		bool            use_peak;
 		BufferPtr       buffer;
@@ -191,7 +197,7 @@ class LIBARDOUR_API ExportGraphBuilder
 	// sample rate converter
 	class SRC {
             public:
-		SRC (ExportGraphBuilder & parent, FileSpec const & new_config, framecnt_t max_frames);
+		SRC (ExportGraphBuilder & parent, FileSpec const & new_config, samplecnt_t max_samples);
 		FloatSinkPtr sink ();
 		void add_child (FileSpec const & new_config);
 		void remove_children (bool remove_out_files);
@@ -209,13 +215,13 @@ class LIBARDOUR_API ExportGraphBuilder
 		boost::ptr_list<SFC>  children;
 		boost::ptr_list<Intermediate> intermediate_children;
 		SRConverterPtr        converter;
-		framecnt_t            max_frames_out;
+		samplecnt_t            max_samples_out;
 	};
 
 	// Silence trimmer + adder
 	class SilenceHandler {
 	    public:
-		SilenceHandler (ExportGraphBuilder & parent, FileSpec const & new_config, framecnt_t max_frames);
+		SilenceHandler (ExportGraphBuilder & parent, FileSpec const & new_config, samplecnt_t max_samples);
 		FloatSinkPtr sink ();
 		void add_child (FileSpec const & new_config);
 		void remove_children (bool remove_out_files);
@@ -228,7 +234,7 @@ class LIBARDOUR_API ExportGraphBuilder
 		FileSpec             config;
 		boost::ptr_list<SRC> children;
 		SilenceTrimmerPtr    silence_trimmer;
-		framecnt_t           max_frames_in;
+		samplecnt_t           max_samples_in;
 	};
 
 	// channel configuration
@@ -248,7 +254,7 @@ class LIBARDOUR_API ExportGraphBuilder
 		boost::ptr_list<SilenceHandler> children;
 		InterleaverPtr            interleaver;
 		ChunkerPtr                chunker;
-		framecnt_t                max_frames_out;
+		samplecnt_t                max_samples_out;
 	};
 
 	Session const & session;
@@ -261,7 +267,7 @@ class LIBARDOUR_API ExportGraphBuilder
 	// The sources of all data, each channel is read only once
 	ChannelMap channels;
 
-	framecnt_t process_buffer_frames;
+	samplecnt_t process_buffer_samples;
 
 	std::list<Intermediate *> intermediates;
 

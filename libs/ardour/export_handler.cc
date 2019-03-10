@@ -28,6 +28,7 @@
 
 #include "ardour/audioengine.h"
 #include "ardour/audiofile_tagger.h"
+#include "ardour/audio_port.h"
 #include "ardour/debug.h"
 #include "ardour/export_graph_builder.h"
 #include "ardour/export_timespan.h"
@@ -65,7 +66,7 @@ ExportElementFactory::~ExportElementFactory ()
 ExportTimespanPtr
 ExportElementFactory::add_timespan ()
 {
-	return ExportTimespanPtr (new ExportTimespan (session.get_export_status(), session.frame_rate()));
+	return ExportTimespanPtr (new ExportTimespan (session.get_export_status(), session.sample_rate()));
 }
 
 ExportChannelConfigPtr
@@ -144,7 +145,7 @@ ExportHandler::do_export ()
 	for (ConfigMap::iterator it = config_map.begin(); it != config_map.end(); ++it) {
 		bool new_timespan = timespan_set.insert (it->first).second;
 		if (new_timespan) {
-			export_status->total_frames += it->first->get_length();
+			export_status->total_samples += it->first->get_length();
 		}
 	}
 	export_status->total_timespans = timespan_set.size();
@@ -179,9 +180,9 @@ ExportHandler::start_timespan ()
 	*/
 	current_timespan = config_map.begin()->first;
 
-	export_status->total_frames_current_timespan = current_timespan->get_length();
+	export_status->total_samples_current_timespan = current_timespan->get_length();
 	export_status->timespan_name = current_timespan->name();
-	export_status->processed_frames_current_timespan = 0;
+	export_status->processed_samples_current_timespan = 0;
 
 	/* Register file configurations to graph builder */
 
@@ -191,19 +192,32 @@ ExportHandler::start_timespan ()
 	graph_builder->set_current_timespan (current_timespan);
 	handle_duplicate_format_extensions();
 	bool realtime = current_timespan->realtime ();
+	bool region_export = true;
 	for (ConfigMap::iterator it = timespan_bounds.first; it != timespan_bounds.second; ++it) {
 		// Filenames can be shared across timespans
 		FileSpec & spec = it->second;
 		spec.filename->set_timespan (it->first);
+		switch (spec.channel_config->region_processing_type ()) {
+			case RegionExportChannelFactory::None:
+			case RegionExportChannelFactory::Processed:
+				region_export = false;
+				break;
+			default:
+				break;
+		}
 		graph_builder->add_config (spec, realtime);
 	}
+
+	// ExportDialog::update_realtime_selection does not allow this
+	assert (!region_export || !realtime);
 
 	/* start export */
 
 	post_processing = false;
 	session.ProcessExport.connect_same_thread (process_connection, boost::bind (&ExportHandler::process, this, _1));
 	process_position = current_timespan->get_start();
-	session.start_audio_export (process_position, realtime);
+	// TODO check if it's a RegionExport.. set flag to skip  process_without_events()
+	session.start_audio_export (process_position, realtime, region_export);
 }
 
 void
@@ -213,7 +227,16 @@ ExportHandler::handle_duplicate_format_extensions()
 
 	ExtCountMap counts;
 	for (ConfigMap::iterator it = timespan_bounds.first; it != timespan_bounds.second; ++it) {
-		counts[it->second.format->extension()]++;
+		if (it->second.filename->include_channel_config && it->second.channel_config) {
+			/* stem-export has multiple files in the same timestamp, but a different channel_config for each.
+			 * However channel_config is only set in ExportGraphBuilder::Encoder::init_writer()
+			 * so we cannot yet use   it->second.filename->get_path(it->second.format).
+			 * We have to explicily check uniqueness of "channel-config + extension" here:
+			 */
+			counts[it->second.channel_config->name() + it->second.format->extension()]++;
+		} else {
+			counts[it->second.format->extension()]++;
+		}
 	}
 
 	bool duplicates_found = false;
@@ -228,7 +251,7 @@ ExportHandler::handle_duplicate_format_extensions()
 }
 
 int
-ExportHandler::process (framecnt_t frames)
+ExportHandler::process (samplecnt_t samples)
 {
 	if (!export_status->running ()) {
 		return 0;
@@ -242,34 +265,34 @@ ExportHandler::process (framecnt_t frames)
 		}
 	} else {
 		Glib::Threads::Mutex::Lock l (export_status->lock());
-		return process_timespan (frames);
+		return process_timespan (samples);
 	}
 }
 
 int
-ExportHandler::process_timespan (framecnt_t frames)
+ExportHandler::process_timespan (samplecnt_t samples)
 {
 	export_status->active_job = ExportStatus::Exporting;
 	/* update position */
 
-	framecnt_t frames_to_read = 0;
-	framepos_t const end = current_timespan->get_end();
+	samplecnt_t samples_to_read = 0;
+	samplepos_t const end = current_timespan->get_end();
 
-	bool const last_cycle = (process_position + frames >= end);
+	bool const last_cycle = (process_position + samples >= end);
 
 	if (last_cycle) {
-		frames_to_read = end - process_position;
+		samples_to_read = end - process_position;
 		export_status->stop = true;
 	} else {
-		frames_to_read = frames;
+		samples_to_read = samples;
 	}
 
-	process_position += frames_to_read;
-	export_status->processed_frames += frames_to_read;
-	export_status->processed_frames_current_timespan += frames_to_read;
+	process_position += samples_to_read;
+	export_status->processed_samples += samples_to_read;
+	export_status->processed_samples_current_timespan += samples_to_read;
 
 	/* Do actual processing */
-	int ret = graph_builder->process (frames_to_read, last_cycle);
+	int ret = graph_builder->process (samples_to_read, last_cycle);
 
 	/* Start post-processing/normalizing if necessary */
 	if (last_cycle) {
@@ -399,7 +422,7 @@ ExportHandler::finish_timespan ()
 			ARDOUR::SystemExec *se = new ARDOUR::SystemExec(fmt->command(), subs);
 			info << "Post-export command line : {" << se->to_s () << "}" << endmsg;
 			se->ReadStdout.connect_same_thread(command_connection, boost::bind(&ExportHandler::command_output, this, _1, _2));
-			int ret = se->start (2);
+			int ret = se->start (SystemExec::MergeWithStdin);
 			if (ret == 0) {
 				// successfully started
 				while (se->is_running ()) {
@@ -412,6 +435,14 @@ ExportHandler::finish_timespan ()
 			delete (se);
 		}
 
+		// XXX THIS IS IN REALTIME CONTEXT, CALLED FROM
+		// AudioEngine::process_callback()
+		// freewheeling, yes, but still uploading here is NOT
+		// a good idea.
+		//
+		// even less so, since SoundcloudProgress is using
+		// connect_same_thread() - GUI updates from the RT thread
+		// will cause crashes. http://pastebin.com/UJKYNGHR
 		if (fmt->soundcloud_upload()) {
 			SoundcloudUploader *soundcloud_uploader = new SoundcloudUploader;
 			std::string token = soundcloud_uploader->Get_Auth_Token(soundcloud_username, soundcloud_password);
@@ -441,6 +472,13 @@ ExportHandler::finish_timespan ()
 	}
 
 	start_timespan ();
+}
+
+void
+ExportHandler::reset ()
+{
+	config_map.clear ();
+	graph_builder->reset ();
 }
 
 /*** CD Marker stuff ***/
@@ -509,7 +547,7 @@ ExportHandler::export_cd_marker_file (ExportTimespanPtr timespan, ExportFormatSp
 
 		/* Start actual marker stuff */
 
-		framepos_t last_end_time = timespan->get_start();
+		samplepos_t last_end_time = timespan->get_start();
 		status.track_position = 0;
 
 		for (i = temp.begin(); i != temp.end(); ++i) {
@@ -530,7 +568,7 @@ ExportHandler::export_cd_marker_file (ExportTimespanPtr timespan, ExportFormatSp
 			/* A track, defined by a cd range marker or a cd location marker outside of a cd range */
 
 			status.track_position = last_end_time - timespan->get_start();
-			status.track_start_frame = (*i)->start() - timespan->get_start();  // everything before this is the pregap
+			status.track_start_sample = (*i)->start() - timespan->get_start();  // everything before this is the pregap
 			status.track_duration = 0;
 
 			if ((*i)->is_mark()) {
@@ -706,12 +744,12 @@ ExportHandler::write_track_info_cue (CDMarkerStatus & status)
 		status.out << "    SONGWRITER " << cue_escape_cdtext (status.marker->cd_info["composer"]) << endl;
 	}
 
-	if (status.track_position != status.track_start_frame) {
-		frames_to_cd_frames_string (buf, status.track_position);
+	if (status.track_position != status.track_start_sample) {
+		samples_to_cd_samples_string (buf, status.track_position);
 		status.out << "    INDEX 00" << buf << endl;
 	}
 
-	frames_to_cd_frames_string (buf, status.track_start_frame);
+	samples_to_cd_samples_string (buf, status.track_start_sample);
 	status.out << "    INDEX 01" << buf << endl;
 
 	status.index_number = 2;
@@ -764,13 +802,13 @@ ExportHandler::write_track_info_toc (CDMarkerStatus & status)
 
 	status.out << "  }" << endl << "}" << endl;
 
-	frames_to_cd_frames_string (buf, status.track_position);
+	samples_to_cd_samples_string (buf, status.track_position);
 	status.out << "FILE " << toc_escape_filename (status.filename) << ' ' << buf;
 
-	frames_to_cd_frames_string (buf, status.track_duration);
+	samples_to_cd_samples_string (buf, status.track_duration);
 	status.out << buf << endl;
 
-	frames_to_cd_frames_string (buf, status.track_start_frame - status.track_position);
+	samples_to_cd_samples_string (buf, status.track_start_sample - status.track_position);
 	status.out << "START" << buf << endl;
 }
 
@@ -778,7 +816,7 @@ void ExportHandler::write_track_info_mp4ch (CDMarkerStatus & status)
 {
 	gchar buf[18];
 
-	frames_to_chapter_marks_string(buf, status.track_start_frame);
+	samples_to_chapter_marks_string(buf, status.track_start_sample);
 	status.out << buf << " " << status.marker->name() << endl;
 }
 
@@ -789,7 +827,7 @@ ExportHandler::write_index_info_cue (CDMarkerStatus & status)
 
 	snprintf (buf, sizeof(buf), "    INDEX %02d", cue_indexnum);
 	status.out << buf;
-	frames_to_cd_frames_string (buf, status.index_position);
+	samples_to_cd_samples_string (buf, status.index_position);
 	status.out << buf << endl;
 
 	cue_indexnum++;
@@ -800,7 +838,7 @@ ExportHandler::write_index_info_toc (CDMarkerStatus & status)
 {
 	gchar buf[18];
 
-	frames_to_cd_frames_string (buf, status.index_position - status.track_position);
+	samples_to_cd_samples_string (buf, status.index_position - status.track_position);
 	status.out << "INDEX" << buf << endl;
 }
 
@@ -810,25 +848,25 @@ ExportHandler::write_index_info_mp4ch (CDMarkerStatus & status)
 }
 
 void
-ExportHandler::frames_to_cd_frames_string (char* buf, framepos_t when)
+ExportHandler::samples_to_cd_samples_string (char* buf, samplepos_t when)
 {
-	framecnt_t remainder;
-	framecnt_t fr = session.nominal_frame_rate();
-	int mins, secs, frames;
+	samplecnt_t remainder;
+	samplecnt_t fr = session.nominal_sample_rate();
+	int mins, secs, samples;
 
 	mins = when / (60 * fr);
 	remainder = when - (mins * 60 * fr);
 	secs = remainder / fr;
 	remainder -= secs * fr;
-	frames = remainder / (fr / 75);
-	sprintf (buf, " %02d:%02d:%02d", mins, secs, frames);
+	samples = remainder / (fr / 75);
+	sprintf (buf, " %02d:%02d:%02d", mins, secs, samples);
 }
 
 void
-ExportHandler::frames_to_chapter_marks_string (char* buf, framepos_t when)
+ExportHandler::samples_to_chapter_marks_string (char* buf, samplepos_t when)
 {
-	framecnt_t remainder;
-	framecnt_t fr = session.nominal_frame_rate();
+	samplecnt_t remainder;
+	samplecnt_t fr = session.nominal_sample_rate();
 	int hours, mins, secs, msecs;
 
 	hours = when / (3600 * fr);

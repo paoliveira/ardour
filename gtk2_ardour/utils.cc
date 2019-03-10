@@ -28,26 +28,32 @@
 #include <cmath>
 #include <list>
 #include <sys/stat.h>
-#include <gtkmm/rc.h>
-#include <gtkmm/window.h>
+
+#include <boost/algorithm/string.hpp>
+
+#include <gtk/gtkpaned.h>
 #include <gtkmm/combo.h>
 #include <gtkmm/label.h>
 #include <gtkmm/paned.h>
-#include <gtk/gtkpaned.h>
-#include <boost/algorithm/string.hpp>
+#include <gtkmm/rc.h>
+#include <gtkmm/stock.h>
+#include <gtkmm/window.h>
 
 #include "pbd/basename.h"
 #include "pbd/file_utils.h"
 #include "pbd/stacktrace.h"
 
-#include <gtkmm2ext/utils.h>
-
+#include "ardour/audioengine.h"
 #include "ardour/filesystem_paths.h"
 #include "ardour/search_paths.h"
 
-#include "canvas/item.h"
-#include "canvas/utils.h"
+#include "gtkmm2ext/colors.h"
+#include "gtkmm2ext/utils.h"
 
+#include "canvas/item.h"
+
+#include "actions.h"
+#include "context_menu_helper.h"
 #include "debug.h"
 #include "public_editor.h"
 #include "keyboard.h"
@@ -95,6 +101,38 @@ ARDOUR_UI_UTILS::just_hide_it (GdkEventAny */*ev*/, Gtk::Window *win)
 	win->hide ();
 	return 0;
 }
+
+static bool
+idle_notify_engine_stopped ()
+{
+	Glib::RefPtr<ToggleAction> tact = ActionManager::get_toggle_action ("Window", "toggle-audio-midi-setup");
+
+	MessageDialog msg (
+			_("The current operation is not possible because of an error communicating with the audio hardware."),
+			false, Gtk::MESSAGE_WARNING, Gtk::BUTTONS_NONE, true);
+
+	msg.add_button (_("Cancel"), Gtk::RESPONSE_CANCEL);
+
+	if (tact && !tact->get_active()) {
+		msg.add_button (_("Configure Hardware"), Gtk::RESPONSE_OK);
+	}
+
+	if (msg.run () == Gtk::RESPONSE_OK) {
+		tact->set_active ();
+	}
+	return false; /* do not call again */
+}
+
+bool
+ARDOUR_UI_UTILS::engine_is_running ()
+{
+	if (ARDOUR::AudioEngine::instance()->running ()) {
+		return true;
+	}
+	Glib::signal_idle().connect (sigc::ptr_fun (&idle_notify_engine_stopped));
+	return false;
+}
+
 
 /* xpm2rgb copied from nixieclock, which bore the legend:
 
@@ -276,7 +314,7 @@ Gdk::Color
 ARDOUR_UI_UTILS::gdk_color_from_rgba (uint32_t rgba)
 {
 	Gdk::Color c;
-	set_color_from_rgb (c, rgba);
+	set_color_from_rgb (c, rgba >> 8);
 	return c;
 }
 
@@ -403,7 +441,12 @@ ARDOUR_UI_UTILS::get_color_themes (map<std::string,std::string>& themes)
 				continue;
 			}
 
-			themes.insert (make_pair (prop->value(), Glib::filename_to_utf8 (basename_nosuffix(*e))));
+			std::string color_name = basename_nosuffix(*e);
+			size_t sep = color_name.find_first_of("-");
+			if (sep != string::npos) {
+				color_name = color_name.substr (0, sep);
+			}
+			themes.insert (make_pair (prop->value(), color_name));
 		}
 	}
 }
@@ -773,4 +816,10 @@ ARDOUR_UI_UTILS::running_from_source_tree ()
 {
 	gchar const *x = g_getenv ("ARDOUR_THEMES_PATH");
 	return x && (string (x).find ("gtk2_ardour") != string::npos);
+}
+
+Gtk::Menu*
+ARDOUR_UI_UTILS::shared_popup_menu ()
+{
+	return ARDOUR_UI::instance()->shared_popup_menu ();
 }

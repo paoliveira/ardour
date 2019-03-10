@@ -195,11 +195,11 @@ style "peak_display_peaked_entry" = "mixer_strip_entry"
 	fg[SELECTED] = @texts
 	text[SELECTED] = @texts
 
-	base[NORMAL] = @bright_indicator
-	base[ACTIVE] = @bright_indicator
-	base[PRELIGHT] = @bright_indicator
-	base[INSENSITIVE] = @bright_indicator
-	base[SELECTED] = @bright_indicator
+	base[NORMAL] = @clip_indicator
+	base[ACTIVE] = @clip_indicator
+	base[PRELIGHT] = @clip_indicator
+	base[INSENSITIVE] = @clip_indicator
+	base[SELECTED] = @clip_indicator
 }
 
 style "treeview_parent_node"
@@ -272,12 +272,12 @@ style "inspector_processor_list" = "processor_list"
 
 style "time_info_box"
 {
-        bg[NORMAL] = { 0.05, 0.05, 0.05 }
+        bg[NORMAL] = { 0.00, 0.00, 0.00 }
 }
 
 style "status_bar_box"
 {
-        bg[NORMAL] = { 0.149, 0.149, 0.149 }
+        bg[NORMAL] = @background
 }
 
 style "very_small_text"
@@ -375,6 +375,11 @@ style "marker_text" = "small text"
 {
 }
 
+style "text_on_bg" = "medium_text"
+{
+	base[NORMAL] = @background
+}
+
 style "midi_tracer_textview" = "medium_monospace_text"
 {
 
@@ -406,6 +411,20 @@ style "base_frame"
 {
 	fg[NORMAL] = @background
 	bg[NORMAL] = @background
+}
+
+style "text_highlight_frame"
+{
+	fg[NORMAL] = shade (0.4, @texts)
+	bg[NORMAL] = shade (0.4, @texts)
+}
+
+style "transport_frame"
+{
+}
+
+style "editor_window"
+{
 }
 
 style "transport_base" = "medium_bold_text"
@@ -495,7 +514,7 @@ style "processor" = "small_text"
 {
 }
 
-style "ruler_label" = "small_bold_text"
+style "ruler_label" = "small_text"
 {
 	fg[NORMAL] = @light_text_on_dark
 }
@@ -1088,6 +1107,11 @@ widget "*zoomrange clock" style:highest "medium_text"
 widget "*timecodeoffset clock" style:highest "medium_text"
 
 widget "*BaseFrame" style:highest "base_frame"
+widget "*TextHighlightFrame" style:highest "text_highlight_frame"
+widget "*TransportFrame" style:highest "transport_frame"
+widget "*TransportFrame*" style:highest  "transport_frame"
+widget "*EditorWindow*" style:highest  "editor_window"
+widget "*EditorWindow" style:highest  "editor_window"
 
 widget "*SendStripBase" style:highest "send_strip_base"
 widget "*AudioTrackStripBase" style:highest "audio_track_base"
@@ -1140,6 +1164,7 @@ widget "*MidiTrackControlsBaseSelected" style:highest "track_header_selected"
 widget "*BusControlsBaseSelected" style:highest "track_header_selected"
 widget "*AutomationTrackControlsBase" style:highest "automation_track_header"
 widget "*AutomationTrackControlsBaseSelected" style:highest "track_header_selected"
+widget "*ControlMasterBaseSelected" style:highest "track_header_selected"
 widget "*PluginParameterLabel" style:highest "medium_text"
 widget "*ParameterValueDisplay" style:highest "medium_bold_entry"
 widget "*PluginUIClickBox*" style:highest "medium_bold_entry"
@@ -1194,6 +1219,7 @@ widget "*ChannelCountSelector" style:highest "medium_bold_entry"
 widget "*RegionListWholeFile" style:highest "treeview_parent_node"
 widget "*ProcessorList*" style:highest "processor_list"
 widget "*PortMatrixLabel*" style:highest "small_text"
+widget "*MainMenuBar" style:highest "status_bar_box"
 widget "*midi device" style:highest "midi_device"
 widget "*MidiTracerTextView" style:highest "midi_tracer_textview"
 widget "*meterbridge label" style:highest "meterbridge_label"
@@ -1215,4 +1241,4 @@ widget "*ooltip*" style:highest "tooltip"
 widget "*Pane" style:highest "pane"
 widget "*Pane.Divider" style:highest "pane"
 widget "*VCALabelBar*" style:highest "vca_label_bar"
-
+widget "*TextOnBackground" style:highest "text_on_bg"

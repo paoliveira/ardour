@@ -83,27 +83,7 @@ static VSTState *
 vstfx_new ()
 {
 	VSTState* vstfx = (VSTState *) calloc (1, sizeof (VSTState));
-
-	/*Mutexes*/
-
-	pthread_mutex_init (&vstfx->lock, 0);
-	pthread_cond_init (&vstfx->window_status_change, 0);
-	pthread_cond_init (&vstfx->plugin_dispatcher_called, 0);
-	pthread_cond_init (&vstfx->window_created, 0);
-
-	/*Safe values*/
-
-	vstfx->want_program = -1;
-	vstfx->want_chunk = 0;
-	vstfx->n_pending_keys = 0;
-	vstfx->has_editor = 0;
-	vstfx->program_set_without_editor = 0;
-	vstfx->linux_window = 0;
-	vstfx->linux_plugin_ui_window = 0;
-	vstfx->eventProc = 0;
-	vstfx->extra_data = 0;
-	vstfx->want_resize = 0;
-
+	vststate_init (vstfx);
 	return vstfx;
 }
 
@@ -239,12 +219,10 @@ vstfx_load (const char *path)
 
 	/*Find the main entry point into the plugin*/
 
-	fhandle->main_entry = (main_entry_t) dlsym(fhandle->dll, "main");
+	fhandle->main_entry = (main_entry_t) dlsym(fhandle->dll, "VSTPluginMain");
 
 	if (fhandle->main_entry == 0) {
-		if ((fhandle->main_entry = (main_entry_t) dlsym(fhandle->dll, "VSTPluginMain")) != 0) {
-			PBD::warning << path << _(": is a VST >= 2.4 - this plugin may or may not function correctly with this version of Ardour.") << endmsg;
-		}
+		fhandle->main_entry = (main_entry_t) dlsym(fhandle->dll, "main");
 	}
 
 	if (fhandle->main_entry == 0)
@@ -319,7 +297,7 @@ vstfx_instantiate (VSTHandle* fhandle, audioMasterCallback amc, void* userptr)
 	}
 
 	vstfx->handle = fhandle;
-	vstfx->plugin->user = userptr;
+	vstfx->plugin->ptr1 = userptr;
 
 	if (vstfx->plugin->magic != kEffectMagic)
 	{
@@ -328,14 +306,16 @@ vstfx_instantiate (VSTHandle* fhandle, audioMasterCallback amc, void* userptr)
 		return 0;
 	}
 
-	vstfx->plugin->dispatcher (vstfx->plugin, effOpen, 0, 0, 0, 0);
-
-	/*May or May not need to 'switch the plugin on' here - unlikely
-	since FST doesn't and most plugins start up 'On' by default - I think this is the least of our worries*/
-
-	//vstfx->plugin->dispatcher (vstfx->plugin, effMainsChanged, 0, 1, 0, 0);
-
-	vstfx->vst_version = vstfx->plugin->dispatcher (vstfx->plugin, effGetVstVersion, 0, 0, 0, 0);
+	if (!userptr) {
+		/* scanning.. or w/o master-callback userptr == 0, open now.
+		 *
+		 * Session::vst_callback needs a pointer to the AEffect
+		 *     ((VSTPlugin*)userptr)->_plugin = vstfx->plugin
+		 * before calling effOpen, because effOpen may call back
+		 */
+		vstfx->plugin->dispatcher (vstfx->plugin, effOpen, 0, 0, 0, 0);
+		vstfx->vst_version = vstfx->plugin->dispatcher (vstfx->plugin, effGetVstVersion, 0, 0, 0, 0);
+	}
 
 	vstfx->handle->plugincnt++;
 	vstfx->wantIdle = 0;

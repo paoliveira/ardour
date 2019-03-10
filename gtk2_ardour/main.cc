@@ -31,6 +31,8 @@
 #include <fftw3.h>
 #endif
 
+#include <curl/curl.h>
+
 #include "pbd/error.h"
 #include "pbd/file_utils.h"
 #include "pbd/textreceiver.h"
@@ -48,8 +50,9 @@
 #include "ardour/filesystem_paths.h"
 
 #include <gtkmm/main.h>
+#include <gtkmm/stock.h>
+
 #include <gtkmm2ext/application.h>
-#include <gtkmm2ext/popup.h>
 #include <gtkmm2ext/utils.h>
 
 #include "ardour_ui.h"
@@ -69,13 +72,17 @@
 #include "gtk2ardour-version.h"
 #endif
 
+#ifdef LXVST_SUPPORT
+#include <gdk/gdkx.h>
+#endif
+
 using namespace std;
 using namespace Gtk;
 using namespace ARDOUR_COMMAND_LINE;
 using namespace ARDOUR;
 using namespace PBD;
 
-TextReceiver text_receiver ("ardour");
+TextReceiver text_receiver (PROGRAM_NAME);
 
 extern int curvetest (string);
 
@@ -130,7 +137,7 @@ static void ardour_g_log (const gchar *log_domain, GLogLevelFlags log_level, con
 static gboolean
 tell_about_backend_death (void* /* ignored */)
 {
-	if (AudioEngine::instance()->processed_frames() == 0) {
+	if (AudioEngine::instance()->processed_samples() == 0) {
 		/* died during startup */
 		MessageDialog msg (string_compose (_("The audio backend (%1) has failed, or terminated"), AudioEngine::instance()->current_backend_name()), false);
 		msg.set_position (Gtk::WIN_POS_CENTER);
@@ -283,6 +290,11 @@ int main (int argc, char *argv[])
 {
 	ARDOUR::check_for_old_configuration_files();
 
+	/* global init is not thread safe.*/
+	if (curl_global_init (CURL_GLOBAL_DEFAULT)) {
+		cerr << "curl_global_init() failed. The web is gone. We're all doomed." << endl;
+	}
+
 	fixup_bundle_environment (argc, argv, localedir);
 
 	load_custom_fonts(); /* needs to happen before any gtk and pango init calls */
@@ -291,17 +303,18 @@ int main (int argc, char *argv[])
 		Glib::thread_init();
 	}
 
+#ifdef LXVST_SUPPORT
+	XInitThreads ();
+#endif
+
 #ifdef HAVE_FFTW35F
 	fftwf_make_planner_thread_safe ();
 #endif
 
-#ifdef ENABLE_NLS
-	/* initialize C and C++ locales to user preference */
-	setlocale (LC_ALL, "");
-	try {
-		std::locale::global (std::locale (setlocale (LC_ALL, 0)));
-	} catch (...) {
-		std::cerr << "Cannot set C++ locale\n";
+#if ENABLE_NLS
+	/* initialize C locale to user preference */
+	if (ARDOUR::translations_are_enabled ()) {
+		setlocale (LC_ALL, "");
 	}
 #endif
 
@@ -314,7 +327,7 @@ int main (int argc, char *argv[])
 	windows_vst_gui_init (&argc, &argv);
 #endif
 
-#ifdef ENABLE_NLS
+#if ENABLE_NLS
 	cerr << "bind txt domain [" << PACKAGE << "] to " << localedir << endl;
 
 	(void) bindtextdomain (PACKAGE, localedir.c_str());
@@ -360,7 +373,7 @@ int main (int argc, char *argv[])
 	}
 
 	if (no_splash) {
-		cerr << _("Copyright (C) 1999-2015 Paul Davis") << endl
+		cerr << _("Copyright (C) 1999-2019 Paul Davis") << endl
 		     << _("Some portions Copyright (C) Steve Harris, Ari Johnson, Brett Viren, Joel Baker, Robin Gareus") << endl
 		     << endl
 		     << string_compose (_("%1 comes with ABSOLUTELY NO WARRANTY"), PROGRAM_NAME) << endl
@@ -372,6 +385,11 @@ int main (int argc, char *argv[])
 
 	if (!ARDOUR::init (ARDOUR_COMMAND_LINE::use_vst, ARDOUR_COMMAND_LINE::try_hw_optimization, localedir.c_str())) {
 		error << string_compose (_("could not initialize %1."), PROGRAM_NAME) << endmsg;
+		Gtk::Main main (argc, argv);
+		Gtk::MessageDialog msg (string_compose (_("Could not initialize %1 (likely due to corrupt config files).\n"
+		                                          "Run %1 from a commandline for more information."), PROGRAM_NAME),
+		                        false, Gtk::MESSAGE_ERROR , Gtk::BUTTONS_OK, true);
+		msg.run ();
 		exit (1);
 	}
 
@@ -411,7 +429,21 @@ int main (int argc, char *argv[])
 	ui = 0;
 
 	ARDOUR::cleanup ();
+#ifndef NDEBUG
+	if (getenv ("ARDOUR_RUNNING_UNDER_VALGRIND")) {
+		Glib::usleep(100000);
+		sched_yield();
+	}
+#endif
+
 	pthread_cancel_all ();
+
+#ifndef NDEBUG
+	if (getenv ("ARDOUR_RUNNING_UNDER_VALGRIND")) {
+		Glib::usleep(100000);
+		sched_yield();
+	}
+#endif
 
 	console_madness_end ();
 

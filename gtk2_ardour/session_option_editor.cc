@@ -18,7 +18,9 @@
 */
 
 #include "ardour/session.h"
+#include "ardour/transport_master_manager.h"
 
+#include "actions.h"
 #include "gui_thread.h"
 #include "session_option_editor.h"
 #include "search_path_option.h"
@@ -34,7 +36,7 @@ SessionOptionEditor::SessionOptionEditor (Session* s)
 {
 	set_session (s);
 
-        set_name ("SessionProperties");
+	set_name ("SessionProperties");
 
 	/* TIMECODE*/
 
@@ -42,7 +44,7 @@ SessionOptionEditor::SessionOptionEditor (Session* s)
 
 	ComboOption<TimecodeFormat>* smf = new ComboOption<TimecodeFormat> (
 		"timecode-format",
-		_("Timecode frames-per-second"),
+		_("Timecode samples-per-second"),
 		sigc::mem_fun (*_session_config, &SessionConfiguration::get_timecode_format),
 		sigc::mem_fun (*_session_config, &SessionConfiguration::set_timecode_format)
 		);
@@ -78,21 +80,6 @@ SessionOptionEditor::SessionOptionEditor (Session* s)
 	_vpu->add (-4.1667 - 0.1, _("-4.1667 - 0.1%"));
 
 	add_option (_("Timecode"), _vpu);
-
-	add_option (_("Sync"), new BoolOption (
-			    "use-video-file-fps",
-			    _("Use Video File's FPS Instead of Timecode Value for Timeline and Video Monitor."),
-			    sigc::mem_fun (*_session_config, &SessionConfiguration::get_use_video_file_fps),
-			    sigc::mem_fun (*_session_config, &SessionConfiguration::set_use_video_file_fps)
-			    ));
-
-	add_option (_("Sync"), new BoolOption (
-			    "videotimeline-pullup",
-			    _("Apply Pull-Up/Down to Video Timeline and Video Monitor (Unless using JACK-sync)."),
-			    sigc::mem_fun (*_session_config, &SessionConfiguration::get_videotimeline_pullup),
-			    sigc::mem_fun (*_session_config, &SessionConfiguration::set_videotimeline_pullup)
-			    ));
-
 	add_option (_("Timecode"), new OptionEditorHeading (_("Ext Timecode Offsets")));
 
 	ClockOption* sco = new ClockOption (
@@ -130,8 +117,28 @@ SessionOptionEditor::SessionOptionEditor (Session* s)
 			    sigc::mem_fun (*_session_config, &SessionConfiguration::set_jack_time_master)
 			    ));
 
+	/* Sync */
+
+	add_option (_("Sync"), new OptionEditorHeading (_("A/V Synchronization")));
+	add_option (_("Sync"), new BoolOption (
+			    "use-video-file-fps",
+			    _("Use Video File's FPS Instead of Timecode Value for Timeline and Video Monitor."),
+			    sigc::mem_fun (*_session_config, &SessionConfiguration::get_use_video_file_fps),
+			    sigc::mem_fun (*_session_config, &SessionConfiguration::set_use_video_file_fps)
+			    ));
+
+	add_option (_("Sync"), new BoolOption (
+			    "videotimeline-pullup",
+			    _("Apply Pull-Up/Down to Video Timeline and Video Monitor (Unless using JACK-sync)."),
+			    sigc::mem_fun (*_session_config, &SessionConfiguration::get_videotimeline_pullup),
+			    sigc::mem_fun (*_session_config, &SessionConfiguration::set_videotimeline_pullup)
+			    ));
+
+	add_option (_("Sync"), new OptionEditorBlank ());
+
 	/* FADES */
 
+	add_option (_("Fades"), new OptionEditorHeading (_("Audio Fades")));
 	add_option (_("Fades"), new SpinOption<float> (
 		_("destructive-xfade-seconds"),
 		_("Destructive crossfade length"),
@@ -171,20 +178,17 @@ SessionOptionEditor::SessionOptionEditor (Session* s)
 
 	/* Media */
 
-	add_option (_("Media"), new OptionEditorHeading (_("Audio file format")));
+	add_option (_("Media"), new OptionEditorHeading (_("Audio File Format")));
 
-	ComboOption<SampleFormat>* sf = new ComboOption<SampleFormat> (
+	_sf = new ComboOption<SampleFormat> (
 		"native-file-data-format",
 		_("Sample format"),
 		sigc::mem_fun (*_session_config, &SessionConfiguration::get_native_file_data_format),
 		sigc::mem_fun (*_session_config, &SessionConfiguration::set_native_file_data_format)
 		);
-
-	sf->add (FormatFloat, _("32-bit floating point"));
-	sf->add (FormatInt24, _("24-bit integer"));
-	sf->add (FormatInt16, _("16-bit integer"));
-
-	add_option (_("Media"), sf);
+	add_option (_("Media"), _sf);
+	/* refill available sample-formats, depening on file-format */
+	parameter_changed ("native-file-header-format");
 
 	ComboOption<HeaderFormat>* hf = new ComboOption<HeaderFormat> (
 		"native-file-header-format",
@@ -204,23 +208,24 @@ SessionOptionEditor::SessionOptionEditor (Session* s)
 #ifdef HAVE_RF64_RIFF
 	hf->add (RF64_WAV, _("RF64 (WAV compatible)"));
 #endif
+	hf->add (FLAC, _("FLAC"));
 
 	add_option (_("Media"), hf);
 
-	add_option (S_("Files|Locations"), new OptionEditorHeading (_("File locations")));
+	add_option (S_("Files|Locations"), new OptionEditorHeading (_("File Locations")));
 
-        SearchPathOption* spo = new SearchPathOption ("audio-search-path", _("Search for audio files in:"),
-						      _session->path(),
-                                                      sigc::mem_fun (*_session_config, &SessionConfiguration::get_audio_search_path),
-                                                      sigc::mem_fun (*_session_config, &SessionConfiguration::set_audio_search_path));
-        add_option (S_("Files|Locations"), spo);
+	SearchPathOption* spo = new SearchPathOption ("audio-search-path", _("Search for audio files in:"),
+			_session->path(),
+			sigc::mem_fun (*_session_config, &SessionConfiguration::get_audio_search_path),
+			sigc::mem_fun (*_session_config, &SessionConfiguration::set_audio_search_path));
+	add_option (S_("Files|Locations"), spo);
 
-        spo = new SearchPathOption ("midi-search-path", _("Search for MIDI files in:"),
-				    _session->path(),
-                                    sigc::mem_fun (*_session_config, &SessionConfiguration::get_midi_search_path),
-                                    sigc::mem_fun (*_session_config, &SessionConfiguration::set_midi_search_path));
+	spo = new SearchPathOption ("midi-search-path", _("Search for MIDI files in:"),
+			_session->path(),
+			sigc::mem_fun (*_session_config, &SessionConfiguration::get_midi_search_path),
+			sigc::mem_fun (*_session_config, &SessionConfiguration::set_midi_search_path));
 
-        add_option (S_("Files|Locations"), spo);
+	add_option (S_("Files|Locations"), spo);
 
 	/* File Naming  */
 
@@ -261,19 +266,22 @@ SessionOptionEditor::SessionOptionEditor (Session* s)
 
 	/* Monitoring */
 
-        add_option (_("Monitoring"), new BoolOption (
-			    "auto-input",
-			    _("Track Input Monitoring automatically follows transport state (\"auto-input\")"),
-			    sigc::mem_fun (*_session_config, &SessionConfiguration::get_auto_input),
-			    sigc::mem_fun (*_session_config, &SessionConfiguration::set_auto_input)
-			    ));
+	add_option (_("Monitoring"), new OptionEditorHeading (_("Monitoring")));
+	add_option (_("Monitoring"), new BoolOption (
+				"auto-input",
+				_("Track Input Monitoring automatically follows transport state (\"auto-input\")"),
+				sigc::mem_fun (*_session_config, &SessionConfiguration::get_auto_input),
+				sigc::mem_fun (*_session_config, &SessionConfiguration::set_auto_input)
+				));
 
-        add_option (_("Monitoring"), new BoolOption (
-			    "have-monitor-section",
-			    _("Use monitor section in this session"),
-			    sigc::mem_fun (*this, &SessionOptionEditor::get_use_monitor_section),
-			    sigc::mem_fun (*this, &SessionOptionEditor::set_use_monitor_section)
-			    ));
+	add_option (_("Monitoring"), new CheckOption (
+				"unused",
+				_("Use monitor section in this session"),
+				ActionManager::get_action(X_("Monitor"), "UseMonitorSection")
+				));
+
+	add_option (_("Monitoring"), new OptionEditorBlank ());
+
 	/* Meterbridge */
 	add_option (_("Meterbridge"), new OptionEditorHeading (_("Route Display")));
 
@@ -337,6 +345,8 @@ SessionOptionEditor::SessionOptionEditor (Session* s)
 			    sigc::mem_fun (*_session_config, &SessionConfiguration::set_show_name_on_meterbridge)
 			    ));
 
+	add_option (_("Meterbridge"), new OptionEditorBlank ());
+
 	/* Misc */
 
 	add_option (_("Misc"), new OptionEditorHeading (_("MIDI Options")));
@@ -364,7 +374,7 @@ SessionOptionEditor::SessionOptionEditor (Session* s)
 
 	add_option (_("Misc"), li);
 
-	add_option (_("Misc"), new OptionEditorHeading (_("Glue to bars and beats")));
+	add_option (_("Misc"), new OptionEditorHeading (_("Glue to Bars and Beats")));
 
 	add_option (_("Misc"), new BoolOption (
 				"glue-new-markers-to-bars-and-beats",
@@ -380,12 +390,22 @@ SessionOptionEditor::SessionOptionEditor (Session* s)
 				sigc::mem_fun (*_session_config, &SessionConfiguration::set_glue_new_regions_to_bars_and_beats)
 				));
 
+	add_option (_("Misc"), new OptionEditorHeading (_("Metronome")));
+
+	add_option (_("Misc"), new BoolOption (
+				"count-in",
+				_("Always count-in when recording"),
+				sigc::mem_fun (*_session_config, &SessionConfiguration::get_count_in),
+				sigc::mem_fun (*_session_config, &SessionConfiguration::set_count_in)
+				));
+
 	add_option (_("Misc"), new OptionEditorHeading (_("Defaults")));
 
 	Gtk::Button* btn = Gtk::manage (new Gtk::Button (_("Use these settings as defaults")));
 	btn->signal_clicked().connect (sigc::mem_fun (*this, &SessionOptionEditor::save_defaults));
 	add_option (_("Misc"), new FooOption (btn));
 
+	set_current_page (_("Timecode"));
 }
 
 void
@@ -393,7 +413,7 @@ SessionOptionEditor::parameter_changed (std::string const & p)
 {
 	OptionEditor::parameter_changed (p);
 	if (p == "external-sync") {
-		if (Config->get_sync_source() == Engine) {
+		if (TransportMasterManager::instance().current()->type() == Engine) {
 			_vpu->set_sensitive(!_session_config->get_external_sync());
 		} else {
 			_vpu->set_sensitive(true);
@@ -407,34 +427,25 @@ SessionOptionEditor::parameter_changed (std::string const & p)
 	else if (p == "track-name-take") {
 		_take_name->set_sensitive(_session_config->get_track_name_take());
 	}
-}
-
-/* the presence of absence of a monitor section is not really a regular session
- * property so we provide these two functions to act as setter/getter slots
- */
-
-bool
-SessionOptionEditor::set_use_monitor_section (bool yn)
-{
-	bool had_monitor_section = _session->monitor_out() != 0;
-
-	if (yn) {
-		_session->add_monitor_section ();
-	} else {
-		_session->remove_monitor_section ();
+	else if (p == "native-file-header-format") {
+		bool need_refill = true;
+		_sf->clear ();
+		if (_session_config->get_native_file_header_format() == FLAC) {
+			_sf->add (FormatInt24, _("24-bit integer"));
+			_sf->add (FormatInt16, _("16-bit integer"));
+			if (_session_config->get_native_file_data_format() == FormatFloat) {
+				_session_config->set_native_file_data_format (FormatInt24);
+				need_refill = false;
+			}
+		} else {
+			_sf->add (FormatFloat, _("32-bit floating point"));
+			_sf->add (FormatInt24, _("24-bit integer"));
+			_sf->add (FormatInt16, _("16-bit integer"));
+		}
+		if (need_refill) {
+			parameter_changed ("native-file-data-format");
+		}
 	}
-
-	/* store this choice for any new sessions */
-
-	Config->set_use_monitor_bus (yn);
-
-	return had_monitor_section != (_session->monitor_out() != 0);
-}
-
-bool
-SessionOptionEditor::get_use_monitor_section ()
-{
-	return _session->monitor_out() != 0;
 }
 
 void

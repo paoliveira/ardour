@@ -17,13 +17,14 @@
     Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
 */
-
-#include "export_format_selector.h"
-
-#include "export_format_dialog.h"
+#include <gtkmm/messagedialog.h>
+#include <gtkmm/stock.h>
 
 #include "ardour/export_format_specification.h"
 #include "ardour/export_profile_manager.h"
+
+#include "export_format_selector.h"
+#include "export_format_dialog.h"
 
 #include "pbd/i18n.h"
 
@@ -157,6 +158,9 @@ ExportFormatSelector::open_edit_dialog (bool new_dialog)
 	if (response == Gtk::RESPONSE_APPLY) {
 		update_format_description ();
 		FormatEdited (state->format);
+		CriticalSelectionChanged();
+	} else {
+		FormatReverted (state->format);
 		CriticalSelectionChanged();
 	}
 	return response;

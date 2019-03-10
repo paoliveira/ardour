@@ -16,6 +16,8 @@
     Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 */
 
+#define BASELINESTRETCH (1.25)
+
 #include <algorithm>
 
 #include <cairo.h>
@@ -25,23 +27,24 @@
 #include "ardour/rc_configuration.h"
 #include "ardour/session.h"
 
+#include "gtkmm2ext/colors.h"
 #include "gtkmm2ext/keyboard.h"
 #include "gtkmm2ext/gui_thread.h"
-#include "gtkmm2ext/cairocell.h"
 #include "gtkmm2ext/utils.h"
 #include "gtkmm2ext/rgb_macros.h"
+
+#include "widgets/tooltips.h"
 
 #include "actions.h"
 #include "rgb_macros.h"
 #include "shuttle_control.h"
-#include "tooltips.h"
 
 #include "pbd/i18n.h"
 
 using namespace Gtk;
 using namespace Gtkmm2ext;
 using namespace ARDOUR;
-using namespace ARDOUR_UI_UTILS;
+using namespace ArdourWidgets;
 using std::min;
 using std::max;
 
@@ -53,13 +56,13 @@ gboolean qt (gboolean, gint, gint, gboolean, Gtk::Tooltip*, gpointer)
 ShuttleControl::ShuttleControl ()
 	: _controllable (new ShuttleControllable (*this))
 	, binding_proxy (_controllable)
-	, text_color (0)
 {
-	left_text = Pango::Layout::create (get_pango_context());
-	right_text = Pango::Layout::create (get_pango_context());
-
-	right_text->set_attributes (text_attributes);
-	left_text->set_attributes (text_attributes);
+	_info_button.set_layout_font (UIConfiguration::instance().get_NormalFont());
+	_info_button.set_sizing_text (S_("LogestShuttle|< +00 st"));
+	_info_button.set_name ("shuttle text");
+	_info_button.set_sensitive (false);
+	_info_button.set_visual_state (Gtkmm2ext::NoVisualState);
+	_info_button.set_elements (ArdourButton::Text);
 
 	set_tooltip (*this, _("Shuttle speed control (Context-click for options)"));
 
@@ -71,15 +74,14 @@ ShuttleControl::ShuttleControl ()
 	shuttle_speed_on_grab = 0;
 	shuttle_fract = 0.0;
 	shuttle_max_speed = 8.0f;
-	shuttle_style_menu = 0;
-	shuttle_unit_menu = 0;
 	shuttle_context_menu = 0;
 	_hovering = false;
 
 	set_flags (CAN_FOCUS);
 	add_events (Gdk::ENTER_NOTIFY_MASK|Gdk::LEAVE_NOTIFY_MASK|Gdk::BUTTON_RELEASE_MASK|Gdk::BUTTON_PRESS_MASK|Gdk::POINTER_MOTION_MASK|Gdk::SCROLL_MASK);
-	set_size_request (85, 20);
 	set_name (X_("ShuttleControl"));
+
+	ensure_style ();
 
 	shuttle_max_speed = Config->get_shuttle_max_speed();
 
@@ -104,7 +106,7 @@ ShuttleControl::~ShuttleControl ()
 {
 	cairo_pattern_destroy (pattern);
 	cairo_pattern_destroy (shine_pattern);
-	delete text_color;
+	delete shuttle_context_menu;
 }
 
 void
@@ -146,19 +148,12 @@ ShuttleControl::on_size_allocate (Gtk::Allocation& alloc)
 	cairo_pattern_add_color_stop_rgba (shine_pattern, 0, 1,1,1,0.0);
 	cairo_pattern_add_color_stop_rgba (shine_pattern, 0.2, 1,1,1,0.4);
 	cairo_pattern_add_color_stop_rgba (shine_pattern, 1, 1,1,1,0.1);
-
-	Pango::AttrFontDesc* font_attr;
-
-	font_attr = new Pango::AttrFontDesc (Pango::Attribute::create_attr_font_desc (UIConfiguration::instance().get_NormalBoldFont()));
-	text_attributes.change (*font_attr);
-
-	delete font_attr;
 }
 
 void
 ShuttleControl::map_transport_state ()
 {
-	float speed = _session->transport_speed ();
+	float speed = _session->actual_speed ();
 
 	if ( (fabsf( speed - last_speed_displayed) < 0.005f) // dead-zone
 	     && !( speed == 1.f && last_speed_displayed != 1.f)
@@ -258,16 +253,6 @@ ShuttleControl::build_shuttle_context_menu ()
 }
 
 void
-ShuttleControl::show_shuttle_context_menu ()
-{
-	if (shuttle_context_menu == 0) {
-		build_shuttle_context_menu ();
-	}
-
-	shuttle_context_menu->popup (1, gtk_get_current_event_time());
-}
-
-void
 ShuttleControl::reset_speed ()
 {
 	if (_session->transport_rolling()) {
@@ -297,7 +282,10 @@ ShuttleControl::on_button_press_event (GdkEventButton* ev)
 	}
 
 	if (Keyboard::is_context_menu_event (ev)) {
-		show_shuttle_context_menu ();
+		if (shuttle_context_menu == 0) {
+			build_shuttle_context_menu ();
+		}
+		shuttle_context_menu->popup (ev->button, ev->time);
 		return true;
 	}
 
@@ -310,7 +298,7 @@ ShuttleControl::on_button_press_event (GdkEventButton* ev)
 		} else {
 			add_modal_grab ();
 			shuttle_grabbed = true;
-			shuttle_speed_on_grab = _session->transport_speed ();
+			shuttle_speed_on_grab = _session->actual_speed ();
 			requested_speed = shuttle_speed_on_grab;
 			mouse_shuttle (ev->x, true);
 			gdk_pointer_grab(ev->window,false,
@@ -571,139 +559,103 @@ ShuttleControl::set_colors ()
 	int r, g, b, a;
 
 	uint32_t bg_color = UIConfiguration::instance().color (X_("shuttle bg"));
-	uint32_t text = UIConfiguration::instance().color (X_("shuttle text"));
 
 	UINT_TO_RGBA (bg_color, &r, &g, &b, &a);
 	bg_r = r/255.0;
 	bg_g = g/255.0;
 	bg_b = b/255.0;
-
-	UINT_TO_RGBA (text, &r, &g, &b, &a);
-
-	/* rescale for Pango colors ... sigh */
-
-	r = lrint (r * 65535.0);
-	g = lrint (g * 65535.0);
-	b = lrint (b * 65535.0);
-
-	delete text_color;
-	text_color = new Pango::AttrColor (Pango::Attribute::create_attr_foreground (r, g, b));
-	text_attributes.change (*text_color);
 }
 
 void
-ShuttleControl::render (cairo_t* cr, cairo_rectangle_t*)
+ShuttleControl::render (Cairo::RefPtr<Cairo::Context> const& ctx, cairo_rectangle_t*)
 {
-	//black border
+	cairo_t* cr = ctx->cobj();
+	// center slider line
+	float yc = get_height() / 2;
+	float lw = 3;
+	cairo_set_line_cap (cr, CAIRO_LINE_CAP_ROUND);
+	cairo_set_line_width (cr, 3);
+	cairo_move_to (cr, lw, yc);
+	cairo_line_to (cr, get_width () - lw, yc);
 	cairo_set_source_rgb (cr, bg_r, bg_g, bg_b);
-	rounded_rectangle (cr, 0, 0, get_width(), get_height(), 4);
-	cairo_fill (cr);
+	if (UIConfiguration::instance().get_widget_prelight() && _hovering) {
+		cairo_stroke_preserve (cr);
+		cairo_set_source_rgba (cr, 1, 1, 1, 0.15);
+	}
+	cairo_stroke (cr);
 
 	float speed = 0.0;
 	float acutal_speed = 0.0;
+	char buf[32];
 
 	if (_session) {
-		speed = _session->transport_speed ();
+		speed = _session->actual_speed ();
 		acutal_speed = speed;
 		if (shuttle_grabbed) {
 			speed = requested_speed;
 		}
 	}
 
-	/* Marker */
-	float visual_fraction = std::min (1.0f, speed / shuttle_max_speed);
-	float marker_size = get_height() - 5.0;
-	float avail_width = get_width() - marker_size - 4;
-	float x = get_width() * 0.5 + visual_fraction * avail_width * 0.5;
-//	cairo_set_source_rgb (cr, 0, 1, 0.0);
-	cairo_set_source (cr, pattern);
-	if (speed == 1.0) {
-		cairo_move_to( cr, x, 2.5);
-		cairo_line_to( cr, x + marker_size * .577, 2.5 + marker_size * 0.5);
-		cairo_line_to( cr, x, 2.5 + marker_size);
-		cairo_close_path(cr);
-	} else if ( speed ==0.0 )
-		rounded_rectangle (cr, x, 2.5, marker_size, marker_size, 1);
-	else
-		cairo_arc (cr, x, 2.5 + marker_size * .5, marker_size * 0.47, 0, 2.0 * M_PI);
-	cairo_set_line_width (cr, 1.75);
-	cairo_stroke (cr);
+	/* marker */
+	float visual_fraction = std::max (-1.0f, std::min (1.0f, speed / shuttle_max_speed));
+	float marker_size = round (get_height() * 0.66);
+	float avail_width = get_width() - marker_size;
+	float x = 0.5 * (get_width() + visual_fraction * avail_width - marker_size);
 
-	/* speed text */
+	rounded_rectangle (cr, x, 0, marker_size, get_height(), 5);
+	cairo_set_source_rgba (cr, 0, 0, 0, 1);
+	cairo_fill(cr);
+	rounded_rectangle (cr, x + 1, 1, marker_size - 2, get_height() - 2, 3.5);
+	if (_flat_buttons) {
+		uint32_t col = UIConfiguration::instance().color ("shuttle");
+		Gtkmm2ext::set_source_rgba (cr, col);
+	} else {
+		cairo_set_source (cr, pattern);
+	}
+	if (UIConfiguration::instance().get_widget_prelight() && _hovering) {
+		cairo_fill_preserve (cr);
+		cairo_set_source_rgba (cr, 1, 1, 1, 0.15);
+	}
+	cairo_fill(cr);
 
-	char buf[32];
-
+	/* text */
 	if (acutal_speed != 0) {
-
 		if (Config->get_shuttle_units() == Percentage) {
-
 			if (acutal_speed == 1.0) {
-				snprintf (buf, sizeof (buf), "%s", _("Playing"));
+				snprintf (buf, sizeof (buf), "%s", _("Play"));
 			} else {
 				if (acutal_speed < 0.0) {
-					snprintf (buf, sizeof (buf), "<<< %.1f%%", -acutal_speed * 100.f);
+					snprintf (buf, sizeof (buf), "< %.1f%%", -acutal_speed * 100.f);
 				} else {
-					snprintf (buf, sizeof (buf), ">>> %.1f%%", acutal_speed * 100.f);
+					snprintf (buf, sizeof (buf), "> %.1f%%", acutal_speed * 100.f);
 				}
 			}
-
 		} else {
-
 			bool reversed;
 			int semi = speed_as_semitones (acutal_speed, reversed);
-
 			if (reversed) {
-				snprintf (buf, sizeof (buf), _("<<< %+d semitones"), semi);
+				snprintf (buf, sizeof (buf), _("< %+2d st"), semi);
 			} else {
-				snprintf (buf, sizeof (buf), _(">>> %+d semitones"), semi);
+				snprintf (buf, sizeof (buf), _("> %+2d st"), semi);
 			}
 		}
-
 	} else {
-		snprintf (buf, sizeof (buf), "%s", _("Stopped"));
+		snprintf (buf, sizeof (buf), "%s", _("Stop"));
 	}
 
 	last_speed_displayed = acutal_speed;
 
-	const float top_text_margin = 3.0f;
-	const float side_text_margin = 5.0f;
+	_info_button.set_text (buf);
 
-	left_text->set_text (buf);
-	cairo_move_to (cr, side_text_margin, top_text_margin);
-	pango_cairo_show_layout (cr, left_text->gobj());
-
-	/* style text */
-
-	switch (Config->get_shuttle_behaviour()) {
-	case Sprung:
-		snprintf (buf, sizeof (buf), "%s", _("Sprung"));
-		break;
-	case Wheel:
-		snprintf (buf, sizeof (buf), "%s", _("Wheel"));
-		break;
-	}
-
-	right_text->set_text (buf);
-	Pango::Rectangle r = right_text->get_ink_extents ();
-	cairo_move_to (cr, get_width() - ((r.get_width()/PANGO_SCALE) + side_text_margin), top_text_margin);
-	pango_cairo_show_layout (cr, right_text->gobj());
-
+#if 0
 	if (UIConfiguration::instance().get_widget_prelight()) {
 		if (_hovering) {
-			rounded_rectangle (cr, 1, 1, get_width()-2, get_height()-2, 4.0);
+			rounded_rectangle (cr, 0, 0, get_width(), get_height(), 3.5);
 			cairo_set_source_rgba (cr, 1, 1, 1, 0.15);
 			cairo_fill (cr);
 		}
 	}
-}
-
-void
-ShuttleControl::shuttle_unit_clicked ()
-{
-	if (shuttle_unit_menu == 0) {
-		shuttle_unit_menu = dynamic_cast<Menu*> (ActionManager::get_widget ("/ShuttleUnitPopup"));
-	}
-	shuttle_unit_menu->popup (1, gtk_get_current_event_time());
+#endif
 }
 
 void
@@ -746,7 +698,7 @@ ShuttleControl::parameter_changed (std::string p)
 			 */
 			if (_session) {
 				if (_session->transport_rolling()) {
-					if (_session->transport_speed() == 1.0) {
+					if (_session->actual_speed() == 1.0) {
 						queue_draw ();
 					} else {
 						/* reset current speed and
@@ -766,6 +718,8 @@ ShuttleControl::parameter_changed (std::string p)
 			break;
 		}
 
+	} else if (p == "shuttle-max-speed") {
+		queue_draw ();
 	} else if (p == "shuttle-units") {
 		queue_draw ();
 	}

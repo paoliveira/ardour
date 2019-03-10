@@ -29,7 +29,6 @@
 
 #include <string>
 #include <vector>
-#include <map>
 #include <cstdio>
 #include <cstdarg>
 
@@ -37,11 +36,27 @@
 #include <libxml/tree.h>
 #include <boost/shared_ptr.hpp>
 
+#include <glibmm/ustring.h>
+
+#include "pbd/string_convert.h"
 #include "pbd/libpbd_visibility.h"
 
 class XMLTree;
 class XMLNode;
-class XMLProperty;
+
+class LIBPBD_API XMLProperty {
+public:
+	XMLProperty(const std::string& n, const std::string& v = std::string());
+	~XMLProperty();
+
+	const std::string& name() const { return _name; }
+	const std::string& value() const { return _value; }
+	const std::string& set_value(const std::string& v) { return _value = v; }
+
+private:
+	std::string _name;
+	std::string _value;
+};
 
 typedef std::vector<XMLNode *>                   XMLNodeList;
 typedef std::vector<boost::shared_ptr<XMLNode> > XMLSharedNodeList;
@@ -50,7 +65,6 @@ typedef XMLNodeList::const_iterator              XMLNodeConstIterator;
 typedef std::vector<XMLProperty*>                XMLPropertyList;
 typedef XMLPropertyList::iterator                XMLPropertyIterator;
 typedef XMLPropertyList::const_iterator          XMLPropertyConstIterator;
-typedef std::map<std::string, XMLProperty*>      XMLPropertyMap;
 
 class LIBPBD_API XMLTree {
 public:
@@ -72,7 +86,7 @@ public:
 	bool read(const std::string& fn) { set_filename(fn); return read_internal(false); }
 	bool read_and_validate() { return read_internal(true); }
 	bool read_and_validate(const std::string& fn) { set_filename(fn); return read_internal(true); }
-	bool read_buffer(const std::string&);
+	bool read_buffer(const std::string&, bool to_tree_doc = false);
 
 	bool write() const;
 	bool write(const std::string& fn) { set_filename(fn); return write(); }
@@ -101,6 +115,9 @@ public:
 
 	XMLNode& operator= (const XMLNode& other);
 
+	bool operator== (const XMLNode& other) const;
+	bool operator!= (const XMLNode& other) const;
+
 	const std::string& name() const { return _name; }
 
 	bool          is_content() const { return _is_content; }
@@ -114,7 +131,7 @@ public:
 	XMLNode* add_child_copy(const XMLNode&);
 	void     add_child_nocopy(XMLNode&);
 
-	std::string attribute_value();
+	std::string attribute_value();  //throws XMLException if attribute doesn't exist
 
 	const XMLPropertyList& properties() const { return _proplist; }
 	XMLProperty const *    property(const char*) const;
@@ -124,19 +141,51 @@ public:
 
 	bool has_property_with_value (const std::string&, const std::string&) const;
 
-	XMLProperty* add_property(const char* name, const std::string& value);
-	XMLProperty* add_property(const char* name, const char* value = "");
-	XMLProperty* add_property(const char* name, const long value);
+	bool set_property (const char* name, const std::string& value);
+
+	bool set_property (const char* name, const char* cstr) {
+		return set_property (name, std::string(cstr));
+	}
+
+	bool set_property (const char* name, const Glib::ustring& ustr)
+	{
+		return set_property (name, ustr.raw ());
+	}
+
+	template<class T>
+	bool set_property (const char* name, const T& value)
+	{
+		std::string str;
+		if (!PBD::to_string<T> (value, str)) {
+			return false;
+		}
+		return set_property(name, str);
+	}
+
+	bool get_property (const char* name, std::string& value) const;
+
+	template <class T>
+	bool get_property (const char* name, T& value) const
+	{
+		XMLProperty const* const prop = property (name);
+		if (!prop) {
+			return false;
+		}
+
+		return PBD::string_to<T> (prop->value (), value);
+	}
 
 	void remove_property(const std::string&);
 	void remove_property_recursively(const std::string&);
 
 	/** Remove all nodes with the name passed to remove_nodes */
-	void remove_nodes(const std::string&);
+	void remove_nodes (const std::string&);
 	/** Remove and delete all nodes with the name passed to remove_nodes */
-	void remove_nodes_and_delete(const std::string&);
+	void remove_nodes_and_delete (const std::string&);
 	/** Remove and delete all nodes with property prop matching val */
-	void remove_nodes_and_delete(const std::string& propname, const std::string& val);
+	void remove_nodes_and_delete (const std::string& propname, const std::string& val);
+	/** Remove and delete first node with given name and prop matching val */
+	void remove_node_and_delete (const std::string& n, const std::string& propname, const std::string& val);
 
 	void dump (std::ostream &, std::string p = "") const;
 
@@ -146,24 +195,9 @@ private:
 	std::string         _content;
 	XMLNodeList         _children;
 	XMLPropertyList     _proplist;
-	XMLPropertyMap      _propmap;
 	mutable XMLNodeList _selected_children;
 
 	void clear_lists ();
-};
-
-class LIBPBD_API XMLProperty {
-public:
-	XMLProperty(const std::string& n, const std::string& v = std::string());
-	~XMLProperty();
-
-	const std::string& name() const { return _name; }
-	const std::string& value() const { return _value; }
-	const std::string& set_value(const std::string& v) { return _value = v; }
-
-private:
-	std::string _name;
-	std::string _value;
 };
 
 class LIBPBD_API XMLException: public std::exception {

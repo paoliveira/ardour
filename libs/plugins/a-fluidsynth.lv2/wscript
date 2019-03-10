@@ -15,9 +15,8 @@ def options(opt):
 def configure(conf):
     conf.load('compiler_c')
     autowaf.configure(conf)
-    if Options.options.lv2:
-        autowaf.check_pkg(conf, 'lv2', atleast_version='1.0.0',
-                uselib_store='LV2_1_0_0')
+    autowaf.check_pkg(conf, 'lv2', atleast_version='1.0.0',
+                      uselib_store='LV2_1_0_0')
 
 def build(bld):
     bundle = 'a-fluidsynth.lv2'
@@ -35,10 +34,10 @@ def build(bld):
                 LIB_EXT      = module_ext)
 
         # Build plugin library
-        obj = bld(features     = 'c cshlib',
-                  source       = 'a-fluidsynth.c',
+        obj = bld(features     = 'cxx cshlib',
+                  source       = 'a-fluidsynth.cc',
                   name         = 'a-fluidsynth',
-                  cflags       = [ '-fPIC',  bld.env['compiler_flags_dict']['c99'] ],
+                  cxxflags     = [ bld.env['compiler_flags_dict']['pic'] ],
                   includes     = [ '../../ardour' ],
                   target       = '../../LV2/%s/a-fluidsynth' % bundle,
                   install_path = '${LV2DIR}/%s' % bundle,

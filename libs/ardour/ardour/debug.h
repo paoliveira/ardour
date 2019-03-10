@@ -44,6 +44,7 @@ namespace PBD {
 		LIBARDOUR_API extern DebugBits Destruction;
 		LIBARDOUR_API extern DebugBits MTC;
 		LIBARDOUR_API extern DebugBits LTC;
+		LIBARDOUR_API extern DebugBits TXLTC;
 		LIBARDOUR_API extern DebugBits Transport;
 		LIBARDOUR_API extern DebugBits Slave;
 		LIBARDOUR_API extern DebugBits SessionEvents;
@@ -72,6 +73,7 @@ namespace PBD {
 		LIBARDOUR_API extern DebugBits AudioEngine;
 		LIBARDOUR_API extern DebugBits Soundcloud;
 		LIBARDOUR_API extern DebugBits Butler;
+		LIBARDOUR_API extern DebugBits Selection;
 		LIBARDOUR_API extern DebugBits GenericMidi;
 		LIBARDOUR_API extern DebugBits BackendMIDI;
 		LIBARDOUR_API extern DebugBits BackendAudio;
@@ -79,12 +81,16 @@ namespace PBD {
 		LIBARDOUR_API extern DebugBits BackendThreads;
 		LIBARDOUR_API extern DebugBits BackendPorts;
 		LIBARDOUR_API extern DebugBits VSTCallbacks;
+		LIBARDOUR_API extern DebugBits DiskIO;
 		LIBARDOUR_API extern DebugBits FaderPort;
+		LIBARDOUR_API extern DebugBits FaderPort8;
+		LIBARDOUR_API extern DebugBits CC121;
 		LIBARDOUR_API extern DebugBits VCA;
 		LIBARDOUR_API extern DebugBits Push2;
+		LIBARDOUR_API extern DebugBits US2400;
+		LIBARDOUR_API extern DebugBits LaunchControlXL;
 
 	}
 }
 
 #endif /* __ardour_debug_h__ */
-

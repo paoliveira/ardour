@@ -69,16 +69,16 @@ using namespace PBD;
 using namespace Glib;
 
 PBD::Signal0<void> AudioFileSource::HeaderPositionOffsetChanged;
-framecnt_t         AudioFileSource::header_position_offset = 0;
+samplecnt_t         AudioFileSource::header_position_offset = 0;
 
 /* XXX maybe this too */
 char AudioFileSource::bwf_serial_number[13] = "000000000000";
 
 struct SizedSampleBuffer {
-	framecnt_t size;
+	samplecnt_t size;
 	Sample* buf;
 
-	SizedSampleBuffer (framecnt_t sz) : size (sz) {
+	SizedSampleBuffer (samplecnt_t sz) : size (sz) {
 		buf = new Sample[size];
 	}
 
@@ -131,9 +131,11 @@ AudioFileSource::AudioFileSource (Session& s, const string& path, Source::Flag f
 }
 
 
-/** Constructor used for existing files via XML.  File must exist. If _origin
- * is an absolute path after ::set_state(), then the file is external to the
- * session.
+/** Constructor used for sources listed in session-files (XML)
+ * and missing sources (SilentFileSource).
+ *
+ * If _origin is an absolute path after ::set_state(), then the
+ * file is external to the session.
  */
 AudioFileSource::AudioFileSource (Session& s, const XMLNode& node, bool must_exist)
 	: Source (s, node)
@@ -146,7 +148,6 @@ AudioFileSource::AudioFileSource (Session& s, const XMLNode& node, bool must_exi
 
 	if (Glib::path_is_absolute (_origin)) {
 		_path = _origin;
-		must_exist = true;
 	}
 
 	if (init (_path, must_exist)) {
@@ -207,10 +208,9 @@ XMLNode&
 AudioFileSource::get_state ()
 {
 	XMLNode& root (AudioSource::get_state());
-	char buf[32];
-	snprintf (buf, sizeof (buf), "%u", _channel);
-	root.add_property (X_("channel"), buf);
-        root.add_property (X_("origin"), _origin);
+	root.set_property (X_("channel"), _channel);
+	root.set_property (X_("origin"), _origin);
+	root.set_property (X_("gain"), _gain);
 	return root;
 }
 
@@ -249,7 +249,7 @@ AudioFileSource::move_dependents_to_trash()
 }
 
 void
-AudioFileSource::set_header_position_offset (framecnt_t offset)
+AudioFileSource::set_header_position_offset (samplecnt_t offset)
 {
 	header_position_offset = offset;
 	HeaderPositionOffsetChanged ();
@@ -280,6 +280,20 @@ AudioFileSource::setup_peakfile ()
 	} else {
 		return 0;
 	}
+}
+
+void
+AudioFileSource::set_gain (float g, bool temporarily)
+{
+	if (_gain == g) {
+		return;
+	}
+	_gain = g;
+	if (temporarily) {
+		return;
+	}
+	close_peakfile();
+	setup_peakfile ();
 }
 
 bool
@@ -335,7 +349,7 @@ AudioFileSource::safe_audio_file_extension(const string& file)
 }
 
 Sample*
-AudioFileSource::get_interleave_buffer (framecnt_t size)
+AudioFileSource::get_interleave_buffer (samplecnt_t size)
 {
 	SizedSampleBuffer* ssb;
 

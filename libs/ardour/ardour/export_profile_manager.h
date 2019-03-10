@@ -118,7 +118,7 @@ class LIBARDOUR_API ExportProfileManager
 		Timecode,
 		BBT,
 		MinSec,
-		Frames,
+		Samples,
 	};
 
 	struct TimespanState {
@@ -140,8 +140,8 @@ class LIBARDOUR_API ExportProfileManager
 	typedef boost::shared_ptr<TimespanState> TimespanStatePtr;
 	typedef std::list<TimespanStatePtr> TimespanStateList;
 
-	void set_selection_range (framepos_t start = 0, framepos_t end = 0);
-	std::string set_single_range (framepos_t start, framepos_t end, std::string name);
+	void set_selection_range (samplepos_t start = 0, samplepos_t end = 0);
+	std::string set_single_range (samplepos_t start, samplepos_t end, std::string name);
 	TimespanStateList const & get_timespans () { return check_list (timespans); }
 
   private:
@@ -205,6 +205,7 @@ class LIBARDOUR_API ExportProfileManager
 
 	std::string save_format_to_disk (ExportFormatSpecPtr format);
 	void remove_format_profile (ExportFormatSpecPtr format);
+	void revert_format_profile (ExportFormatSpecPtr format);
 	ExportFormatSpecPtr get_new_format (ExportFormatSpecPtr original);
 
 	PBD::Signal0<void> FormatListChanged;

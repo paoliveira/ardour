@@ -56,9 +56,12 @@ public:
         void mark_immutable_except_write();
 	void mark_nonremovable ();
 
-	const std::string& take_id ()        const { return _take_id; }
+	const std::string&   take_id ()        const { return _take_id; }
 	bool                 within_session () const { return _within_session; }
 	uint16_t             channel()         const { return _channel; }
+	float                gain()            const { return _gain; }
+
+	virtual void set_gain (float g, bool temporarily = false) { _gain = g; }
 
 	int set_state (const XMLNode&, int version);
 
@@ -77,6 +80,7 @@ public:
         bool is_stub () const;
 
 	const std::string& origin() const { return _origin; }
+	void set_origin (std::string const& o) { _origin = o; }
 
 	virtual void set_path (const std::string&);
 	void replace_file (const std::string&);
@@ -111,6 +115,7 @@ public:
 	uint16_t    _channel;
 	bool        _within_session;
 	std::string _origin;
+	float       _gain;
 };
 
 } // namespace ARDOUR

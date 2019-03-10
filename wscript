@@ -135,7 +135,7 @@ clang_dict['sse'] = ''
 clang_dict['fpmath-sse'] = ''
 clang_dict['xmmintrinsics'] = ''
 clang_dict['silence-unused-arguments'] = '-Qunused-arguments'
-clang_dict['extra-cxx-warnings'] = [ '-Woverloaded-virtual', '-Wno-mismatched-tags', '-Wno-cast-align', '-Wno-unused-local-typedefs' ]
+clang_dict['extra-cxx-warnings'] = [ '-Woverloaded-virtual', '-Wno-mismatched-tags', '-Wno-cast-align', '-Wno-unused-local-typedefs', '-Wunneeded-internal-declaration' ]
 clang_dict['cxx-strict'] = [ '-ansi', '-Wnon-virtual-dtor', '-Woverloaded-virtual', '-fstrict-overflow' ]
 clang_dict['strict'] = ['-Wall', '-Wcast-align', '-Wextra', '-Wwrite-strings' ]
 clang_dict['generic-x86'] = [ '-arch', 'i386' ]
@@ -147,25 +147,35 @@ clang_darwin_dict['cxx-strict'] = [ '-ansi', '-Wnon-virtual-dtor', '-Woverloaded
 clang_darwin_dict['full-optimization'] = [ '-O3', '-ffast-math']
 compiler_flags_dictionaries['clang-darwin'] = clang_darwin_dict;
 
-def fetch_git_revision ():
-    cmd = "git describe HEAD | sed 's/^[A-Za-z0-9]*+//'"
-    output = subprocess.Popen(cmd, shell=True, stderr=subprocess.STDOUT, stdout=subprocess.PIPE).communicate()[0].splitlines()
-    rev = output[0].decode ('utf-8')
-    return rev
+def fetch_git_revision_date ():
+    cmd = ["git", "describe", "HEAD"]
+    output = subprocess.Popen(cmd, stderr=subprocess.STDOUT, stdout=subprocess.PIPE).communicate()[0].splitlines()
+    rev = re.sub(r"^[A-Za-z0-9]*\+", "", output[0].decode('utf-8'))
 
-def fetch_tarball_revision ():
+    cmd = ["git", "log", "-1", "--pretty=format:%ci", "HEAD"]
+    output = subprocess.Popen(cmd, stderr=subprocess.STDOUT, stdout=subprocess.PIPE).communicate()[0].splitlines()
+    date = output[0].decode('utf-8').split(None, 2)[0]
+
+    return rev, date
+
+def fetch_tarball_revision_date():
     if not os.path.exists ('libs/ardour/revision.cc'):
         print ('This tarball was not created correctly - it is missing libs/ardour/revision.cc')
         sys.exit (1)
-    with open('libs/ardour/revision.cc') as f:
+    with open('libs/ardour/revision.cc', 'rb') as f:
         content = f.readlines()
         remove_punctuation_map = dict((ord(char), None) for char in '";')
-        return content[1].decode('utf-8').strip().split(' ')[7].translate (remove_punctuation_map)
+
+        raw_line_tokens = content[1].decode('utf-8').strip().split(' ')
+        rev = raw_line_tokens[7].translate(remove_punctuation_map)
+        date = raw_line_tokens[12].translate(remove_punctuation_map)
+
+        return rev, date
 
 if os.path.isdir (os.path.join(os.getcwd(), '.git')):
-    rev = fetch_git_revision ()
+    rev, rev_date = fetch_git_revision_date()
 else:
-    rev = fetch_tarball_revision ()
+    rev, rev_date = fetch_tarball_revision_date()
 
 #
 # rev is now of the form MAJOR.MINOR[-rcX]-rev-commit
@@ -182,12 +192,29 @@ else:
     MICRO = '0'
 
 V = MAJOR + '.' + MINOR + '.' + MICRO
-# Ensure that these are not unicode, which
-# can cause odd problems elsewhere. Note that
-# in python3, encode and decode do not return
-# strings, so we have to force the type.
-VERSION = V.encode ('ascii', 'ignore').decode ("utf-8")
-PROGRAM_VERSION = MAJOR.encode ('ascii', 'ignore').decode ("utf-8")
+
+def sanitize(s):
+    # round-trip to remove anything in the string that is not encodable in
+    # ASCII, yet still keep a real (utf8-encoded internally) string.
+    s = s.encode ('ascii', 'ignore').decode ("utf-8")
+    # In Python3, bytes is the class of binary content and encode() returns
+    # bytes to transform a string according to a text encoding; str is the
+    # class of normal strings (utf8-encoded internally) and decode() returns
+    # that type.
+    # Python 2 did not initially cater for encoding problems and can use str
+    # for both binary content and for (decoded) strings. The Unicode type was
+    # added to correspond to Python 3 str, and the Python 2 str type should
+    # only correspond to bytes. Alas, almost everything in the Python 2
+    # ecosystem has been written with str in mind and doesn't handle Unicode
+    # objects correctly. If Python 2 is in use, s will be a Unicode object and
+    # to avoid strange problems later we convert back to str, but in utf-8
+    # nonetheless.
+    if not isinstance(s, str):
+        s = s.encode("utf-8")
+    return s
+VERSION = sanitize(V)
+PROGRAM_VERSION = sanitize(MAJOR)
+del sanitize
 
 if len (sys.argv) > 1 and sys.argv[1] == 'dist':
         if not 'APPNAME' in os.environ:
@@ -201,12 +228,15 @@ out = 'build'
 
 children = [
         # optionally external libraries
-        'libs/qm-dsp',
-        'libs/vamp-plugins',
-        'libs/libltc',
         'libs/fluidsynth',
+        'libs/hidapi',
+        'libs/libltc',
         'libs/lua',
         'libs/ptformat',
+        'libs/qm-dsp',
+        'libs/vamp-plugins',
+        'libs/zita-resampler',
+        'libs/zita-convolver',
         # core ardour libraries
         'libs/pbd',
         'libs/midi++2',
@@ -214,13 +244,16 @@ children = [
         'libs/surfaces',
         'libs/panners',
         'libs/backends',
-        'libs/timecode',
+        'libs/temporal',
         'libs/ardour',
         'libs/gtkmm2ext',
         'libs/audiographer',
         'libs/canvas',
+        'libs/widgets',
+        'libs/waveview',
         'libs/plugins/reasonablesynth.lv2',
         'libs/plugins/a-comp.lv2',
+        'libs/plugins/a-exp.lv2',
         'libs/plugins/a-delay.lv2',
         'libs/plugins/a-eq.lv2',
         'libs/plugins/a-reverb.lv2',
@@ -231,6 +264,7 @@ children = [
         'mcp',
         'osc',
         'patchfiles',
+        'plugin_metadata',
         'scripts',
         'headless',
         'session_utils',
@@ -238,7 +272,6 @@ children = [
         'libs/fst',
         'libs/vfork',
         'libs/ardouralsautil',
-        'cfgtool',
         'tools/luadevel',
 ]
 
@@ -260,7 +293,7 @@ def fetch_gcc_version (CC):
 def create_stored_revision():
     rev = ""
     if os.path.exists('.git'):
-        rev = fetch_git_revision();
+        rev, rev_date = fetch_git_revision_date();
         print("Git version: " + rev + "\n")
     elif os.path.exists('libs/ardour/revision.cc'):
         print("Using packaged revision")
@@ -271,18 +304,28 @@ def create_stored_revision():
 
     try:
         #
-        # if you change the format of this, be sure to fix fetch_tarball_revision() above
-        # so that  it still works.
+        # if you change the format of this, be sure to fix fetch_tarball_revision_date()
+        # above so that  it still works.
         #
         text =  '#include "ardour/revision.h"\n'
-        text += 'namespace ARDOUR { const char* revision = \"%s\"; }\n' % rev
-        print('Writing revision info to libs/ardour/revision.cc using ' + rev)
+        text += (
+            'namespace ARDOUR { const char* revision = \"%s\"; '
+            'const char* date = \"%s\"; }\n'
+        ) % (rev, rev_date)
+        print('Writing revision info to libs/ardour/revision.cc using ' + rev + ', ' + rev_date)
         o = open('libs/ardour/revision.cc', 'w')
         o.write(text)
         o.close()
     except IOError:
         print('Could not open libs/ardour/revision.cc for writing\n')
         sys.exit(-1)
+
+def get_depstack_rev(depstack_root):
+    try:
+        with open(depstack_root + '/../.vers', 'r') as f:
+            return f.readline().decode('utf-8').strip()[:7]
+    except IOError:
+        return '-unknown-';
 
 def set_compiler_flags (conf,opt):
     #
@@ -356,6 +399,10 @@ int main() { return 0; }''',
             conf.env['build_host'] = 'yosemite'
         elif re.search ("^15[.]", version) != None:
             conf.env['build_host'] = 'el_capitan'
+        elif re.search ("^16[.]", version) != None:
+            conf.env['build_host'] = 'sierra'
+        elif re.search ("^17[.]", version) != None:
+            conf.env['build_host'] = 'high_sierra'
         else:
             conf.env['build_host'] = 'irrelevant'
 
@@ -379,8 +426,12 @@ int main() { return 0; }''',
                 conf.env['build_target'] = 'mavericks'
             elif re.search ("^14[.]", version) != None:
                 conf.env['build_target'] = 'yosemite'
-            else:
+            elif re.search ("^15[.]", version) != None:
                 conf.env['build_target'] = 'el_capitan'
+            elif re.search ("^16[.]", version) != None:
+                conf.env['build_target'] = 'sierra'
+            else:
+                conf.env['build_target'] = 'high_sierra'
         else:
             match = re.search(
                     "(?P<cpu>i[0-6]86|x86_64|powerpc|ppc|ppc64|arm|s390x?)",
@@ -401,11 +452,11 @@ int main() { return 0; }''',
         #
         compiler_flags.append ('-U__STRICT_ANSI__')
 
-    if opt.use_libcpp or conf.env['build_host'] in [ 'el_capitan' ]:
+    if opt.use_libcpp or conf.env['build_host'] in [ 'el_capitan', 'sierra', 'high_sierra' ]:
        cxx_flags.append('--stdlib=libc++')
        linker_flags.append('--stdlib=libc++')
 
-    if conf.options.cxx11 or conf.env['build_host'] in [ 'mavericks', 'yosemite', 'el_capitan' ]:
+    if conf.options.cxx11 or conf.env['build_host'] in [ 'mavericks', 'yosemite', 'el_capitan', 'sierra', 'high_sierra' ]:
         conf.check_cxx(cxxflags=["-std=c++11"])
         cxx_flags.append('-std=c++11')
         if platform == "darwin":
@@ -413,7 +464,7 @@ int main() { return 0; }''',
             # from requiring a full path to requiring just the header name.
             cxx_flags.append('-DCARBON_FLAT_HEADERS')
 
-            if not opt.use_libcpp and not conf.env['build_host'] in [ 'el_capitan' ]:
+            if not opt.use_libcpp and not conf.env['build_host'] in [ 'el_capitan', 'sierra', 'high_sierra' ]:
                 cxx_flags.append('--stdlib=libstdc++')
                 linker_flags.append('--stdlib=libstdc++')
             # Prevents visibility issues in standard headers
@@ -422,7 +473,7 @@ int main() { return 0; }''',
             cxx_flags.append('-DBOOST_NO_AUTO_PTR')
 
 
-    if (is_clang and platform == "darwin") or conf.env['build_host'] in ['mavericks', 'yosemite', 'el_capitan']:
+    if (is_clang and platform == "darwin") or conf.env['build_host'] in [ 'mavericks', 'yosemite', 'el_capitan', 'sierra', 'high_sierra' ]:
         # Silence warnings about the non-existing osx clang compiler flags
         # -compatibility_version and -current_version.  These are Waf
         # generated and not needed with clang
@@ -533,10 +584,15 @@ int main() { return 0; }''',
                 ("-DMAC_OS_X_VERSION_MIN_REQUIRED=1070",
                  '-mmacosx-version-min=10.7'))
 
-    elif conf.env['build_target'] in [ 'mavericks', 'yosemite', 'el_capitan' ]:
+    elif conf.env['build_target'] in [ 'mavericks', 'yosemite' ]:
         compiler_flags.extend(
                 ("-DMAC_OS_X_VERSION_MAX_ALLOWED=1090",
                  "-mmacosx-version-min=10.8"))
+
+    elif conf.env['build_target'] in ['el_capitan', 'sierra', 'high_sierra' ]:
+        compiler_flags.extend(
+                ("-DMAC_OS_X_VERSION_MAX_ALLOWED=1090",
+                 "-mmacosx-version-min=10.9"))
 
     #
     # save off CPU element in an env
@@ -575,7 +631,7 @@ int main() { return 0; }''',
     if opt.stl_debug:
         cxx_flags.append("-D_GLIBCXX_DEBUG")
 
-    if re.search ("freebsd", sys.platform) != None:
+    if re.search ("freebsd", sys.platform) != None or re.search ("openbsd", sys.platform) != None:
         linker_flags.append('-lexecinfo')
 
     if conf.env['DEBUG_RT_ALLOC']:
@@ -613,9 +669,6 @@ int main() { return 0; }''',
     cxx_flags.extend(
         ('-D__STDC_LIMIT_MACROS', '-D__STDC_FORMAT_MACROS',
          '-DCANVAS_COMPATIBILITY', '-DCANVAS_DEBUG'))
-
-    if opt.nls:
-        compiler_flags.append('-DENABLE_NLS')
 
     # use sparingly, prefer runtime profile
     if Options.options.program_name.lower() == "mixbus":
@@ -706,12 +759,14 @@ def options(opt):
                    help='Build internal libs as static libraries')
     opt.add_option('--use-external-libs', action='store_true', default=False, dest='use_external_libs',
                    help='Use external/system versions of some bundled libraries')
+    opt.add_option('--keepflags', action='store_true', default=False, dest='keepflags',
+                    help='Do not ignore CFLAGS/CXXFLAGS environment vars')
     opt.add_option('--luadoc', action='store_true', default=False, dest='luadoc',
                     help='Compile Tool to dump LuaBindings (needs C++11)')
-    opt.add_option('--lv2', action='store_true', default=True, dest='lv2',
-                    help='Compile with support for LV2 (if Lilv+Suil is available)')
-    opt.add_option('--no-lv2', action='store_false', dest='lv2',
-                    help='Do not compile with support for LV2')
+    opt.add_option('--canvasui', action='store_true', default=False, dest='canvasui',
+                    help='Compile libcanvas test GUI')
+    opt.add_option('--beatbox', action='store_true', default=False, dest='beatbox',
+                    help='Compile beatbox test app')
     opt.add_option('--lv2dir', type='string', help="install destination for builtin LV2 bundles [Default: LIBDIR/lv2]")
     opt.add_option('--lxvst', action='store_true', default=True, dest='lxvst',
                     help='Compile with support for linuxVST plugins')
@@ -742,6 +797,8 @@ def options(opt):
                     help="Build a single executable for each unit test")
     #opt.add_option('--tranzport', action='store_true', default=False, dest='tranzport',
     # help='Compile with support for Frontier Designs Tranzport (if libusb is available)')
+    opt.add_option('--maschine', action='store_true', default=False, dest='maschine',
+                    help='Compile with support for NI-Maschine')
     opt.add_option('--generic', action='store_true', default=False, dest='generic',
                     help='Compile with -arch i386 (OS X ONLY)')
     opt.add_option('--ppc', action='store_true', default=False, dest='ppc',
@@ -796,7 +853,7 @@ def configure(conf):
         conf.env['MSVC_TARGETS'] = ['x64']
         conf.load('msvc')
 
-    if Options.options.debug:
+    if Options.options.debug and not Options.options.keepflags:
         # Nuke user CFLAGS/CXXFLAGS if debug is set (they likely contain -O3, NDEBUG, etc)
         conf.env['CFLAGS'] = []
         conf.env['CXXFLAGS'] = []
@@ -830,7 +887,9 @@ def configure(conf):
     pkg_config_path = os.getenv('PKG_CONFIG_PATH')
     user_gtk_root = os.path.expanduser (Options.options.depstack_root + '/gtk/inst')
 
-    if pkg_config_path is not None and pkg_config_path.find (user_gtk_root) >= 0:
+    if os.getenv('DEPSTACK_ROOT') is not None and os.path.exists (os.getenv('DEPSTACK_ROOT') + '/lib'):
+        conf.env['DEPSTACK_REV'] = get_depstack_rev (os.getenv('DEPSTACK_ROOT') + '/lib')
+    elif pkg_config_path is not None and pkg_config_path.find (user_gtk_root) >= 0:
         # told to search user_gtk_root
         prefinclude = ''.join ([ '-I', user_gtk_root + '/include'])
         preflib = ''.join ([ '-L', user_gtk_root + '/lib'])
@@ -838,8 +897,10 @@ def configure(conf):
         conf.env.append_value('CXXFLAGS',  [prefinclude ])
         conf.env.append_value('LINKFLAGS', [ preflib ])
         autowaf.display_msg(conf, 'Will build against private GTK dependency stack in ' + user_gtk_root, 'yes')
+        conf.env['DEPSTACK_REV'] = get_depstack_rev (user_gtk_root)
     else:
         autowaf.display_msg(conf, 'Will build against private GTK dependency stack', 'no')
+        conf.env['DEPSTACK_REV'] = '-system-'
 
     if sys.platform == 'darwin':
         conf.define ('NEED_INTL', 1)
@@ -879,6 +940,9 @@ def configure(conf):
 
         conf.define ('HAVE_COREAUDIO', 1)
         conf.define ('AUDIOUNIT_SUPPORT', 1)
+
+        if not Options.options.ppc:
+            conf.define('MACVST_SUPPORT', 1)
 
         conf.define ('TOP_MENUBAR',1)
 
@@ -928,6 +992,14 @@ def configure(conf):
             print ('No Carbon support available for this build\n')
 
 
+    if Options.options.canvasui:
+        conf.env['CANVASTESTUI'] = True
+        conf.define ('CANVASTESTUI', 1)
+
+    if Options.options.beatbox:
+        conf.env['BEATBOX'] = True
+        conf.define ('BEATBOX', 1)
+
     if Options.options.luadoc:
         conf.env['LUABINDINGDOC'] = True
         conf.define ('LUABINDINGDOC', 1)
@@ -955,20 +1027,24 @@ def configure(conf):
 
     # executing a test program is n/a when cross-compiling
     if Options.options.dist_target != 'mingw':
-        if Options.options.dist_target != 'msvc':
+        if Options.options.dist_target != 'msvc' and re.search ("openbsd", sys.platform) == None:
             if re.search ("freebsd", sys.platform) != None:
                 conf.check_cc(function_name='dlopen', header_name='dlfcn.h', uselib_store='DL')
             else:
                 conf.check_cc(function_name='dlopen', header_name='dlfcn.h', lib='dl', uselib_store='DL')
-        conf.check_cxx(fragment = "#include <boost/version.hpp>\nint main(void) { return (BOOST_VERSION >= 103900 ? 0 : 1); }\n",
-                  execute = "1",
-                  mandatory = True,
-                  msg = 'Checking for boost library >= 1.39',
-                  okmsg = 'ok',
-                  errmsg = 'too old\nPlease install boost version 1.39 or higher.')
+
+    conf.check_cxx(fragment = "#include <boost/version.hpp>\n#if !defined (BOOST_VERSION) || BOOST_VERSION < 103900\n#error boost >= 1.39 is not available\n#endif\nint main(void) { return 0; }\n",
+              execute = False,
+              mandatory = True,
+              msg = 'Checking for boost library >= 1.39',
+              okmsg = 'ok',
+              errmsg = 'too old\nPlease install boost version 1.39 or higher.')
 
     if re.search ("linux", sys.platform) != None and Options.options.dist_target != 'mingw':
         autowaf.check_pkg(conf, 'alsa', uselib_store='ALSA')
+
+    if re.search ("openbsd", sys.platform) != None:
+        conf.env.append_value('LDFLAGS', '-L/usr/X11R6/lib')
 
     autowaf.check_pkg(conf, 'glib-2.0', uselib_store='GLIB', atleast_version='2.28', mandatory=True)
     autowaf.check_pkg(conf, 'gthread-2.0', uselib_store='GTHREAD', atleast_version='2.2', mandatory=True)
@@ -1091,6 +1167,9 @@ int main () { return 0; }
     if opts.nls:
         conf.define('ENABLE_NLS', 1)
         conf.env['ENABLE_NLS'] = True
+    else:
+        conf.define('ENABLE_NLS', 0)
+        conf.env['ENABLE_NLS'] = False
     if opts.build_tests:
         conf.env['BUILD_TESTS'] = True
         conf.env['RUN_TESTS'] = opts.run_tests
@@ -1131,8 +1210,10 @@ int main () { return 0; }
     if opts.no_threaded_waveviews:
         conf.define('NO_THREADED_WAVEVIEWS', 1)
         conf.env['NO_THREADED_WAVEVIEWS'] = True
-        
+
     backends = opts.with_backends.split(',')
+    if opts.build_tests and 'dummy' not in backends:
+        backends += ['dummy']
 
     if not backends:
         print("Must configure and build at least one backend")
@@ -1161,6 +1242,8 @@ int main () { return 0; }
 
     if sys.platform == 'darwin':
         sub_config_and_use(conf, 'libs/appleutility')
+    elif re.search ("openbsd", sys.platform) != None:
+        pass
     elif Options.options.dist_target != 'mingw':
         sub_config_and_use(conf, 'tools/sanity_check')
         sub_config_and_use(conf, 'tools/gccabicheck')
@@ -1193,18 +1276,19 @@ const char* const ardour_config_info = "\\n\\
     write_config_text('Internal Shared Libraries', conf.is_defined('INTERNAL_SHARED_LIBS'))
     write_config_text('Use External Libraries', conf.is_defined('USE_EXTERNAL_LIBS'))
     write_config_text('Library exports hidden', conf.is_defined('EXPORT_VISIBILITY_HIDDEN'))
-
+    write_config_text('Free/Demo copy',        conf.is_defined('FREEBIE'))
+    config_text.write("\\n\\\n")
     write_config_text('ALSA DBus Reservation', conf.is_defined('HAVE_DBUS'))
     write_config_text('Architecture flags',    opts.arch)
     write_config_text('Aubio',                 conf.is_defined('HAVE_AUBIO'))
     write_config_text('AudioUnits',            conf.is_defined('AUDIOUNIT_SUPPORT'))
-    write_config_text('Free/Demo copy',        conf.is_defined('FREEBIE'))
     write_config_text('Build target',          conf.env['build_target'])
+    write_config_text('Canvas Test UI',        conf.is_defined('CANVASTESTUI'))
+    write_config_text('Beatbox test app',      conf.is_defined('BEATBOX'))
     write_config_text('CoreAudio',             conf.is_defined('HAVE_COREAUDIO'))
     write_config_text('CoreAudio 10.5 compat', conf.is_defined('COREAUDIO105'))
     write_config_text('Debug RT allocations',  conf.is_defined('DEBUG_RT_ALLOC'))
     write_config_text('Debug Symbols',         conf.is_defined('debug_symbols') or conf.env['DEBUG'])
-    write_config_text('Process thread timing', conf.is_defined('PT_TIMING'))
     write_config_text('Denormal exceptions',   conf.is_defined('DEBUG_DENORMAL_EXCEPTION'))
     write_config_text('FLAC',                  conf.is_defined('HAVE_FLAC'))
     write_config_text('FPU optimization',      opts.fpu_optimization)
@@ -1216,28 +1300,34 @@ const char* const ardour_config_info = "\\n\\
     write_config_text('LV2 support',           conf.is_defined('LV2_SUPPORT'))
     write_config_text('LV2 extensions',        conf.is_defined('LV2_EXTENDED'))
     write_config_text('LXVST support',         conf.is_defined('LXVST_SUPPORT'))
+    write_config_text('Mac VST support',       conf.is_defined('MACVST_SUPPORT'))
+    write_config_text('NI-Maschine',           opts.maschine)
     write_config_text('OGG',                   conf.is_defined('HAVE_OGG'))
     write_config_text('Phone home',            conf.is_defined('PHONE_HOME'))
+    write_config_text('Process thread timing', conf.is_defined('PT_TIMING'))
     write_config_text('Program name',          opts.program_name)
     write_config_text('Samplerate',            conf.is_defined('HAVE_SAMPLERATE'))
     write_config_text('PT format',             conf.is_defined('PTFORMAT'))
     write_config_text('PTW32 Semaphore',       conf.is_defined('USE_PTW32_SEMAPHORE'))
 #    write_config_text('Soundtouch',            conf.is_defined('HAVE_SOUNDTOUCH'))
+    write_config_text('Threaded WaveViews',    not opts.no_threaded_waveviews)
     write_config_text('Translation',           opts.nls)
 #    write_config_text('Tranzport',             opts.tranzport)
     write_config_text('Unit tests',            conf.env['BUILD_TESTS'])
-    write_config_text('Mac i386 Architecture', opts.generic)
-    write_config_text('Mac ppc Architecture',  opts.ppc)
     write_config_text('Windows VST support',   opts.windows_vst)
     write_config_text('Wiimote support',       conf.is_defined('BUILD_WIIMOTE'))
     write_config_text('Windows key',           opts.windows_key)
-
+    config_text.write("\\n\\\n")
     write_config_text('PortAudio Backend',     conf.env['BUILD_PABACKEND'])
     write_config_text('CoreAudio/Midi Backend',conf.env['BUILD_CORECRAPPITA'])
     write_config_text('ALSA Backend',          conf.env['BUILD_ALSABACKEND'])
     write_config_text('Dummy backend',         conf.env['BUILD_DUMMYBACKEND'])
     write_config_text('JACK Backend',          conf.env['BUILD_JACKBACKEND'])
-
+    config_text.write("\\n\\\n")
+    write_config_text('Buildstack', conf.env['DEPSTACK_REV'])
+    write_config_text('Mac i386 Architecture', opts.generic)
+    write_config_text('Mac ppc Architecture',  opts.ppc)
+    config_text.write("\\n\\\n")
     write_config_text('C compiler flags',      conf.env['CFLAGS'])
     write_config_text('C++ compiler flags',    conf.env['CXXFLAGS'])
     write_config_text('Linker flags',          conf.env['LINKFLAGS'])
@@ -1247,10 +1337,12 @@ const char* const ardour_config_info = "\\n\\
     print('')
 
     if Options.options.dist_target == 'mingw' or Options.options.dist_target == 'msvc':
-        create_resource_file(Options.options.program_name.lower())
+        create_resource_file(Options.options.program_name)
 
 def build(bld):
     create_stored_revision()
+
+    bld.env['DATE'] = rev_date
 
     # add directories that contain only headers, to workaround an issue with waf
 
@@ -1258,7 +1350,7 @@ def build(bld):
         bld.path.find_dir ('libs/libltc/ltc')
     bld.path.find_dir ('libs/evoral/evoral')
     bld.path.find_dir ('libs/surfaces/control_protocol/control_protocol')
-    bld.path.find_dir ('libs/timecode/timecode')
+    bld.path.find_dir ('libs/temporal/temporal')
     bld.path.find_dir ('libs/gtkmm2ext/gtkmm2ext')
     bld.path.find_dir ('libs/ardour/ardour')
     bld.path.find_dir ('libs/pbd/pbd')
@@ -1285,6 +1377,8 @@ def build(bld):
 
     if sys.platform == 'darwin':
         bld.recurse('libs/appleutility')
+    elif re.search ("openbsd", sys.platform) != None:
+        pass
     elif bld.env['build_target'] != 'mingw':
         bld.recurse('tools/sanity_check')
         bld.recurse('tools/gccabicheck')
@@ -1294,7 +1388,12 @@ def build(bld):
     for i in children:
         bld.recurse(i)
 
+    if bld.is_defined ('BEATBOX'):
+        bld.recurse('tools/bb')
+            
     bld.install_files (bld.env['CONFDIR'], 'system_config')
+
+    bld.install_files (os.path.join (bld.env['DATADIR'], 'templates'), bld.path.ant_glob ('templates/**'), cwd=bld.path.find_dir ('templates'), relative_trick=True)
 
     if bld.env['RUN_TESTS']:
         bld.add_post_fun(test)
@@ -1317,3 +1416,7 @@ def tarball(bld):
 
 def test(bld):
     subprocess.call("gtk2_ardour/artest")
+
+def help2man(bld):
+    cmd = "help2man -s 1 -N -o ardour.1 -n Ardour --version-string='Ardour %s' gtk2_ardour/ardev" % PROGRAM_VERSION
+    subprocess.call(cmd, shell=True)

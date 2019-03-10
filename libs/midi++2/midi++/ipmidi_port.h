@@ -23,10 +23,12 @@
 #include <iostream>
 #if defined(PLATFORM_WINDOWS)
 #include <winsock.h>
-#elif defined(__FreeBSD__)
+#elif defined(__FreeBSD__) || defined(__OpenBSD__)
 #include <netinet/in.h>
 #include <sys/socket.h>
+#if defined(__FreeBSD__)
 #include <sys/_sockaddr_storage.h>
+#endif
 #include <arpa/inet.h>
 #include <netinet/ip_carp.h>
 #include <sys/types.h>
@@ -64,7 +66,7 @@ class LIBMIDIPP_API IPMIDIPort : public Port {
 
     int write (const byte *msg, size_t msglen, timestamp_t timestamp);
     int read (byte *buf, size_t bufsize);
-    void parse (framecnt_t timestamp);
+    void parse (samplecnt_t timestamp);
     int selectable () const;
 
     static const int lowest_ipmidi_port_default = 21928;

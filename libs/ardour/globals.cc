@@ -84,6 +84,8 @@
 #include "midi++/port.h"
 #include "midi++/mmc.h"
 
+#include "LuaBridge/LuaBridge.h"
+
 #include "ardour/analyser.h"
 #include "ardour/audio_library.h"
 #include "ardour/audio_backend.h"
@@ -111,8 +113,10 @@
 #include "ardour/runtime_functions.h"
 #include "ardour/session_event.h"
 #include "ardour/source_factory.h"
+#include "ardour/transport_master_manager.h"
+#ifdef LV2_SUPPORT
 #include "ardour/uri_map.h"
-
+#endif
 #include "audiographer/routines.h"
 
 #if defined (__APPLE__)
@@ -144,7 +148,7 @@ PBD::Signal1<void,int> ARDOUR::PluginScanTimeout;
 PBD::Signal0<void> ARDOUR::GUIIdle;
 PBD::Signal3<bool,std::string,std::string,int> ARDOUR::CopyConfigurationFiles;
 
-std::vector<std::string> ARDOUR::reserved_io_names;
+std::map<std::string, bool> ARDOUR::reserved_io_names;
 
 static bool have_old_configuration_files = false;
 
@@ -156,6 +160,8 @@ extern void setup_enum_writer ();
    if any bounds-related property has changed
 */
 PBD::PropertyChange ARDOUR::bounds_change;
+
+static PBD::ScopedConnection engine_startup_connection;
 
 void
 setup_hardware_optimization (bool try_optimization)
@@ -265,7 +271,7 @@ lotsa_files_please ()
 			}
 		} else {
 			if (rl.rlim_cur != RLIM_INFINITY) {
-				info << string_compose (_("Your system is configured to limit %1 to only %2 open files"), PROGRAM_NAME, rl.rlim_cur) << endmsg;
+				info << string_compose (_("Your system is configured to limit %1 to %2 open files"), PROGRAM_NAME, rl.rlim_cur) << endmsg;
 			}
 		}
 	} else {
@@ -282,9 +288,9 @@ lotsa_files_please ()
 	 */
 	int newmax = _setmaxstdio (2048);
 	if (newmax > 0) {
-		info << string_compose (_("Your system is configured to limit %1 to only %2 open files"), PROGRAM_NAME, newmax) << endmsg;
+		info << string_compose (_("Your system is configured to limit %1 to %2 open files"), PROGRAM_NAME, newmax) << endmsg;
 	} else {
-		error << string_compose (_("Could not set system open files limit. Current limit is %1 open files"), _getmaxstdio)  << endmsg;
+		error << string_compose (_("Could not set system open files limit. Current limit is %1 open files"), _getmaxstdio())  << endmsg;
 	}
 #endif
 }
@@ -350,10 +356,20 @@ copy_configuration_files (string const & old_dir, string const & new_dir, int ol
 
 		copy_recurse (old_name, new_name);
 
-		/* presets */
+		/* plugin status */
+		g_mkdir_with_parents (Glib::build_filename (new_dir, plugin_metadata_dir_name).c_str(), 0755);
 
-		old_name = Glib::build_filename (old_dir, X_("plugin_statuses"));
-		new_name = Glib::build_filename (new_dir, X_("plugin_statuses"));
+		old_name = Glib::build_filename (old_dir, X_("plugin_statuses")); /* until 6.0 */
+		new_name = Glib::build_filename (new_dir, plugin_metadata_dir_name, X_("plugin_statuses"));
+		copy_file (old_name, new_name); /* can fail silently */
+
+		old_name = Glib::build_filename (old_dir, plugin_metadata_dir_name, X_("plugin_statuses"));
+		copy_file (old_name, new_name);
+
+		/* plugin tags */
+
+		old_name = Glib::build_filename (old_dir, plugin_metadata_dir_name, X_("plugin_tags"));
+		new_name = Glib::build_filename (new_dir, plugin_metadata_dir_name, X_("plugin_tags"));
 
 		copy_file (old_name, new_name);
 
@@ -422,9 +438,15 @@ ARDOUR::init (bool use_windows_vst, bool try_optimization, const char* localedir
 		return true;
 	}
 
+#ifndef NDEBUG
+	if (getenv("LUA_METATABLES")) {
+		luabridge::Security::setHideMetatables (false);
+	}
+#endif
+
 	if (!PBD::init()) return false;
 
-#ifdef ENABLE_NLS
+#if ENABLE_NLS
 	(void) bindtextdomain(PACKAGE, localedir);
 	(void) bind_textdomain_codeset (PACKAGE, "UTF-8");
 #endif
@@ -440,6 +462,7 @@ ARDOUR::init (bool use_windows_vst, bool try_optimization, const char* localedir
         Playlist::make_property_quarks ();
         AudioPlaylist::make_property_quarks ();
         PresentationInfo::make_property_quarks ();
+        TransportMaster::make_property_quarks ();
 
 	/* this is a useful ready to use PropertyChange that many
 	   things need to check. This avoids having to compose
@@ -544,20 +567,28 @@ ARDOUR::init (bool use_windows_vst, bool try_optimization, const char* localedir
 	   support may not even be active. Without adding an API to control
 	   surface support that would list their port names, we do have to
 	   list them here.
+
+	   We also need to know if the given I/O is an actual route.
+	   For routes (e.g. "master"), bus creation needs to be allowed the first time,
+	   while for pure I/O (e.g. "Click") track/bus creation must always fail.
 	*/
 
-	char const * const reserved[] = {
-		_("Monitor"),
-		_("Master"),
-		_("Control"),
-		_("Click"),
-		_("Mackie"),
-		0
-	};
+	reserved_io_names[_("Monitor")] = true;
+	reserved_io_names[_("Master")] = true;
+	reserved_io_names["auditioner"] = true; // auditioner.cc  Track (s, "auditioner",...)
 
-	for (int n = 0; reserved[n]; ++n) {
-		reserved_io_names.push_back (reserved[n]);
-	}
+	/* pure I/O */
+	reserved_io_names[X_("Click")] = false; // session.cc ClickIO (*this, X_("Click")
+	reserved_io_names[_("Control")] = false;
+	reserved_io_names[_("Mackie")] = false;
+	reserved_io_names[_("FaderPort Recv")] = false;
+	reserved_io_names[_("FaderPort Send")] = false;
+	reserved_io_names[_("FaderPort2 Recv")] = false;
+	reserved_io_names[_("FaderPort2 Send")] = false;
+	reserved_io_names[_("FaderPort8 Recv")] = false;
+	reserved_io_names[_("FaderPort8 Send")] = false;
+	reserved_io_names[_("FaderPort16 Recv")] = false;
+	reserved_io_names[_("FaderPort16 Send")] = false;
 
 	libardour_initialized = true;
 
@@ -565,16 +596,25 @@ ARDOUR::init (bool use_windows_vst, bool try_optimization, const char* localedir
 }
 
 void
-ARDOUR::init_post_engine ()
+ARDOUR::init_post_engine (uint32_t start_cnt)
 {
 	XMLNode* node;
-	if ((node = Config->control_protocol_state()) != 0) {
-		ControlProtocolManager::instance().set_state (*node, Stateful::loading_state_version);
+
+	if (start_cnt == 0) {
+
+		/* find plugins */
+
+		ARDOUR::PluginManager::instance().refresh (!Config->get_discover_vst_on_start());
 	}
 
-	/* find plugins */
+	if (start_cnt == 0) {
 
-	ARDOUR::PluginManager::instance().refresh (!Config->get_discover_vst_on_start());
+		if ((node = Config->control_protocol_state()) != 0) {
+			ControlProtocolManager::instance().set_state (*node, 0 /* here: global-config state */);
+		}
+
+		TransportMasterManager::instance().restart ();
+	}
 }
 
 void
@@ -584,13 +624,15 @@ ARDOUR::cleanup ()
 		return;
 	}
 
+	engine_startup_connection.disconnect ();
+
+	delete &ControlProtocolManager::instance();
 	ARDOUR::AudioEngine::destroy ();
 
 	delete Library;
 #ifdef HAVE_LRDF
 	lrdf_cleanup ();
 #endif
-	delete &ControlProtocolManager::instance();
 #ifdef WINDOWS_VST_SUPPORT
 	fst_exit ();
 #endif
@@ -724,6 +766,7 @@ ARDOUR::set_translations_enabled (bool yn)
 	(void) ::write (fd, &c, 1);
 	(void) ::close (fd);
 
+	Config->ParameterChanged ("enable-translation");
 	return true;
 }
 

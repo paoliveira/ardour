@@ -22,17 +22,19 @@
 #include <cairo.h>
 #include "gtkmm2ext/keyboard.h"
 #include "ardour/bundle.h"
-#include "canvas/colors.h"
+#include "gtkmm2ext/colors.h"
 #include "utils.h"
 #include "port_matrix_row_labels.h"
+#include "port_matrix_column_labels.h"
 #include "port_matrix.h"
 #include "port_matrix_body.h"
 #include "pbd/i18n.h"
 
 using namespace std;
 
-PortMatrixRowLabels::PortMatrixRowLabels (PortMatrix* m, PortMatrixBody* b)
+PortMatrixRowLabels::PortMatrixRowLabels (PortMatrix* m, PortMatrixBody* b, PortMatrixColumnLabels& cols)
 	: PortMatrixLabels (m, b)
+	, _column_labels (cols)
 {
 
 }
@@ -92,6 +94,13 @@ PortMatrixRowLabels::compute_dimensions ()
 	if (!_matrix->show_only_bundles()) {
 		_width += _longest_port_name;
 		_width += name_pad() * 2;
+	}
+
+	uint32_t needed_by_columns = _column_labels.dimensions().second * tan (angle());
+
+	if (_width < needed_by_columns) {
+		_longest_bundle_name += (needed_by_columns - _width);
+		_width = needed_by_columns;
 	}
 }
 
@@ -236,7 +245,7 @@ PortMatrixRowLabels::render_bundle_name (
 	double const off = (grid_spacing() - ext.height) / 2;
 
 	Gdk::Color textcolor;
-	ARDOUR_UI_UTILS::set_color_from_rgba(textcolor, ArdourCanvas::contrasting_text_color(ARDOUR_UI_UTILS::gdk_color_to_rgba(bg_colour)));
+	ARDOUR_UI_UTILS::set_color_from_rgba(textcolor, Gtkmm2ext::contrasting_text_color(ARDOUR_UI_UTILS::gdk_color_to_rgba(bg_colour)));
 	set_source_rgb (cr, textcolor);
  	cairo_move_to (cr, xoff + x + name_pad(), yoff + name_pad() + off);
  	cairo_show_text (cr, b->name().c_str());
@@ -264,7 +273,7 @@ PortMatrixRowLabels::render_channel_name (
 		double const off = (grid_spacing() - ext.height) / 2;
 
 		Gdk::Color textcolor;
-		ARDOUR_UI_UTILS::set_color_from_rgba(textcolor, ArdourCanvas::contrasting_text_color(ARDOUR_UI_UTILS::gdk_color_to_rgba(bg_colour)));
+		ARDOUR_UI_UTILS::set_color_from_rgba(textcolor, Gtkmm2ext::contrasting_text_color(ARDOUR_UI_UTILS::gdk_color_to_rgba(bg_colour)));
 		set_source_rgb (cr, textcolor);
 		cairo_move_to (cr, port_name_x() + xoff + name_pad(), yoff + name_pad() + off);
 		cairo_show_text (cr, bc.bundle->channel_name(bc.channel).c_str());

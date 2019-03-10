@@ -29,12 +29,15 @@
 #include "pbd/replace_all.h"
 
 #include "ardour/audioengine.h"
+#include "ardour/disk_reader.h"
+#include "ardour/disk_writer.h"
 #include "ardour/control_protocol_manager.h"
-#include "ardour/diskstream.h"
 #include "ardour/filesystem_paths.h"
 #include "ardour/port.h"
 #include "ardour/rc_configuration.h"
 #include "ardour/session_metadata.h"
+#include "ardour/transport_master_manager.h"
+#include "ardour/types_convert.h"
 
 #include "pbd/i18n.h"
 
@@ -64,12 +67,14 @@ RCConfiguration::RCConfiguration ()
 #undef  CONFIG_VARIABLE
 #undef  CONFIG_VARIABLE_SPECIAL
 	_control_protocol_state (0)
+      , _transport_master_state (0)
 {
 }
 
 RCConfiguration::~RCConfiguration ()
 {
 	delete _control_protocol_state;
+	delete _transport_master_state;
 }
 
 int
@@ -172,7 +177,6 @@ XMLNode&
 RCConfiguration::get_state ()
 {
 	XMLNode* root;
-	LocaleGuard lg;
 
 	root = new XMLNode("Ardour");
 
@@ -186,6 +190,10 @@ RCConfiguration::get_state ()
 
 	root->add_child_nocopy (ControlProtocolManager::instance().get_state());
 
+	if (TransportMasterManager::exists()) {
+		root->add_child_nocopy (TransportMasterManager::instance().get_state());
+	}
+
 	return *root;
 }
 
@@ -193,7 +201,6 @@ XMLNode&
 RCConfiguration::get_variables ()
 {
 	XMLNode* node;
-	LocaleGuard lg;
 
 	node = new XMLNode ("Config");
 
@@ -220,7 +227,6 @@ RCConfiguration::set_state (const XMLNode& root, int version)
 	XMLNodeList nlist = root.children();
 	XMLNodeConstIterator niter;
 	XMLNode *node;
-	LocaleGuard lg;
 
 	Stateful::save_extra_xml (root);
 
@@ -234,11 +240,13 @@ RCConfiguration::set_state (const XMLNode& root, int version)
 			SessionMetadata::Metadata()->set_state (*node, version);
 		} else if (node->name() == ControlProtocolManager::state_node_name) {
 			_control_protocol_state = new XMLNode (*node);
+		} else if (node->name() == TransportMasterManager::state_node_name) {
+			_transport_master_state = new XMLNode (*node);
 		}
 	}
 
-	Diskstream::set_disk_read_chunk_frames (minimum_disk_read_bytes.get() / sizeof (Sample));
-	Diskstream::set_disk_write_chunk_frames (minimum_disk_write_bytes.get() / sizeof (Sample));
+	DiskReader::set_chunk_samples (minimum_disk_read_bytes.get() / sizeof (Sample));
+	DiskWriter::set_chunk_samples (minimum_disk_write_bytes.get() / sizeof (Sample));
 
 	return 0;
 }

@@ -46,6 +46,8 @@ class LIBARDOUR_API SessionMetadata : public PBD::StatefulDestructible
 	~SessionMetadata ();
 
 	/*** Accessing ***/
+	std::string description () const;
+
 	std::string comment () const;
 	std::string copyright () const;
 	std::string isrc () const;
@@ -88,6 +90,7 @@ class LIBARDOUR_API SessionMetadata : public PBD::StatefulDestructible
 	std::string country () const;
 
 	/*** Editing ***/
+	void set_description (const std::string &);
 	void set_comment (const std::string &);
 	void set_copyright (const std::string &);
 	void set_isrc (const std::string &);
@@ -128,6 +131,10 @@ class LIBARDOUR_API SessionMetadata : public PBD::StatefulDestructible
 	void set_user_web (const std::string &);
 	void set_organization (const std::string &);
 	void set_country (const std::string &);
+
+	/*** Export ***/
+	typedef std::map<std::string,std::string> MetaDataMap;
+	void av_export_tag (MetaDataMap&) const;
 
 	/*** Serialization ***/
 	XMLNode & get_state ();  //serializes stuff in the map, to be stored in session file

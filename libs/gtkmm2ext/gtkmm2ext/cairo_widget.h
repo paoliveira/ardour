@@ -20,20 +20,32 @@
 #ifndef __gtk2_ardour_cairo_widget_h__
 #define __gtk2_ardour_cairo_widget_h__
 
+#include <cairomm/context.h>
 #include <cairomm/surface.h>
 #include <gtkmm/eventbox.h>
 
 #include "gtkmm2ext/visibility.h"
+#include "gtkmm2ext/cairo_canvas.h"
 #include "gtkmm2ext/widget_state.h"
 
 /** A parent class for widgets that are rendered using Cairo.
  */
 
-class LIBGTKMM2EXT_API CairoWidget : public Gtk::EventBox
+class LIBGTKMM2EXT_API CairoWidget : public Gtk::EventBox, public Gtkmm2ext::CairoCanvas
 {
 public:
 	CairoWidget ();
 	virtual ~CairoWidget ();
+
+	void set_canvas_widget ();
+	void use_nsglview ();
+
+	/* swizzle Gtk::Widget methods for Canvas::Widget */
+	void queue_draw ();
+	void queue_resize ();
+	int get_width () const;
+	int get_height () const;
+	void size_allocate (Gtk::Allocation&);
 
 	void set_dirty (cairo_rectangle_t *area = 0);
 
@@ -65,13 +77,17 @@ public:
 	void set_draw_background (bool yn);
 
 	sigc::signal<void> StateChanged;
+	sigc::signal<bool> QueueDraw;
+	sigc::signal<bool> QueueResize;
 
 	static void provide_background_for_cairo_widget (Gtk::Widget& w, const Gdk::Color& bg);
 
-	virtual void render (cairo_t *, cairo_rectangle_t*) = 0;
+	uint32_t background_color ();
 
 	static void set_flat_buttons (bool yn);
+	static void set_boxy_buttons (bool yn);
 	static bool flat_buttons() { return _flat_buttons; }
+	static bool boxy_buttons() { return _boxy_buttons; }
 
 	static void set_widget_prelight (bool yn);
 	static bool widget_prelight() { return _widget_prelight; }
@@ -101,8 +117,11 @@ protected:
 	void on_size_allocate (Gtk::Allocation &);
 	void on_state_changed (Gtk::StateType);
 	void on_style_changed (const Glib::RefPtr<Gtk::Style>&);
+	void on_realize ();
 	bool on_button_press_event (GdkEventButton*);
 	Gdk::Color get_parent_bg ();
+	void on_map();
+	void on_unmap();
 
 	/* this is an additional virtual "on_..." method. Glibmm does not
 	   provide a direct signal for name changes, so this acts as a proxy.
@@ -115,6 +134,7 @@ protected:
 	bool                   _need_bg;
 
 	static bool	_flat_buttons;
+	static bool	_boxy_buttons;
 	static bool	_widget_prelight;
 	bool		_grabbed;
 
@@ -125,6 +145,9 @@ protected:
 	Glib::SignalProxyProperty _name_proxy;
 	sigc::connection _parent_style_change;
 	Widget * _current_parent;
+	bool _canvas_widget;
+	void* _nsglview;
+	Gdk::Rectangle _allocation;
 
 };
 

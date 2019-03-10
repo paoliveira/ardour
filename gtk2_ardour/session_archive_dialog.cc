@@ -19,8 +19,11 @@
 */
 
 #include <gtkmm/stock.h>
+#include <gtkmm/table.h>
 
-#include "ardour/session.h"
+#include "ardour/filename_extensions.h"
+
+#include "gtkmm2ext/utils.h"
 
 #include "session_archive_dialog.h"
 
@@ -31,7 +34,7 @@ using namespace Gtk;
 using namespace ARDOUR;
 
 SessionArchiveDialog::SessionArchiveDialog ()
-	: ArdourDialog (_("Zip/Archive Session"))
+	: ArdourDialog (_("Zip/Archive Current Session"))
 	, ProgressReporter ()
 	, only_used_checkbox (_("Exclude unused audio sources"))
 {
@@ -39,41 +42,64 @@ SessionArchiveDialog::SessionArchiveDialog ()
 
 	vbox->set_spacing (6);
 
-	HBox* hbox;
-	Label* label;
-
-	format_selector.append_text (".tar.xz");
-	format_selector.set_active_text (".tar.xz");
+	format_selector.append_text (ARDOUR::session_archive_suffix);
+	format_selector.set_active_text (ARDOUR::session_archive_suffix);
 
 	encode_selector.append_text (_("None"));
 	encode_selector.append_text (_("FLAC 16bit"));
 	encode_selector.append_text (_("FLAC 24bit"));
 	encode_selector.set_active_text ("FLAC 16bit"); // TODO remember
 
-	hbox = manage (new HBox);
+	compression_selector.append_text (_("None"));
+	compression_selector.append_text (_("Fast"));
+	compression_selector.append_text (_("Good"));
+	compression_selector.set_active_text ("Good"); // TODO remember
+
+	Gtk::Table* table = manage (new Gtk::Table ());
+	table->set_col_spacings (10);
+	table->set_row_spacings (8);
+
+	Label* label;
+	int row = 0;
+
+	label = manage (new Label (_("Archive Name:"), Gtk::ALIGN_END, Gtk::ALIGN_CENTER, false));
+	table->attach (*label, 0, 1, row, row + 1, Gtk::FILL, Gtk::SHRINK);
+
+	HBox* hbox = manage (new HBox);
 	hbox->set_spacing (6);
-	label = manage (new Label (_("Archive Name")));
-	hbox->pack_start (*label, false, false);
 	hbox->pack_start (name_entry, true, true);
 	hbox->pack_start (format_selector, false, false);
-	vbox->pack_start (*hbox, false, false);
+	table->attach (*hbox, 1, 2, row, row + 1, Gtk::FILL | Gtk::EXPAND, Gtk::SHRINK);
 
-	hbox = manage (new HBox);
-	hbox->set_spacing (6);
-	label = manage (new Label (_("Target directory/folder")));
-	hbox->pack_start (*label, false, false);
-	hbox->pack_start (target_folder_selector, true, true);
-	vbox->pack_start (*hbox, false, false);
+	++row;
 
-	hbox = manage (new HBox);
-	hbox->set_spacing (6);
-	label = manage (new Label (_("Audio Compression")));
-	hbox->pack_start (*label, false, false);
-	hbox->pack_start (encode_selector, true, true);
-	vbox->pack_start (*hbox, false, false);
+	label = manage (new Label (_("Target directory/folder:"), Gtk::ALIGN_END, Gtk::ALIGN_CENTER, false));
+	table->attach (*label, 0, 1, row, row + 1, Gtk::FILL, Gtk::SHRINK);
+	table->attach (target_folder_selector, 1, 2, row, row + 1, Gtk::FILL | Gtk::EXPAND, Gtk::SHRINK);
 
-	vbox->pack_start (only_used_checkbox, false, false);
+	++row;
 
+	label = manage (new Label (_("Audio Compression:"), Gtk::ALIGN_END, Gtk::ALIGN_CENTER, false));
+	table->attach (*label, 0, 1, row, row + 1, Gtk::FILL, Gtk::SHRINK);
+	table->attach (encode_selector, 1, 2, row, row + 1, Gtk::FILL | Gtk::EXPAND, Gtk::SHRINK);
+
+	++row;
+
+	label = manage (new Label (_("Archive Compression:"), Gtk::ALIGN_END, Gtk::ALIGN_CENTER, false));
+	table->attach (*label, 0, 1, row, row + 1, Gtk::FILL, Gtk::SHRINK);
+	table->attach (compression_selector, 1, 2, row, row + 1, Gtk::FILL | Gtk::EXPAND, Gtk::SHRINK);
+
+	++row;
+
+	table->attach (only_used_checkbox, 0, 2, row, row + 1, Gtk::FILL | Gtk::EXPAND, Gtk::SHRINK);
+
+	++row;
+
+	label = manage (new Label (_("Note: This archives only the current session state, snapshots are not included."), ALIGN_START));
+	label->set_line_wrap (true);
+	table->attach (*label, 0, 2, row, row + 1, Gtk::FILL | Gtk::EXPAND, Gtk::SHRINK);
+
+	vbox->pack_start (*table, false, false);
 	vbox->pack_start (progress_bar, true, true, 12);
 
 	vbox->show_all ();
@@ -82,6 +108,7 @@ SessionArchiveDialog::SessionArchiveDialog ()
 	add_button (Stock::CANCEL, RESPONSE_CANCEL);
 	add_button (Stock::OK, RESPONSE_OK);
 
+	Gtkmm2ext::add_volume_shortcuts (target_folder_selector);
 	target_folder_selector.set_action (FILE_CHOOSER_ACTION_SELECT_FOLDER);
 	target_folder_selector.set_current_folder (Config->get_default_session_parent_dir ()); // TODO get/set default_archive_dir
 	name_entry.signal_changed().connect (sigc::mem_fun (*this, &SessionArchiveDialog::name_entry_changed));
@@ -172,6 +199,34 @@ SessionArchiveDialog::set_encode_option (ARDOUR::Session::ArchiveEncode e)
 			break;
 		default:
 			encode_selector.set_active_text (_("None"));
+			break;
+	}
+}
+
+PBD::FileArchive::CompressionLevel
+SessionArchiveDialog::compression_level () const
+{
+	string codec = compression_selector.get_active_text ();
+	if (codec == _("Fast")) {
+		return PBD::FileArchive::CompressFast;
+	} else if (codec == _("None")) {
+		return PBD::FileArchive::CompressNone;
+	}
+	return PBD::FileArchive::CompressGood;
+}
+
+void
+SessionArchiveDialog::set_compression_level (PBD::FileArchive::CompressionLevel l)
+{
+	switch (l) {
+		case PBD::FileArchive::CompressFast:
+			encode_selector.set_active_text (_("Fast"));
+			break;
+		case PBD::FileArchive::CompressNone:
+			encode_selector.set_active_text (_("None"));
+			break;
+		case PBD::FileArchive::CompressGood:
+			encode_selector.set_active_text (_("Good"));
 			break;
 	}
 }

@@ -24,7 +24,9 @@
 #include "ardour/event_type_map.h"
 #include "ardour/parameter_descriptor.h"
 #include "ardour/parameter_types.h"
+#ifdef LV2_SUPPORT
 #include "ardour/uri_map.h"
+#endif
 #include "evoral/Parameter.hpp"
 #include "evoral/ParameterDescriptor.hpp"
 #include "evoral/midi_events.h"
@@ -62,10 +64,10 @@ EventTypeMap::parameter_midi_type(const Evoral::Parameter& param) const
 	return ARDOUR::parameter_midi_type((AutomationType)param.type());
 }
 
-uint32_t
-EventTypeMap::midi_event_type(uint8_t status) const
+Evoral::ParameterType
+EventTypeMap::midi_parameter_type(const uint8_t* buf, uint32_t len) const
 {
-	return (uint32_t)ARDOUR::midi_parameter_type(status);
+	return (uint32_t)ARDOUR::midi_parameter_type(buf[0]);
 }
 
 Evoral::ControlList::InterpolationStyle
@@ -115,7 +117,7 @@ EventTypeMap::interpolation_of(const Evoral::Parameter& param)
 		break;
 	case MidiPgmChangeAutomation:       return Evoral::ControlList::Discrete; break;
 	case MidiChannelPressureAutomation: return Evoral::ControlList::Linear; break;
-	case MidiNotePressureAutomation: return Evoral::ControlList::Linear; break;
+	case MidiNotePressureAutomation:    return Evoral::ControlList::Linear; break;
 	case MidiPitchBenderAutomation:     return Evoral::ControlList::Linear; break;
 	default: assert(false);
 	}
@@ -135,6 +137,10 @@ EventTypeMap::from_symbol(const string& str) const
 		p_type = TrimAutomation;
 	} else if (str == "solo") {
 		p_type = SoloAutomation;
+	} else if (str == "solo-iso") {
+		p_type = SoloIsolateAutomation;
+	} else if (str == "solo-safe") {
+		p_type = SoloSafeAutomation;
 	} else if (str == "mute") {
 		p_type = MuteAutomation;
 	} else if (str == "fadein") {
@@ -151,6 +157,16 @@ EventTypeMap::from_symbol(const string& str) const
 		p_type = PanElevationAutomation;
 	} else if (str == "pan-frontback") {
 		p_type = PanFrontBackAutomation;
+	} else if (str == "pan-lfe") {
+		p_type = PanLFEAutomation;
+	} else if (str == "rec-enable") {
+		p_type = RecEnableAutomation;
+	} else if (str == "rec-safe") {
+		p_type = RecSafeAutomation;
+	} else if (str == "phase") {
+		p_type = PhaseAutomation;
+	} else if (str == "monitor") {
+		p_type = MonitoringAutomation;
 	} else if (str == "pan-lfe") {
 		p_type = PanLFEAutomation;
 	} else if (str.length() > 10 && str.substr(0, 10) == "parameter-") {
@@ -239,27 +255,39 @@ EventTypeMap::to_symbol(const Evoral::Parameter& param) const
 		return "fadeout";
 	} else if (t == EnvelopeAutomation) {
 		return "envelope";
+	} else if (t == PhaseAutomation) {
+		return "phase";
+	} else if (t == SoloIsolateAutomation) {
+		return "solo-iso";
+	} else if (t == SoloSafeAutomation) {
+		return "solo-safe";
+	} else if (t == MonitoringAutomation) {
+		return "monitor";
+	} else if (t == RecEnableAutomation) {
+		return "rec-enable";
+	} else if (t == RecSafeAutomation) {
+		return "rec-safe";
 	} else if (t == PluginAutomation) {
-		return string_compose("parameter-%1", param.id());
+		return std::string("parameter-") + PBD::to_string(param.id());
 #ifdef LV2_SUPPORT
 	} else if (t == PluginPropertyAutomation) {
 		const char* uri = _uri_map->id_to_uri(param.id());
 		if (uri) {
-			return string_compose("property-%1", uri);
+			return std::string("property-") + uri;
 		} else {
-			return string_compose("property-%1", param.id());
+			return std::string("property-") + PBD::to_string(param.id());
 		}
 #endif
 	} else if (t == MidiCCAutomation) {
-		return string_compose("midicc-%1-%2", int(param.channel()), param.id());
+		return std::string("midicc-") + PBD::to_string (param.channel()) + "-" + PBD::to_string (param.id());
 	} else if (t == MidiPgmChangeAutomation) {
-		return string_compose("midi-pgm-change-%1", int(param.channel()));
+		return std::string("midi-pgm-change-") + PBD::to_string(param.channel());
 	} else if (t == MidiPitchBenderAutomation) {
-		return string_compose("midi-pitch-bender-%1", int(param.channel()));
+		return std::string("midi-pitch-bender-") + PBD::to_string(param.channel());
 	} else if (t == MidiChannelPressureAutomation) {
-		return string_compose("midi-channel-pressure-%1", int(param.channel()));
-	} else if (t == MidiChannelPressureAutomation) {
-		return string_compose("midi-note-pressure-%1-%2", int(param.channel()), param.id());
+		return std::string("midi-channel-pressure-") + PBD::to_string(param.channel());
+	} else if (t == MidiNotePressureAutomation) {
+		return std::string ("midi-note-pressure-") + PBD::to_string (param.channel()) + "-" + PBD::to_string (param.id());
 	} else {
 		PBD::warning << "Uninitialized Parameter symbol() called." << endmsg;
 		return "";

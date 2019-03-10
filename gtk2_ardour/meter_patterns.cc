@@ -248,18 +248,18 @@ static void set_bg_color (Gtk::Widget& w, cairo_t* cr, MeterType type) {
 	double r,g,b,a;
 	switch(type) {
 		case MeterVU:
-			ArdourCanvas::color_to_rgba (UIConfiguration::instance().color ("meterstrip vu bg"), r, g, b, a);
+			Gtkmm2ext::color_to_rgba (UIConfiguration::instance().color ("meterstrip vu bg"), r, g, b, a);
 			break;
 		case MeterIEC1DIN:
 		case MeterIEC1NOR:
 		case MeterIEC2BBC:
 		case MeterIEC2EBU:
-			ArdourCanvas::color_to_rgba (UIConfiguration::instance().color ("meterstrip ppm bg"), r, g, b, a);
+			Gtkmm2ext::color_to_rgba (UIConfiguration::instance().color ("meterstrip ppm bg"), r, g, b, a);
 			break;
 		case MeterK12:
 		case MeterK14:
 		case MeterK20:
-			ArdourCanvas::color_to_rgba (UIConfiguration::instance().color ("meterstrip dpm bg"), r, g, b, a);
+			Gtkmm2ext::color_to_rgba (UIConfiguration::instance().color ("meterstrip dpm bg"), r, g, b, a);
 			break;
 		default:
 			{
@@ -277,16 +277,16 @@ static void set_fg_color(Gtk::Widget&, MeterType type, Gdk::Color * c) {
 	double r,g,b,a;
 	switch(type) {
 		case MeterVU:
-			ArdourCanvas::color_to_rgba (UIConfiguration::instance().color ("meterstrip vu fg"), r, g, b, a);
+			Gtkmm2ext::color_to_rgba (UIConfiguration::instance().color ("meterstrip vu fg"), r, g, b, a);
 			break;
 		case MeterIEC1DIN:
 		case MeterIEC1NOR:
 		case MeterIEC2BBC:
 		case MeterIEC2EBU:
-			ArdourCanvas::color_to_rgba (UIConfiguration::instance().color ("meterstrip ppm fg"), r, g, b, a);
+			Gtkmm2ext::color_to_rgba (UIConfiguration::instance().color ("meterstrip ppm fg"), r, g, b, a);
 			break;
 		default:
-			ArdourCanvas::color_to_rgba (UIConfiguration::instance().color ("meterstrip dpm fg"), r, g, b, a);
+			Gtkmm2ext::color_to_rgba (UIConfiguration::instance().color ("meterstrip dpm fg"), r, g, b, a);
 			break;
 	}
 	c->set_rgb_p (r, g, b);
@@ -515,7 +515,7 @@ meter_render_ticks (Gtk::Widget& w, MeterType type, vector<ARDOUR::DataType> typ
 					points.insert (std::pair<float,float>(  3, 1.0));
 					points.insert (std::pair<float,float>(  4, 0.5));
 					points.insert (std::pair<float,float>(  5, 0.5));
-					// no break
+					/* fall through */
 				case MeterPeak0dB:
 					points.insert (std::pair<float,float>(-60, 0.5));
 					points.insert (std::pair<float,float>(-50, 1.0));
@@ -750,11 +750,13 @@ meter_render_metrics (Gtk::Widget& w, MeterType type, vector<DataType> types)
 					points.insert (std::pair<float,string>( -5.0f, "+15"));
 					points.insert (std::pair<float,string>(  0.0f, "+20"));
 					break;
-				default:
 				case MeterPeak:
+					/* fall through */
 				case MeterKrms:
+					/* fall through */
+				default:
 					points.insert (std::pair<float,string>(  3.0f, "+3"));
-					// no break
+					/* fall through */
 				case MeterPeak0dB:
 					points.insert (std::pair<float,string>(-50.0f, "-50"));
 					points.insert (std::pair<float,string>(-40.0f, "-40"));
@@ -890,6 +892,7 @@ meter_render_metrics (Gtk::Widget& w, MeterType type, vector<DataType> types)
 						points.insert (std::pair<float,string>( 72, "72"));
 						points.insert (std::pair<float,string>(112, "112"));
 						points.insert (std::pair<float,string>(127, "127"));
+						break;
 					case 4:
 						/* labels that don't overlay with 0dBFS*/
 						points.insert (std::pair<float,string>(  0, "0"));

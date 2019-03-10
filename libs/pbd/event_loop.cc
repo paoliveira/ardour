@@ -25,6 +25,7 @@
 #include "pbd/debug.h"
 #include "pbd/event_loop.h"
 #include "pbd/error.h"
+#include "pbd/pthread_utils.h"
 #include "pbd/stacktrace.h"
 
 #include "pbd/i18n.h"
@@ -45,6 +46,18 @@ EventLoop::EventLoop (string const& name)
 {
 }
 
+EventLoop::~EventLoop ()
+{
+	trash.sort();
+	trash.unique();
+	for (std::list<InvalidationRecord*>::iterator r = trash.begin(); r != trash.end(); ++r) {
+		if (!(*r)->in_use ()) {
+			delete *r;
+		}
+	}
+	trash.clear ();
+}
+
 EventLoop*
 EventLoop::get_event_loop_for_thread()
 {
@@ -60,7 +73,7 @@ EventLoop::set_event_loop_for_thread (EventLoop* loop)
 void*
 EventLoop::invalidate_request (void* data)
 {
-        InvalidationRecord* ir = (InvalidationRecord*) data;
+	InvalidationRecord* ir = (InvalidationRecord*) data;
 
 	/* Some of the requests queued with an EventLoop may involve functors
 	 * that make method calls to objects whose lifetime is shorter
@@ -86,16 +99,14 @@ EventLoop::invalidate_request (void* data)
 	 * inherit (indirectly) from sigc::trackable.
 	 */
 
-        if (ir->event_loop) {
+	if (ir->event_loop) {
+		DEBUG_TRACE (PBD::DEBUG::EventLoop, string_compose ("%1: invalidating request from %2 (%3) @ %4\n", pthread_name(), ir->event_loop, ir->event_loop->event_loop_name(), ir));
 		Glib::Threads::Mutex::Lock lm (ir->event_loop->slot_invalidation_mutex());
-		for (list<BaseRequestObject*>::iterator i = ir->requests.begin(); i != ir->requests.end(); ++i) {
-			(*i)->valid = false;
-			(*i)->invalidation = 0;
-		}
-		delete ir;
-        }
+		ir->invalidate ();
+		ir->event_loop->trash.push_back(ir);
+	}
 
-        return 0;
+	return 0;
 }
 
 vector<EventLoop::ThreadBufferMapping>

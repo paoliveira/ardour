@@ -85,12 +85,11 @@ public:
 	void cleanup () { }
 
 	int set_block_size (pframes_t /*nframes*/) { return 0; }
-	framecnt_t  signal_latency() const { return 0; }
 
 	int connect_and_run (BufferSet& bufs,
-			framepos_t start, framepos_t end, double speed,
-			ChanMapping in, ChanMapping out,
-			pframes_t nframes, framecnt_t offset);
+			samplepos_t start, samplepos_t end, double speed,
+			ChanMapping const& in, ChanMapping const& out,
+			pframes_t nframes, samplecnt_t offset);
 
 	std::string describe_parameter (Evoral::Parameter);
 	void        print_parameter (uint32_t, char*, uint32_t len) const;
@@ -125,12 +124,21 @@ public:
 	bool has_inline_display () { return _lua_has_inline_display; }
 	void setup_lua_inline_gui (LuaState *lua_gui);
 
+	DSP::DspShm* instance_shm () { return &lshm; }
+	LuaTableRef* instance_ref () { return &lref; }
+
 private:
+	samplecnt_t plugin_latency() const { return _signal_latency; }
 	void find_presets ();
 
 	/* END Plugin interface */
+
+public:
+	void set_origin (std::string& path) { _origin = path; }
+
 protected:
 	const std::string& script() const { return _script; }
+	const std::string& origin() const { return _origin; }
 
 private:
 #ifdef USE_TLSF
@@ -140,17 +148,19 @@ private:
 #endif
 	LuaState lua;
 	luabridge::LuaRef * _lua_dsp;
+	luabridge::LuaRef * _lua_latency;
 	std::string _script;
+	std::string _origin;
 	std::string _docs;
 	bool _lua_does_channelmapping;
 	bool _lua_has_inline_display;
 
 	void queue_draw () { QueueDraw(); /* EMIT SIGNAL */ }
-	DSP::DspShm* instance_shm () { return &lshm; }
 	DSP::DspShm lshm;
 
-	LuaTableRef* instance_ref () { return &lref; }
 	LuaTableRef lref;
+
+	boost::weak_ptr<Route> route () const;
 
 	void init ();
 	bool load_script ();
@@ -166,6 +176,8 @@ private:
 	std::map<int, ARDOUR::ParameterDescriptor> _param_desc;
 	std::map<int, std::string> _param_doc;
 	uint32_t _designated_bypass_port;
+
+	samplecnt_t _signal_latency;
 
 	float* _control_data;
 	float* _shadow_data;
@@ -183,6 +195,7 @@ private:
 	bool _has_midi_input;
 	bool _has_midi_output;
 
+
 #ifdef WITH_LUAPROC_STATS
 	int64_t _stats_avg[2];
 	int64_t _stats_max[2];
@@ -199,13 +212,7 @@ class LIBARDOUR_API LuaPluginInfo : public PluginInfo
 	PluginPtr load (Session& session);
 	std::vector<Plugin::PresetRecord> get_presets (bool user_only) const;
 
-	bool in_category (const std::string &c) const {
-		return (category == c);
-	}
-	bool is_instrument () const { return _is_instrument; }
 	bool reconfigurable_io() const { return true; }
-
-	bool _is_instrument;
 };
 
 typedef boost::shared_ptr<LuaPluginInfo> LuaPluginInfoPtr;

@@ -34,13 +34,13 @@
 #include "ardour/midi_buffer.h"
 #include "ardour/port.h"
 #include "ardour/port_set.h"
-#include "ardour/uri_map.h"
 #ifdef LV2_SUPPORT
 #include "ardour/lv2_plugin.h"
 #include "lv2_evbuf.h"
+#include "ardour/uri_map.h"
 #endif
-#if defined WINDOWS_VST_SUPPORT || defined LXVST_SUPPORT
-#include "ardour/vestige/aeffectx.h"
+#if defined WINDOWS_VST_SUPPORT || defined LXVST_SUPPORT || defined MACVST_SUPPORT
+#include "ardour/vestige/vestige.h"
 #endif
 
 namespace ARDOUR {
@@ -79,7 +79,7 @@ BufferSet::clear()
 	_count.reset();
 	_available.reset();
 
-#if defined WINDOWS_VST_SUPPORT || defined LXVST_SUPPORT
+#if defined WINDOWS_VST_SUPPORT || defined LXVST_SUPPORT || defined MACVST_SUPPORT
 	for (VSTBuffers::iterator i = _vst_buffers.begin(); i != _vst_buffers.end(); ++i) {
 		delete *i;
 	}
@@ -128,7 +128,7 @@ BufferSet::attach_buffers (PortSet& ports)
  *  the process() callback tree anyway, so this has to be called in RT context.
  */
 void
-BufferSet::get_backend_port_addresses (PortSet& ports, framecnt_t nframes)
+BufferSet::get_backend_port_addresses (PortSet& ports, samplecnt_t nframes)
 {
 	assert (_count == ports.count ());
 	assert (_available == ports.count ());
@@ -206,7 +206,7 @@ BufferSet::ensure_buffers(DataType type, size_t num_buffers, size_t buffer_capac
 	}
 #endif
 
-#if defined WINDOWS_VST_SUPPORT || defined LXVST_SUPPORT
+#if defined WINDOWS_VST_SUPPORT || defined LXVST_SUPPORT || defined MACVST_SUPPORT
 	// As above but for VST
 	if (type == DataType::MIDI) {
 		while (_vst_buffers.size() < _buffers[type].size()) {
@@ -302,11 +302,11 @@ BufferSet::forward_lv2_midi(LV2_Evbuf* buf, size_t i, bool purge_ardour_buffer)
 	for (LV2_Evbuf_Iterator i = lv2_evbuf_begin(buf);
 			 lv2_evbuf_is_valid(i);
 			 i = lv2_evbuf_next(i)) {
-		uint32_t frames, subframes, type, size;
+		uint32_t samples, subframes, type, size;
 		uint8_t* data;
-		lv2_evbuf_get(i, &frames, &subframes, &type, &size, &data);
+		lv2_evbuf_get(i, &samples, &subframes, &type, &size, &data);
 		if (type == URIMap::instance().urids.midi_MidiEvent) {
-			mbuf.push_back(frames, size, data);
+			mbuf.push_back(samples, size, data);
 		}
 	}
 }
@@ -322,12 +322,12 @@ BufferSet::flush_lv2_midi(bool input, size_t i)
 	for (LV2_Evbuf_Iterator i = lv2_evbuf_begin(evbuf);
 	     lv2_evbuf_is_valid(i);
 	     i = lv2_evbuf_next(i)) {
-		uint32_t frames;
+		uint32_t samples;
 		uint32_t subframes;
 		uint32_t type;
 		uint32_t size;
 		uint8_t* data;
-		lv2_evbuf_get(i, &frames, &subframes, &type, &size, &data);
+		lv2_evbuf_get(i, &samples, &subframes, &type, &size, &data);
 #ifndef NDEBUG
 		DEBUG_TRACE (PBD::DEBUG::LV2, string_compose ("(FLUSH) MIDI event of size %1\n", size));
 		for (uint16_t x = 0; x < size; ++x) {
@@ -336,19 +336,20 @@ BufferSet::flush_lv2_midi(bool input, size_t i)
 #endif
 		if (type == URIMap::instance().urids.midi_MidiEvent) {
 			// TODO: Make Ardour event buffers generic so plugins can communicate
-			mbuf.push_back(frames, size, data);
+			mbuf.push_back(samples, size, data);
 		}
 	}
 }
 
 #endif /* LV2_SUPPORT */
 
-#if defined WINDOWS_VST_SUPPORT || defined LXVST_SUPPORT
+#if defined WINDOWS_VST_SUPPORT || defined LXVST_SUPPORT || defined MACVST_SUPPORT
 
 VstEvents*
 BufferSet::get_vst_midi (size_t b)
 {
 	MidiBuffer& m = get_midi (b);
+	assert (b <= _vst_buffers.size());
 	VSTBuffer* vst = _vst_buffers[b];
 
 	vst->clear ();
@@ -361,14 +362,25 @@ BufferSet::get_vst_midi (size_t b)
 }
 
 BufferSet::VSTBuffer::VSTBuffer (size_t c)
-  : _capacity (c)
+	: _events (0)
+	, _midi_events (0)
+	, _capacity (c)
 {
-	_events = static_cast<VstEvents*> (malloc (sizeof (VstEvents) + _capacity * sizeof (VstEvent *)));
-	_midi_events = static_cast<VstMidiEvent*> (malloc (sizeof (VstMidiEvent) * _capacity));
+	if (_capacity > 0) {
+		/* from `man malloc`: "If size is 0, then malloc() returns either NULL, or a
+		 * unique pointer value that can later be successfully passed to free()."
+		 *
+		 * The latter will cause trouble here.
+		 */
+		_events = static_cast<VstEvents*> (malloc (sizeof (VstEvents) + _capacity * sizeof (VstEvent *)));
+		_midi_events = static_cast<VstMidiEvent*> (malloc (sizeof (VstMidiEvent) * _capacity));
+	}
 
 	if (_events == 0 || _midi_events == 0) {
 		free (_events);
 		free (_midi_events);
+		_events = 0;
+		_midi_events = 0;
 		throw failed_constructor ();
 	}
 
@@ -389,7 +401,7 @@ BufferSet::VSTBuffer::clear ()
 }
 
 void
-BufferSet::VSTBuffer::push_back (Evoral::MIDIEvent<framepos_t> const & ev)
+BufferSet::VSTBuffer::push_back (Evoral::Event<samplepos_t> const & ev)
 {
 	if (ev.size() > 3) {
 		/* XXX: this will silently drop MIDI messages longer than 3 bytes, so
@@ -397,15 +409,18 @@ BufferSet::VSTBuffer::push_back (Evoral::MIDIEvent<framepos_t> const & ev)
 		*/
 		return;
 	}
-	int const n = _events->numEvents;
-	assert (n < (int) _capacity);
+	uint32_t const n = _events->numEvents;
+	assert (n < _capacity);
+	if (n >= _capacity) {
+		return;
+	}
 
 	_events->events[n] = reinterpret_cast<VstEvent*> (_midi_events + n);
 	VstMidiEvent* v = reinterpret_cast<VstMidiEvent*> (_events->events[n]);
 
 	v->type = kVstMidiType;
 	v->byteSize = sizeof (VstMidiEvent);
-	v->deltaFrames = ev.time ();
+	v->deltaSamples = ev.time ();
 
 	v->flags = 0;
 	v->detune = 0;
@@ -424,7 +439,7 @@ BufferSet::VSTBuffer::push_back (Evoral::MIDIEvent<framepos_t> const & ev)
 
 /** Copy buffers of one type from `in' to this BufferSet */
 void
-BufferSet::read_from (const BufferSet& in, framecnt_t nframes, DataType type)
+BufferSet::read_from (const BufferSet& in, samplecnt_t nframes, DataType type)
 {
 	assert (available().get (type) >= in.count().get (type));
 
@@ -438,7 +453,7 @@ BufferSet::read_from (const BufferSet& in, framecnt_t nframes, DataType type)
 
 /** Copy buffers of all types from `in' to this BufferSet */
 void
-BufferSet::read_from (const BufferSet& in, framecnt_t nframes)
+BufferSet::read_from (const BufferSet& in, samplecnt_t nframes)
 {
 	assert(available() >= in.count());
 
@@ -449,7 +464,7 @@ BufferSet::read_from (const BufferSet& in, framecnt_t nframes)
 }
 
 void
-BufferSet::merge_from (const BufferSet& in, framecnt_t nframes)
+BufferSet::merge_from (const BufferSet& in, samplecnt_t nframes)
 {
 	/* merge all input buffers into out existing buffers.
 
@@ -467,7 +482,7 @@ BufferSet::merge_from (const BufferSet& in, framecnt_t nframes)
 }
 
 void
-BufferSet::silence (framecnt_t nframes, framecnt_t offset)
+BufferSet::silence (samplecnt_t nframes, samplecnt_t offset)
 {
 	for (std::vector<BufferVec>::iterator i = _buffers.begin(); i != _buffers.end(); ++i) {
 		for (BufferVec::iterator b = i->begin(); b != i->end(); ++b) {

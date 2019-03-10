@@ -18,12 +18,16 @@
 
 */
 
+#include <gtkmm/stock.h>
+
 #include "ardour/session.h"
 #include "ardour/export_format_specification.h"
 
+#include "widgets/tooltips.h"
+
 #include "export_format_dialog.h"
 #include "gui_thread.h"
-#include "tooltips.h"
+
 #include "pbd/i18n.h"
 
 using namespace ARDOUR;
@@ -120,7 +124,7 @@ ExportFormatDialog::ExportFormatDialog (FormatPtr format, bool new_dialog) :
 	normalize_hbox.pack_start (normalize_dbtp_spinbutton, false, false, 2);
 	normalize_hbox.pack_start (normalize_dbtp_label, false, false, 0);
 
-	ARDOUR_UI_UTILS::set_tooltip (normalize_loudness_rb,
+	ArdourWidgets::set_tooltip (normalize_loudness_rb,
 			_("Normalize to EBU-R128 LUFS target loudness without exceeding the given true-peak limit. EBU-R128 normalization is only available for mono and stereo targets, true-peak works for any channel layout."));
 
 	normalize_dbfs_spinbutton.configure (normalize_dbfs_adjustment, 0.1, 2);
@@ -147,7 +151,7 @@ ExportFormatDialog::ExportFormatDialog (FormatPtr format, bool new_dialog) :
 	get_vbox()->pack_start (command_label, false, false);
 	get_vbox()->pack_start (command_entry, false, false);
 
-	ARDOUR_UI_UTILS::set_tooltip (command_entry,
+	ArdourWidgets::set_tooltip (command_entry,
 			_(
 				"%a Artist name\n"
 				"%b File's base-name\n"
@@ -191,6 +195,13 @@ ExportFormatDialog::ExportFormatDialog (FormatPtr format, bool new_dialog) :
 	Pango::Attribute b = Pango::Attribute::create_attr_weight (Pango::WEIGHT_BOLD);
 	bold.insert (b);
 	encoding_options_label.set_attributes (bold);
+
+	/* Codec options */
+
+	codec_quality_list = Gtk::ListStore::create (codec_quality_cols);
+	codec_quality_combo.set_model (codec_quality_list);
+	codec_quality_combo.pack_start (codec_quality_cols.label);
+	//codec_quality_combo.set_active (0);
 
 	/* Buttons */
 
@@ -237,6 +248,7 @@ ExportFormatDialog::ExportFormatDialog (FormatPtr format, bool new_dialog) :
 	silence_end_clock.ValueChanged.connect (sigc::mem_fun (*this, &ExportFormatDialog::update_silence_end_selection));
 
 	src_quality_combo.signal_changed().connect (sigc::mem_fun (*this, &ExportFormatDialog::update_src_quality_selection));
+	codec_quality_combo.signal_changed().connect (sigc::mem_fun (*this, &ExportFormatDialog::update_codec_quality_selection));
 
 	/* Format table signals */
 
@@ -296,7 +308,7 @@ ExportFormatDialog::set_session (ARDOUR::Session* s)
 	if (sample_rate_view.get_selection()->count_selected_rows() == 0) {
 		Gtk::ListStore::Children::iterator it;
 		for (it = sample_rate_list->children().begin(); it != sample_rate_list->children().end(); ++it) {
-			if ((framecnt_t) (*it)->get_value (sample_rate_cols.ptr)->rate == _session->nominal_frame_rate()) {
+			if ((samplecnt_t) (*it)->get_value (sample_rate_cols.ptr)->rate == _session->nominal_sample_rate()) {
 				sample_rate_view.get_selection()->select (it);
 				break;
 			}
@@ -331,6 +343,13 @@ ExportFormatDialog::load_state (FormatPtr spec)
 	for (Gtk::ListStore::Children::iterator it = src_quality_list->children().begin(); it != src_quality_list->children().end(); ++it) {
 		if (it->get_value (src_quality_cols.id) == spec->src_quality()) {
 			src_quality_combo.set_active (it);
+			break;
+		}
+	}
+
+	for (Gtk::ListStore::Children::iterator it = codec_quality_list->children().begin(); it != codec_quality_list->children().end(); ++it) {
+		if (it->get_value (codec_quality_cols.quality) == spec->codec_quality()) {
+			codec_quality_combo.set_active (it);
 			break;
 		}
 	}
@@ -642,6 +661,8 @@ ExportFormatDialog::update_selection (Glib::RefPtr<Gtk::ListStore> & list, Gtk::
 		bool selected = selection->is_selected (it);
 		it->get_value (cols.ptr)->set_selected (selected);
 	}
+
+	set_codec_quality_selection ();
 }
 
 void
@@ -687,7 +708,7 @@ ExportFormatDialog::change_sample_rate_selection (bool select, WeakSampleRatePtr
 	if (select) {
 		ExportFormatManager::SampleRatePtr ptr = rate.lock();
 		if (ptr && _session) {
-			src_quality_combo.set_sensitive ((uint32_t) ptr->rate != _session->frame_rate());
+			src_quality_combo.set_sensitive ((uint32_t) ptr->rate != _session->sample_rate());
 		}
 	}
 }
@@ -873,7 +894,7 @@ void
 ExportFormatDialog::update_clock (AudioClock & clock, ARDOUR::AnyTime const & time)
 {
 	// TODO position
-	clock.set (_session->convert_to_frames (time), true);
+	clock.set (_session->convert_to_samples (time), true);
 
 	AudioClock::Mode mode(AudioClock::Timecode);
 
@@ -884,8 +905,8 @@ ExportFormatDialog::update_clock (AudioClock & clock, ARDOUR::AnyTime const & ti
 	  case AnyTime::BBT:
 		mode = AudioClock::BBT;
 		break;
-	  case AnyTime::Frames:
-		mode = AudioClock::Frames;
+	  case AnyTime::Samples:
+		mode = AudioClock::Samples;
 		break;
 	  case AnyTime::Seconds:
 		mode = AudioClock::MinSec;
@@ -902,24 +923,25 @@ ExportFormatDialog::update_time (AnyTime & time, AudioClock const & clock)
 		return;
 	}
 
-	framecnt_t frames = clock.current_duration();
+	samplecnt_t samples = clock.current_duration();
 
 	switch (clock.mode()) {
 	  case AudioClock::Timecode:
 		time.type = AnyTime::Timecode;
-		_session->timecode_time (frames, time.timecode);
+		_session->timecode_time (samples, time.timecode);
 		break;
 	  case AudioClock::BBT:
 		time.type = AnyTime::BBT;
-		_session->bbt_time (frames, time.bbt);
+		_session->bbt_time (samples, time.bbt);
 		break;
+	  case AudioClock::Seconds:
 	  case AudioClock::MinSec:
 		time.type = AnyTime::Seconds;
-		time.seconds = (double) frames / _session->frame_rate();
+		time.seconds = (double) samples / _session->sample_rate();
 		break;
-	  case AudioClock::Frames:
-		time.type = AnyTime::Frames;
-		time.frames = frames;
+	  case AudioClock::Samples:
+		time.type = AnyTime::Samples;
+		time.samples = samples;
 		break;
 	}
 }
@@ -930,6 +952,17 @@ ExportFormatDialog::update_src_quality_selection ()
 	Gtk::TreeModel::const_iterator iter = src_quality_combo.get_active();
 	ExportFormatBase::SRCQuality quality = iter->get_value (src_quality_cols.id);
 	manager.select_src_quality (quality);
+}
+
+void
+ExportFormatDialog::update_codec_quality_selection ()
+{
+	Gtk::TreeModel::const_iterator iter = codec_quality_combo.get_active();
+	if (!iter) {
+		return;
+	}
+	int quality = iter->get_value (codec_quality_cols.quality);
+	manager.select_codec_quality (quality);
 }
 
 void
@@ -947,6 +980,7 @@ ExportFormatDialog::change_encoding_options (ExportFormatPtr ptr)
 	boost::shared_ptr<ARDOUR::ExportFormatOggVorbis> ogg_ptr;
 	boost::shared_ptr<ARDOUR::ExportFormatFLAC> flac_ptr;
 	boost::shared_ptr<ARDOUR::ExportFormatBWF> bwf_ptr;
+	boost::shared_ptr<ARDOUR::ExportFormatFFMPEG> ffmpeg_ptr;
 
 	if ((linear_ptr = boost::dynamic_pointer_cast<ExportFormatLinear> (ptr))) {
 		show_linear_enconding_options (linear_ptr);
@@ -956,6 +990,8 @@ ExportFormatDialog::change_encoding_options (ExportFormatPtr ptr)
 		show_flac_enconding_options (flac_ptr);
 	} else if ((bwf_ptr = boost::dynamic_pointer_cast<ExportFormatBWF> (ptr))) {
 		show_bwf_enconding_options (bwf_ptr);
+	} else if ((ffmpeg_ptr = boost::dynamic_pointer_cast<ExportFormatFFMPEG> (ptr))) {
+		show_ffmpeg_enconding_options (ffmpeg_ptr);
 	} else {
 		std::cout << "Unrecognized format!" << std::endl;
 	}
@@ -992,13 +1028,14 @@ ExportFormatDialog::show_linear_enconding_options (boost::shared_ptr<ARDOUR::Exp
 }
 
 void
-ExportFormatDialog::show_ogg_enconding_options (boost::shared_ptr<ARDOUR::ExportFormatOggVorbis> /*ptr*/)
+ExportFormatDialog::show_ogg_enconding_options (boost::shared_ptr<ARDOUR::ExportFormatOggVorbis> ptr)
 {
 	encoding_options_label.set_label (_("Ogg Vorbis options"));
 
-	encoding_options_table.resize (1, 1);
-	encoding_options_table.attach (tag_checkbox, 0, 1, 0, 1);
-
+	encoding_options_table.resize (2, 1);
+	encoding_options_table.attach (codec_quality_combo, 0, 1, 0, 1);
+	encoding_options_table.attach (tag_checkbox, 0, 1, 1, 2);
+	fill_codec_quality_lists (ptr);
 	show_all_children ();
 }
 
@@ -1032,6 +1069,17 @@ ExportFormatDialog::show_bwf_enconding_options (boost::shared_ptr<ARDOUR::Export
 
 	fill_sample_format_lists (boost::dynamic_pointer_cast<HasSampleFormat> (ptr));
 
+	show_all_children ();
+}
+
+void
+ExportFormatDialog::show_ffmpeg_enconding_options (boost::shared_ptr<ARDOUR::ExportFormatFFMPEG> ptr)
+{
+	encoding_options_label.set_label (_("FFMPEG/MP3 options"));
+	encoding_options_table.resize (1, 1);
+	encoding_options_table.attach (codec_quality_combo, 0, 1, 0, 1);
+	encoding_options_table.attach (tag_checkbox, 0, 1, 1, 2);
+	fill_codec_quality_lists (ptr);
 	show_all_children ();
 }
 
@@ -1074,6 +1122,33 @@ ExportFormatDialog::fill_sample_format_lists (boost::shared_ptr<ARDOUR::HasSampl
 
 		if ((*it)->selected()) {
 			dither_type_view.get_selection()->select (iter);
+		}
+	}
+}
+
+void
+ExportFormatDialog::fill_codec_quality_lists (boost::shared_ptr<ARDOUR::HasCodecQuality> ptr)
+{
+	HasCodecQuality::CodecQualityList const & codecs = ptr->get_codec_qualities();
+
+	codec_quality_list->clear();
+	for (HasCodecQuality::CodecQualityList::const_iterator it = codecs.begin(); it != codecs.end(); ++it) {
+
+	Gtk::TreeModel::iterator iter = codec_quality_list->append();
+	Gtk::TreeModel::Row row = *iter;
+		row[codec_quality_cols.quality] = (*it)->quality;
+		row[codec_quality_cols.label] = (*it)->name;
+	}
+	set_codec_quality_selection ();
+}
+
+void
+ExportFormatDialog::set_codec_quality_selection ()
+{
+	for (Gtk::ListStore::Children::iterator it = codec_quality_list->children().begin(); it != codec_quality_list->children().end(); ++it) {
+		if (it->get_value (codec_quality_cols.quality) == format->codec_quality()) {
+			codec_quality_combo.set_active (it);
+			break;
 		}
 	}
 }

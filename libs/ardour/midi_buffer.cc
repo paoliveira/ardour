@@ -85,7 +85,7 @@ MidiBuffer::copy(MidiBuffer const * const copy)
 {
 	assert(_capacity >= copy->size ());
 	_size = copy->size ();
-	memcpy(_data, copy->data(), _size);
+	memcpy(_data, copy->_data, _size);
 }
 
 
@@ -95,7 +95,7 @@ MidiBuffer::copy(MidiBuffer const * const copy)
  * Note that offset and nframes refer to sample time, NOT buffer offsets or event counts.
  */
 void
-MidiBuffer::read_from (const Buffer& src, framecnt_t nframes, frameoffset_t dst_offset, frameoffset_t /* src_offset*/)
+MidiBuffer::read_from (const Buffer& src, samplecnt_t nframes, sampleoffset_t dst_offset, sampleoffset_t /* src_offset*/)
 {
 	assert (src.type() == DataType::MIDI);
 	assert (&src != this);
@@ -110,7 +110,7 @@ MidiBuffer::read_from (const Buffer& src, framecnt_t nframes, frameoffset_t dst_
 	}
 
 	for (MidiBuffer::const_iterator i = msrc.begin(); i != msrc.end(); ++i) {
-		const Evoral::MIDIEvent<TimeType> ev(*i, false);
+		const Evoral::Event<TimeType> ev(*i, false);
 
 		if (dst_offset >= 0) {
 			/* Positive offset: shifting events from internal
@@ -136,7 +136,7 @@ MidiBuffer::read_from (const Buffer& src, framecnt_t nframes, frameoffset_t dst_
 			   Shift first, then check it is within range of this
 			   (split) cycle.
 			*/
-			const framepos_t evtime = ev.time() + dst_offset;
+			const samplepos_t evtime = ev.time() + dst_offset;
 
 			if (evtime >= 0 && evtime < nframes) {
 				push_back (evtime, ev.size(), ev.buffer());
@@ -150,7 +150,7 @@ MidiBuffer::read_from (const Buffer& src, framecnt_t nframes, frameoffset_t dst_
 }
 
 void
-MidiBuffer::merge_from (const Buffer& src, framecnt_t /*nframes*/, frameoffset_t /*dst_offset*/, frameoffset_t /*src_offset*/)
+MidiBuffer::merge_from (const Buffer& src, samplecnt_t /*nframes*/, sampleoffset_t /*dst_offset*/, sampleoffset_t /*src_offset*/)
 {
 	const MidiBuffer* mbuf = dynamic_cast<const MidiBuffer*>(&src);
 	assert (mbuf);
@@ -168,7 +168,7 @@ MidiBuffer::merge_from (const Buffer& src, framecnt_t /*nframes*/, frameoffset_t
  * @return false if operation failed (not enough room)
  */
 bool
-MidiBuffer::push_back(const Evoral::MIDIEvent<TimeType>& ev)
+MidiBuffer::push_back(const Evoral::Event<TimeType>& ev)
 {
 	return push_back (ev.time(), ev.size(), ev.buffer());
 }
@@ -220,7 +220,7 @@ MidiBuffer::push_back(TimeType time, size_t size, const uint8_t* data)
 }
 
 bool
-MidiBuffer::insert_event(const Evoral::MIDIEvent<TimeType>& ev)
+MidiBuffer::insert_event(const Evoral::Event<TimeType>& ev)
 {
 	if (size() == 0) {
 		return push_back(ev);
@@ -273,7 +273,7 @@ MidiBuffer::insert_event(const Evoral::MIDIEvent<TimeType>& ev)
 uint32_t
 MidiBuffer::write(TimeType time, Evoral::EventType type, uint32_t size, const uint8_t* buf)
 {
-	insert_event(Evoral::MIDIEvent<TimeType>(type, time, size, const_cast<uint8_t*>(buf)));
+	insert_event(Evoral::Event<TimeType>(type, time, size, const_cast<uint8_t*>(buf)));
 	return size;
 }
 
@@ -307,7 +307,7 @@ MidiBuffer::reserve(TimeType time, size_t size)
 
 
 void
-MidiBuffer::silence (framecnt_t /*nframes*/, framecnt_t /*offset*/)
+MidiBuffer::silence (samplecnt_t /*nframes*/, samplecnt_t /*offset*/)
 {
 	/* XXX iterate over existing events, find all in range given by offset & nframes,
 	   and delete them.

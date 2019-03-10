@@ -302,28 +302,63 @@ SessionPlaylists::update_after_tempo_map_change ()
 	}
 }
 
+namespace {
+struct id_compare
+{
+	bool operator()(const boost::shared_ptr<Playlist>& p1, const boost::shared_ptr<Playlist>& p2)
+	{
+		return p1->id () < p2->id ();
+	}
+};
+
+typedef std::set<boost::shared_ptr<Playlist> > List;
+typedef std::set<boost::shared_ptr<Playlist>, id_compare> IDSortedList;
+
+static void
+get_id_sorted_playlists (const List& playlists, IDSortedList& id_sorted_playlists)
+{
+	for (List::const_iterator i = playlists.begin(); i != playlists.end(); ++i) {
+		id_sorted_playlists.insert(*i);
+	}
+}
+
+} // anonymous namespace
+
 void
-SessionPlaylists::add_state (XMLNode* node, bool full_state)
+SessionPlaylists::add_state (XMLNode* node, bool save_template, bool include_unused)
 {
 	XMLNode* child = node->add_child ("Playlists");
-	for (List::iterator i = playlists.begin(); i != playlists.end(); ++i) {
-		if (!(*i)->hidden()) {
-                        if (full_state) {
-                                child->add_child_nocopy ((*i)->get_state());
-                        } else {
-                                child->add_child_nocopy ((*i)->get_template());
-                        }
-                }
+
+	IDSortedList id_sorted_playlists;
+	get_id_sorted_playlists (playlists, id_sorted_playlists);
+
+	for (IDSortedList::iterator i = id_sorted_playlists.begin (); i != id_sorted_playlists.end (); ++i) {
+		if (!(*i)->hidden ()) {
+			if (save_template) {
+				child->add_child_nocopy ((*i)->get_template ());
+			} else {
+				child->add_child_nocopy ((*i)->get_state ());
+			}
+		}
+	}
+
+	if (!include_unused) {
+		return;
 	}
 
 	child = node->add_child ("UnusedPlaylists");
-	for (List::iterator i = unused_playlists.begin(); i != unused_playlists.end(); ++i) {
+
+	IDSortedList id_sorted_unused_playlists;
+	get_id_sorted_playlists (unused_playlists, id_sorted_unused_playlists);
+
+	for (IDSortedList::iterator i = id_sorted_unused_playlists.begin ();
+	     i != id_sorted_unused_playlists.end (); ++i) {
 		if (!(*i)->hidden()) {
 			if (!(*i)->empty()) {
-				if (full_state) {
-					child->add_child_nocopy ((*i)->get_state());
-				} else {
+				if (save_template) {
 					child->add_child_nocopy ((*i)->get_template());
+				} else {
+					child->add_child_nocopy ((*i)->get_state());
 				}
 			}
 		}
@@ -365,8 +400,8 @@ SessionPlaylists::maybe_delete_unused (boost::function<int(boost::shared_ptr<Pla
 		case 2:
 			// delete this and all later
 			delete_remaining = true;
-			// no break;
 
+			/* fall through */
 		case 1:
 			// delete this
 			playlists_tbd.push_back (*x);
@@ -496,7 +531,10 @@ SessionPlaylists::playlists_for_track (boost::shared_ptr<Track> tr) const
 	vector<boost::shared_ptr<Playlist> > pl_tr;
 
 	for (vector<boost::shared_ptr<Playlist> >::iterator i = pl.begin(); i != pl.end(); ++i) {
-		if (((*i)->get_orig_track_id() == tr->id()) || (tr->playlist()->id() == (*i)->id())) {
+		if ( ((*i)->get_orig_track_id() == tr->id()) ||
+			(tr->playlist()->id() == (*i)->id())    ||
+			((*i)->shared_with (tr->id())) )
+		{
 			pl_tr.push_back (*i);
 		}
 	}

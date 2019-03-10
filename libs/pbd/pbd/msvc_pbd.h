@@ -82,28 +82,9 @@
 extern "C" {
 #endif	/* __cplusplus */
 
-// This function is (hopefully) temporary and is placed here
-// because 'g_usleep()' doesn't seem to work very well for glib-win32
-// JE -  let's see if we can do without this now! void    pbd_g_usleep (unsigned long microseconds);
-
 #ifdef __cplusplus
 }		/* extern "C" */
 #endif	/* __cplusplus */
-
-#ifndef POLLIN
-#define POLLIN				1
-#define POLLPRI				2
-#define POLLOUT				4
-#define POLLERR				8
-#define POLLHUP				16
-#define POLLNVAL			32
-#define NPOLLFILE			64
-
-#define POLLRDNORM			POLLIN
-#define POLLRDBAND			POLLIN
-#define POLLWRNORM			POLLOUT
-#define POLLWRBAND			POLLOUT
-#endif
 
 #ifdef PLATFORM_WINDOWS
 
@@ -161,7 +142,7 @@ LIBPBD_API     char* 	PBD_APICALLTYPE     dlerror () __THROW;
 /* For whatever reason, Ardour's 'libevoral' refuses to build as a DLL if we include both 'rpc.h' */
 /* and 'WinSock2.h'. It doesn't seem to matter which order we #include them. Given that we can't  */
 /* edit 'rpc.h' or 'WinSock2.h', just make sure we don't #include them when building libevoral.   */
-#ifndef BUILDING_EVORAL
+#if !defined(BUILDING_EVORAL) && !defined(BUILDING_QMDSP) && !defined(BUILDING_VAMPPLUGINS)
 #include <rpc.h>
 typedef int (FAR PBDEXTN_APICALLTYPE *CYGINIT_API)(unsigned int);
 #endif
@@ -213,13 +194,6 @@ typedef struct
 	char				dd_name[1];
 } DIR;
 
-struct pollfd
-{
-	int fd;
-	short events;
-	short revents;
-};
-
 typedef unsigned int nfds_t;
 
 #ifdef __cplusplus
@@ -229,7 +203,6 @@ extern "C" {
 LIBPBD_API int				__cdecl         gettimeofday(struct timeval *__restrict tv, __timezone_ptr_t tz);
 LIBPBD_API ssize_t			PBD_APICALLTYPE pread(int handle, void *buf, size_t nbytes, off_t offset);
 LIBPBD_API ssize_t			PBD_APICALLTYPE pwrite(int handle, const void *buf, size_t nbytes, off_t offset);
-LIBPBD_API int				PBD_APICALLTYPE poll(struct pollfd *fds, nfds_t nfds, int timeout);
 
 #if defined(_MSC_VER) && (_MSC_VER < 1800)
 LIBPBD_API double			PBD_APICALLTYPE expm1(double x);

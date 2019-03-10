@@ -633,14 +633,14 @@ JACKAudioBackend::transport_start ()
 }
 
 void
-JACKAudioBackend::transport_locate (framepos_t where)
+JACKAudioBackend::transport_locate (samplepos_t where)
 {
 	GET_PRIVATE_JACK_POINTER (_priv_jack);
 	jack_transport_locate (_priv_jack, where);
 }
 
-framepos_t
-JACKAudioBackend::transport_frame () const
+samplepos_t
+JACKAudioBackend::transport_sample () const
 {
 	GET_PRIVATE_JACK_POINTER_RET (_priv_jack, 0);
 	return jack_get_current_transport_frame (_priv_jack);
@@ -693,14 +693,14 @@ JACKAudioBackend::get_sync_offset (pframes_t& offset) const
 	return false;
 }
 
-framepos_t
+samplepos_t
 JACKAudioBackend::sample_time ()
 {
 	GET_PRIVATE_JACK_POINTER_RET (_priv_jack, 0);
 	return jack_frame_time (_priv_jack);
 }
 
-framepos_t
+samplepos_t
 JACKAudioBackend::sample_time_at_cycle_start ()
 {
 	GET_PRIVATE_JACK_POINTER_RET (_priv_jack, 0);
@@ -924,6 +924,13 @@ uint32_t
 JACKAudioBackend::process_thread_count ()
 {
 	return _jack_threads.size();
+}
+
+int
+JACKAudioBackend::client_real_time_priority ()
+{
+	GET_PRIVATE_JACK_POINTER_RET (_priv_jack, 0);
+	return jack_client_real_time_priority (_priv_jack);
 }
 
 void*
@@ -1164,7 +1171,7 @@ JACKAudioBackend::set_midi_option (const string& opt)
 }
 
 bool
-JACKAudioBackend::speed_and_position (double& speed, framepos_t& position)
+JACKAudioBackend::speed_and_position (double& speed, samplepos_t& position)
 {
 	jack_position_t pos;
 	jack_transport_state_t state;

@@ -78,12 +78,13 @@ public:
 		uint32_t time_beatUnit;
 		uint32_t time_beatsPerBar;
 		uint32_t time_beatsPerMinute;
-		uint32_t time_frame;
+		uint32_t time_sample;
 		uint32_t time_speed;
 		uint32_t patch_Get;
 		uint32_t patch_Set;
 		uint32_t patch_property;
 		uint32_t patch_value;
+		uint32_t state_StateChanged;
 #ifdef LV2_EXTENDED
 		uint32_t auto_event;
 		uint32_t auto_setup;

@@ -29,6 +29,7 @@ class MouseCursors
 {
 public:
 	MouseCursors ();
+	~MouseCursors ();
 
 	void set_cursor_set (const std::string& name);
 	std::string cursor_set() const { return _cursor_set; }
@@ -47,7 +48,6 @@ public:
 	Gdk::Cursor* selector;
 	Gdk::Cursor* grabber;
 	Gdk::Cursor* grabber_note;
-	Gdk::Cursor* grabber_edit_point;
 	Gdk::Cursor* zoom_in;
 	Gdk::Cursor* zoom_out;
 	Gdk::Cursor* time_fx;

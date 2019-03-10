@@ -124,6 +124,12 @@ JACKAudioBackend::get_port_name (PortHandle port) const
 	return jack_port_name ((jack_port_t*) port);
 }
 
+PortFlags
+JACKAudioBackend::get_port_flags (PortHandle port) const
+{
+	return PortFlags (jack_port_flags ((jack_port_t*) port));
+}
+
 int
 JACKAudioBackend::get_port_property (PortHandle port, const std::string& key, std::string& value, std::string& type) const
 {
@@ -135,9 +141,11 @@ JACKAudioBackend::get_port_property (PortHandle port, const std::string& key, st
 	jack_uuid_t uuid = jack_port_uuid((jack_port_t*) port);
 	rv = jack_get_property(uuid, key.c_str(), &cvalue, &ctype);
 
-	if (0 == rv && cvalue && ctype) {
+	if (0 == rv && cvalue) {
 		value = cvalue;
-		type = ctype;
+		if (ctype) {
+			type = ctype;
+		}
 	} else {
 		rv = -1;
 	}
@@ -273,12 +281,46 @@ JACKAudioBackend::physically_connected (PortHandle p, bool process_callback_safe
 			jack_port_t* other = jack_port_by_name (_priv_jack, ports[i]);
 
 			if (other && (jack_port_flags (other) & JackPortIsPhysical)) {
+				jack_free (ports);
 				return true;
 			}
 		}
 		jack_free (ports);
 	}
 
+	return false;
+}
+
+bool
+JACKAudioBackend::externally_connected (PortHandle p, bool process_callback_safe)
+{
+	GET_PRIVATE_JACK_POINTER_RET (_priv_jack, false);
+	jack_port_t* port = (jack_port_t*) p;
+
+	const char** ports;
+
+	if (process_callback_safe) {
+		ports = jack_port_get_connections ((jack_port_t*)port);
+	} else {
+		GET_PRIVATE_JACK_POINTER_RET (_priv_jack, false);
+		ports = jack_port_get_all_connections (_priv_jack, (jack_port_t*)port);
+	}
+
+	if (ports) {
+		for (int i = 0; ports[i]; ++i) {
+			jack_port_t* other = jack_port_by_name (_priv_jack, ports[i]);
+
+			if (other && (jack_port_flags (other) & JackPortIsPhysical)) {
+				jack_free (ports);
+				return true;
+			}
+			if (other && !jack_port_is_mine (_priv_jack, other)) {
+				jack_free (ports);
+				return true;
+			}
+		}
+		jack_free (ports);
+	}
 	return false;
 }
 
@@ -486,7 +528,7 @@ JACKAudioBackend::disconnect_all (PortHandle port)
 }
 
 int
-JACKAudioBackend::midi_event_get (pframes_t& timestamp, size_t& size, uint8_t** buf, void* port_buffer, uint32_t event_index)
+JACKAudioBackend::midi_event_get (pframes_t& timestamp, size_t& size, uint8_t const** buf, void* port_buffer, uint32_t event_index)
 {
 	jack_midi_event_t ev;
 	int ret;

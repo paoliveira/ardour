@@ -52,9 +52,9 @@ class MidiSource;
  * Because of this MIDI controllers and automatable controllers/widgets/etc
  * are easily interchangeable.
  */
-class LIBARDOUR_API MidiModel : public AutomatableSequence<Evoral::Beats> {
+class LIBARDOUR_API MidiModel : public AutomatableSequence<Temporal::Beats> {
 public:
-	typedef Evoral::Beats TimeType;
+	typedef Temporal::Beats TimeType;
 
 	MidiModel (boost::shared_ptr<MidiSource>);
 
@@ -251,10 +251,11 @@ public:
 		PatchChangePtr unmarshal_patch_change (XMLNode *);
 	};
 
-	MidiModel::NoteDiffCommand* new_note_diff_command (const std::string name = "midi edit");
-	MidiModel::SysExDiffCommand* new_sysex_diff_command (const std::string name = "midi edit");
-	MidiModel::PatchChangeDiffCommand* new_patch_change_diff_command (const std::string name = "midi edit");
+	MidiModel::NoteDiffCommand* new_note_diff_command (const std::string& name = "midi edit");
+	MidiModel::SysExDiffCommand* new_sysex_diff_command (const std::string& name = "midi edit");
+	MidiModel::PatchChangeDiffCommand* new_patch_change_diff_command (const std::string& name = "midi edit");
 	void apply_command (Session& session, Command* cmd);
+	void apply_command (Session* session, Command* cmd) { if (session) { apply_command (*session, cmd); } }
 	void apply_command_as_subcommand (Session& session, Command* cmd);
 
 	bool sync_to_source (const Glib::Threads::Mutex::Lock& source_lock);
@@ -264,8 +265,8 @@ public:
 
 	bool write_section_to(boost::shared_ptr<MidiSource>     source,
 	                      const Glib::Threads::Mutex::Lock& source_lock,
-	                      Evoral::Beats                     begin = Evoral::MinBeats,
-	                      Evoral::Beats                     end   = Evoral::MaxBeats,
+	                      Temporal::Beats                   begin = Temporal::Beats(),
+	                      Temporal::Beats                   end   = std::numeric_limits<Temporal::Beats>::max(),
 	                      bool                              offset_events = false);
 
 	// MidiModel doesn't use the normal AutomationList serialisation code
@@ -274,6 +275,7 @@ public:
 	int set_state(const XMLNode&) { return 0; }
 
 	PBD::Signal0<void> ContentsChanged;
+	PBD::Signal1<void, double> ContentsShifted;
 
 	boost::shared_ptr<const MidiSource> midi_source ();
 	void set_midi_source (boost::shared_ptr<MidiSource>);
@@ -290,8 +292,6 @@ public:
 
 	void insert_silence_at_start (TimeType);
 	void transpose (NoteDiffCommand *, const NotePtr, int);
-
-	std::set<WeakNotePtr>& active_notes() { return _active_notes; }
 
 protected:
 	int resolve_overlaps_unlocked (const NotePtr, void* arg = 0);
@@ -326,8 +326,6 @@ private:
 	// We cannot use a boost::shared_ptr here to avoid a retain cycle
 	boost::weak_ptr<MidiSource> _midi_source;
 	InsertMergePolicy _insert_merge_policy;
-
-	std::set<WeakNotePtr> _active_notes;
 };
 
 } /* namespace ARDOUR */

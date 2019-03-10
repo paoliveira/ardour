@@ -30,6 +30,7 @@
 #include <boost/shared_ptr.hpp>
 
 #include "pbd/rcu.h"
+#include "pbd/ringbuffer.h"
 
 #include "ardour/chan_count.h"
 #include "ardour/midiport_manager.h"
@@ -66,6 +67,7 @@ class LIBARDOUR_API PortManager
 	int  connect (const std::string& source, const std::string& destination);
 	int  disconnect (const std::string& source, const std::string& destination);
 	int  disconnect (boost::shared_ptr<Port>);
+	int  disconnect (std::string const &);
 	int  reestablish_ports ();
 	int  reconnect_ports ();
 
@@ -80,6 +82,7 @@ class LIBARDOUR_API PortManager
 	std::string             make_port_name_relative (const std::string& name) const;
 	std::string             make_port_name_non_relative (const std::string& name) const;
 	std::string             get_pretty_name_by_name (const std::string& portname) const;
+	std::string             short_port_name_from_port_name (std::string const & full_name) const;
 	bool                    port_is_mine (const std::string& fullname) const;
 
 	static bool port_is_control_only (std::string const &);
@@ -87,15 +90,24 @@ class LIBARDOUR_API PortManager
 	/* other Port management */
 
 	bool      port_is_physical (const std::string&) const;
-	void      get_physical_outputs (DataType type, std::vector<std::string>&);
-	void      get_physical_inputs (DataType type, std::vector<std::string>&);
+	void      get_physical_outputs (DataType type, std::vector<std::string>&,
+	                                MidiPortFlags include = MidiPortFlags (0),
+	                                MidiPortFlags exclude = MidiPortFlags (0));
+	void      get_physical_inputs (DataType type, std::vector<std::string>&,
+	                               MidiPortFlags include = MidiPortFlags (0),
+	                               MidiPortFlags exclude = MidiPortFlags (0));
 	ChanCount n_physical_outputs () const;
 	ChanCount n_physical_inputs () const;
 
 	int get_ports (const std::string& port_name_pattern, DataType type, PortFlags flags, std::vector<std::string>&);
 	int get_ports (DataType, PortList&);
 
+	void set_port_pretty_name (std::string const&, std::string const&);
+
 	void remove_all_ports ();
+	void clear_pending_port_deletions ();
+	virtual void add_pending_port_deletion (Port*) = 0;
+	PBD::RingBuffer<Port*>& port_deletions_pending () { return _port_deletions_pending; }
 
 	/* per-Port monitoring */
 
@@ -124,6 +136,37 @@ class LIBARDOUR_API PortManager
 
 	bool port_remove_in_progress() const { return _port_remove_in_progress; }
 
+	struct MidiPortInformation {
+		std::string   backend;
+		std::string   pretty_name;
+		bool          input;
+		MidiPortFlags properties;
+		bool          exists;
+
+		MidiPortInformation (std::string const & b, std::string const & pretty, bool input, MidiPortFlags flags, bool xists)
+			: backend (b)
+			, pretty_name (pretty)
+			, input (input)
+			, properties (flags)
+			, exists (xists) {}
+		MidiPortInformation ()
+			: properties (MidiPortFlags (0))
+			, exists (false) {}
+	};
+
+	void fill_midi_port_info ();
+
+	MidiPortInformation midi_port_information (std::string const&);
+	void get_known_midi_ports (std::vector<std::string>&);
+	void get_midi_selection_ports (std::vector<std::string>&);
+	void add_midi_port_flags (std::string const&, MidiPortFlags);
+	void remove_midi_port_flags (std::string const&, MidiPortFlags);
+
+	/** Emitted if the list of ports to be used for MIDI selection tracking changes */
+	PBD::Signal0<void> MidiSelectionPortsChanged;
+	/** Emitted if anything other than the selection property for a MIDI port changes */
+	PBD::Signal0<void> MidiPortInfoChanged;
+
 	/** Emitted if the backend notifies us of a graph order event */
 	PBD::Signal0<void> GraphReordered;
 
@@ -141,6 +184,7 @@ class LIBARDOUR_API PortManager
 	boost::shared_ptr<AudioBackend> _backend;
 	SerializedRCUManager<Ports> ports;
 	bool _port_remove_in_progress;
+	PBD::RingBuffer<Port*> _port_deletions_pending;
 
 	boost::shared_ptr<Port> register_port (DataType type, const std::string& portname, bool input, bool async = false, PortFlags extra_flags = PortFlags (0));
 	void port_registration_failure (const std::string& portname);
@@ -149,7 +193,6 @@ class LIBARDOUR_API PortManager
 	 */
 	boost::shared_ptr<Ports> _cycle_ports;
 
-	void fade_out (gain_t, gain_t, pframes_t);
 	void silence (pframes_t nframes, Session *s = 0);
 	void silence_outputs (pframes_t nframes);
 	void check_monitoring ();
@@ -157,14 +200,29 @@ class LIBARDOUR_API PortManager
 	 * This MUST be called before any reading/writing for this cycle.
 	 * Realtime safe.
 	 */
-	void cycle_start (pframes_t nframes);
+	void cycle_start (pframes_t nframes, Session* s = 0);
 
 	/** Signal the end of an audio cycle.
 	 * This signifies that the cycle began with @ref cycle_start has ended.
 	 * This MUST be called at the end of each cycle.
 	 * Realtime safe.
 	 */
-	void cycle_end (pframes_t nframes);
+	void cycle_end (pframes_t nframes, Session* s = 0);
+
+	void cycle_end_fade_out (gain_t, gain_t, pframes_t, Session* s = 0);
+
+	typedef std::map<std::string,MidiPortInformation> MidiPortInfo;
+
+	mutable Glib::Threads::Mutex midi_port_info_mutex;
+	MidiPortInfo midi_port_info;
+
+	static std::string midi_port_info_file ();
+	bool midi_info_dirty;
+	void save_midi_port_info ();
+	void load_midi_port_info ();
+	void fill_midi_port_info_locked ();
+
+	void filter_midi_ports (std::vector<std::string>&, MidiPortFlags, MidiPortFlags);
 };
 
 

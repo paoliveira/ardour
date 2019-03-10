@@ -118,7 +118,15 @@ class LIBPBD_API SystemExec
 
 		virtual ~SystemExec ();
 
+		static char* format_key_value_parameter (std::string, std::string);
+
 		std::string to_s() const;
+
+		enum StdErrMode {
+			ShareWithParent = 0,
+			IgnoreAndClose  = 1,
+			MergeWithStdin  = 2
+		};
 
 		/** fork and execute the given program
 		 *
@@ -131,7 +139,7 @@ class LIBPBD_API SystemExec
 		 * @return If the process is already running or was launched successfully
 		 * the function returns zero (0). A negative number indicates an error.
 		 */
-		int start (int stderr_mode, const char *_vfork_exec_wrapper);
+		int start (StdErrMode, const char *_vfork_exec_wrapper);
 		/** kill running child-process
 		 *
 		 * if a child process exists trt to shut it down by closing its STDIN.
@@ -164,12 +172,19 @@ class LIBPBD_API SystemExec
 		 */
 		void close_stdin ();
 		/** write into child-program's STDIN
-		 * @param d data to write
+		 * @param d text to write
 		 * @param len length of data to write, if it is 0 (zero), d.length() is
 		 * used to determine the number of bytes to transmit.
 		 * @return number of bytes written.
 		 */
-		int write_to_stdin (std::string d, size_t len=0);
+		size_t write_to_stdin (std::string const& d, size_t len=0);
+
+		/** write into child-program's STDIN
+		 * @param data data to write
+		 * @param bytes length of data to write
+		 * @return number of bytes written.
+		 */
+		size_t write_to_stdin (const void* d, size_t bytes=0);
 
 		/** The ReadStdout signal is emitted when the application writes to STDOUT.
 		 * it passes the written data and its length in bytes as arguments to the bound
@@ -222,6 +237,9 @@ class LIBPBD_API SystemExec
 		void make_wargs(char **);
 #else
 		pid_t pid;
+# ifndef NO_VFORK
+		char **argx;
+# endif
 #endif
 		void init ();
 		pthread_mutex_t write_lock;

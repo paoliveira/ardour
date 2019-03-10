@@ -20,8 +20,9 @@
 #ifndef __ardour_midi_buffer_h__
 #define __ardour_midi_buffer_h__
 
-#include "evoral/midi_util.h"
 #include "evoral/EventSink.hpp"
+#include "evoral/midi_util.h"
+#include "evoral/types.hpp"
 
 #include "midi++/event.h"
 
@@ -32,22 +33,24 @@ namespace ARDOUR {
 
 
 /** Buffer containing 8-bit unsigned char (MIDI) data. */
-class LIBARDOUR_API MidiBuffer : public Buffer, public Evoral::EventSink<framepos_t>
+class LIBARDOUR_API MidiBuffer : public Buffer, public Evoral::EventSink<samplepos_t>
 {
 public:
-	typedef framepos_t TimeType;
+	typedef samplepos_t TimeType;
 
 	MidiBuffer(size_t capacity);
 	~MidiBuffer();
 
-	void silence (framecnt_t nframes, framecnt_t offset = 0);
-	void read_from (const Buffer& src, framecnt_t nframes, frameoffset_t dst_offset = 0, frameoffset_t src_offset = 0);
-	void merge_from (const Buffer& src, framecnt_t nframes, frameoffset_t dst_offset = 0, frameoffset_t src_offset = 0);
+	void silence (samplecnt_t nframes, samplecnt_t offset = 0);
+	void read_from (const Buffer& src, samplecnt_t nframes, sampleoffset_t dst_offset = 0, sampleoffset_t src_offset = 0);
+	void merge_from (const Buffer& src, samplecnt_t nframes, sampleoffset_t dst_offset = 0, sampleoffset_t src_offset = 0);
 
 	void copy(const MidiBuffer& copy);
 	void copy(MidiBuffer const * const);
 
-	bool     push_back(const Evoral::MIDIEvent<TimeType>& event);
+	void skip_to (TimeType when);
+
+	bool     push_back(const Evoral::Event<TimeType>& event);
 	bool     push_back(TimeType time, size_t size, const uint8_t* data);
 
 	uint8_t* reserve(TimeType time, size_t size);
@@ -56,7 +59,7 @@ public:
 	size_t size() const { return _size; }
 	bool empty() const { return _size == 0; }
 
-	bool insert_event(const Evoral::MIDIEvent<TimeType>& event);
+	bool insert_event(const Evoral::Event<TimeType>& event);
 	bool merge_in_place(const MidiBuffer &other);
 
 	/** EventSink interface for non-RT use (export, bounce). */
@@ -66,7 +69,7 @@ public:
 		class iterator_base
 	{
 	public:
-		iterator_base<BufferType, EventType>(BufferType& b, framecnt_t o)
+		iterator_base<BufferType, EventType>(BufferType& b, samplecnt_t o)
 			: buffer(&b), offset(o) {}
 
 		iterator_base<BufferType, EventType>(const iterator_base<BufferType,EventType>& o)
@@ -93,7 +96,7 @@ public:
 			uint8_t* ev_start = buffer->_data + offset + sizeof(TimeType);
 			int event_size = Evoral::midi_event_size(ev_start);
 			assert(event_size >= 0);
-			return EventType(midi_parameter_type(*ev_start),
+			return EventType(Evoral::MIDI_EVENT,
 					*(reinterpret_cast<TimeType*>((uintptr_t)(buffer->_data + offset))),
 					event_size, ev_start);
 		}
@@ -122,8 +125,8 @@ public:
 		size_t          offset;
 	};
 
-	typedef iterator_base< MidiBuffer, Evoral::MIDIEvent<TimeType> >             iterator;
-	typedef iterator_base< const MidiBuffer, const Evoral::MIDIEvent<TimeType> > const_iterator;
+	typedef iterator_base< MidiBuffer, Evoral::Event<TimeType> >             iterator;
+	typedef iterator_base< const MidiBuffer, const Evoral::Event<TimeType> > const_iterator;
 
 	iterator begin() { return iterator(*this, 0); }
 	iterator end()   { return iterator(*this, _size); }
@@ -166,8 +169,6 @@ public:
 		return iterator (*this, i.offset);
 	}
 
-	uint8_t* data() const { return _data; }
-
 	/**
 	 * returns true if the message with the second argument as its MIDI
 	 * status byte should preceed the message with the first argument as
@@ -176,8 +177,8 @@ public:
 	static bool second_simultaneous_midi_byte_is_first (uint8_t, uint8_t);
 
 private:
-	friend class iterator_base< MidiBuffer, Evoral::MIDIEvent<TimeType> >;
-	friend class iterator_base< const MidiBuffer, const Evoral::MIDIEvent<TimeType> >;
+	friend class iterator_base< MidiBuffer, Evoral::Event<TimeType> >;
+	friend class iterator_base< const MidiBuffer, const Evoral::Event<TimeType> >;
 
 	uint8_t* _data; ///< timestamp, event, timestamp, event, ...
 	pframes_t _size;

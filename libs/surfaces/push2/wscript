@@ -6,8 +6,6 @@ import os
 top = '.'
 out = 'build'
 
-print "this is push2"
-
 def options(opt):
     autowaf.set_options(opt)
     
@@ -45,7 +43,7 @@ def build(bld):
     obj.name         = 'libardour_push2'
     obj.target       = 'ardour_push2'
     obj.uselib       = 'CAIROMM PANGOMM USB GTKMM SIGCPP'
-    obj.use          = 'libardour libardour_cp libgtkmm2ext libpbd libevoral libcanvas libtimecode'
+    obj.use          = 'libardour libardour_cp libgtkmm2ext libpbd libevoral libcanvas libtemporal'
     obj.install_path = os.path.join(bld.env['LIBDIR'], 'surfaces')
 
 def shutdown():
